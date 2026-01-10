@@ -240,9 +240,9 @@ def create_trilinear_interpolator(field, grid, periodic=True):
     """
     x_grid, y_grid, z_grid = grid
 
-    dx = x_grid[1] - x_grid[0]
-    dy = y_grid[1] - y_grid[0]
-    dz = z_grid[1] - z_grid[0]
+    dx = x_grid[1] - x_grid[0] if len(x_grid) > 1 else 1.0
+    dy = y_grid[1] - y_grid[0] if len(y_grid) > 1 else 1.0
+    dz = z_grid[1] - z_grid[0] if len(z_grid) > 1 else 1.0
     # calculate the grid spacing in each direction
 
     x_min, x_max = x_grid[0], x_grid[-1]
@@ -390,7 +390,7 @@ def create_quadratic_interpolator(field, grid, periodic=True):
             idx_quad = jnp.clip(idx_base, 1, grid_len - 2)
 
             # For grids with 2 points, use linear interpolation
-            idx_lin = jnp.clip(idx_base, 0, 0)
+            idx_lin = jnp.clip(idx_base, 0, grid_len - 2)
 
             # For single-point grids, use index 0
             idx_single = 0
@@ -407,10 +407,12 @@ def create_quadratic_interpolator(field, grid, periodic=True):
                 idx_p1 = jnp.mod(idx + 1, grid_len)
 
                 p0 = jnp.where(grid_len >= 3, grid_1d[idx_m1],
-                      jnp.where(grid_len == 2, grid_1d[0], grid_1d[0]))
-                p1 = jnp.where(grid_len >= 2, grid_1d[idx_0], grid_1d[0])
+                      jnp.where(grid_len == 2, grid_1d[idx_0], grid_1d[0]))
+                p1 = jnp.where(grid_len >= 2,
+                      jnp.where(grid_len == 2, grid_1d[idx_p1], grid_1d[idx_0]),
+                      grid_1d[0])
                 p2 = jnp.where(grid_len >= 3, grid_1d[idx_p1],
-                      jnp.where(grid_len == 2, grid_1d[1], grid_1d[0]))
+                      jnp.where(grid_len == 2, grid_1d[idx_p1], grid_1d[0]))
             else:
                 # For non-periodic boundaries, use clipping
                 # Get the three points for interpolation
@@ -418,12 +420,14 @@ def create_quadratic_interpolator(field, grid, periodic=True):
                 # For 2 points: duplicate last point
                 # For 1 point: duplicate the single point
                 p0 = jnp.where(grid_len >= 3, grid_1d[jnp.clip(idx - 1, 0, grid_len - 1)],
-                      jnp.where(grid_len == 2, grid_1d[0], grid_1d[0]))
+                      jnp.where(grid_len == 2, grid_1d[jnp.clip(idx, 0, grid_len - 1)], grid_1d[0]))
 
-                p1 = jnp.where(grid_len >= 2, grid_1d[jnp.clip(idx, 0, grid_len - 1)], grid_1d[0])
+                p1 = jnp.where(grid_len >= 2,
+                      jnp.where(grid_len == 2, grid_1d[jnp.clip(idx + 1, 0, grid_len - 1)], grid_1d[jnp.clip(idx, 0, grid_len - 1)]),
+                      grid_1d[0])
 
                 p2 = jnp.where(grid_len >= 3, grid_1d[jnp.clip(idx + 1, 0, grid_len - 1)],
-                      jnp.where(grid_len == 2, grid_1d[1], grid_1d[0]))
+                      jnp.where(grid_len == 2, grid_1d[jnp.clip(idx + 1, 0, grid_len - 1)], grid_1d[0]))
 
             return idx, p0, p1, p2
 
@@ -487,10 +491,10 @@ def create_quadratic_interpolator(field, grid, periodic=True):
                     # X index calculation
                     if periodic and Nx > 1:
                         xi_quad = jnp.mod(x_idx - 1 + i, Nx)  # For 3+ points with periodic
-                        xi_lin = jnp.mod(x_idx + i - 1, Nx)   # For 2 points with periodic
+                        xi_lin = jnp.where(i == 0, x_idx, jnp.mod(x_idx + 1, Nx))   # For 2 points with periodic
                     else:
                         xi_quad = x_idx - 1 + i  # For 3+ points
-                        xi_lin = jnp.clip(x_idx + i - 1, 0, max(1, Nx - 1))  # For 2 points
+                        xi_lin = jnp.where(i == 0, x_idx, jnp.clip(x_idx + 1, 0, max(1, Nx - 1)))  # For 2 points
                     xi_single = 0  # For 1 point
 
                     xi = jnp.where(Nx >= 3, xi_quad,
@@ -499,10 +503,10 @@ def create_quadratic_interpolator(field, grid, periodic=True):
                     # Y index calculation
                     if periodic and Ny > 1:
                         yi_quad = jnp.mod(y_idx - 1 + j, Ny)
-                        yi_lin = jnp.mod(y_idx + j - 1, Ny)
+                        yi_lin = jnp.where(j == 0, y_idx, jnp.mod(y_idx + 1, Ny))
                     else:
                         yi_quad = y_idx - 1 + j
-                        yi_lin = jnp.clip(y_idx + j - 1, 0, max(1, Ny - 1))
+                        yi_lin = jnp.where(j == 0, y_idx, jnp.clip(y_idx + 1, 0, max(1, Ny - 1)))
                     yi_single = 0
 
                     yi = jnp.where(Ny >= 3, yi_quad,
@@ -511,10 +515,10 @@ def create_quadratic_interpolator(field, grid, periodic=True):
                     # Z index calculation
                     if periodic and Nz > 1:
                         zi_quad = jnp.mod(z_idx - 1 + k, Nz)
-                        zi_lin = jnp.mod(z_idx + k - 1, Nz)
+                        zi_lin = jnp.where(k == 0, z_idx, jnp.mod(z_idx + 1, Nz))
                     else:
                         zi_quad = z_idx - 1 + k
-                        zi_lin = jnp.clip(z_idx + k - 1, 0, max(1, Nz - 1))
+                        zi_lin = jnp.where(k == 0, z_idx, jnp.clip(z_idx + 1, 0, max(1, Nz - 1)))
                     zi_single = 0
 
                     zi = jnp.where(Nz >= 3, zi_quad,
