@@ -10,6 +10,10 @@ from PyPIC3D.boris import (
     particle_push
 )
 
+from PyPIC3D.noether_pusher import (
+    noether_particle_push
+)
+
 from PyPIC3D.solvers.first_order_yee import (
     update_E, update_B, calculateE
 )
@@ -21,6 +25,10 @@ from PyPIC3D.solvers.vector_potential import (
 
 from PyPIC3D.solvers.curl_curl_form import (
     update_B_second_order, update_E_second_order
+)
+
+from PyPIC3D.solvers.noether_yee import (
+    update_E_noether, update_B_noether
 )
 
 @partial(jit, static_argnames=("curl_func", "J_func", "solver", "bc", "relativistic"))
@@ -255,6 +263,47 @@ def time_loop_curl_curl(particles, fields, E_grid, B_grid, world, constants, cur
     # calculate the current density based on the selected method
 
     fields = (E, B, J, rho, phi, E2, B2, E0, B0, J0)
+    # pack the fields into a tuple
+
+    ############### PARTICLE BOUNDARY CONDITIONS ################################################################################
+    for i in range(len(particles)):
+        
+        particles[i].boundary_conditions()
+        # apply boundary conditions to the particles
+
+    return particles, fields
+
+
+@partial(jit, static_argnames=("curl_func", "J_func", "solver", "x_bc", "y_bc", "z_bc", "relativistic"))
+def time_loop_noether_yee(particles, fields, vertex_grid, center_grid, world, constants, curl_func, J_func, solver, x_bc, y_bc, z_bc, relativistic=True):
+    E, B, J, rho, phi, E_prev, B_prev, = fields    
+
+
+    ################ PARTICLE PUSH ########################################################################################
+    for i in range(len(particles)):
+
+        particles[i] = particle_push(particles[i], E, B, center_grid, vertex_grid, world['dt'], constants, relativistic=relativistic)
+        # use boris push for particle velocities
+
+        particles[i].update_position()
+        # update the particle positions
+
+    ################ FIELD UPDATE ################################################################################################
+    J = J_func(particles, J, constants, world, center_grid)
+    # calculate the current density based on the selected method
+    E_next = update_E_noether(E_prev, B, J, world, constants)
+    # update the electric field using the Noether Yee scheme
+    B_next = update_B_noether(B_prev, E, world, constants)
+    # update the magnetic field using the Noether Yee scheme
+
+    E_prev = E
+    B_prev = B
+    # store the fields for the next time step
+    E = E_next
+    B = B_next
+    # set the updated fields
+
+    fields = (E, B, J, rho, phi, E_prev, B_prev)
     # pack the fields into a tuple
 
     ############### PARTICLE BOUNDARY CONDITIONS ################################################################################

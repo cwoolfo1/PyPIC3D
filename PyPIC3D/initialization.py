@@ -42,7 +42,7 @@ from PyPIC3D.plotting import (
 
 from PyPIC3D.evolve import (
     time_loop_electrodynamic, time_loop_electrostatic, time_loop_vector_potential,
-    time_loop_curl_curl
+    time_loop_curl_curl, time_loop_noether_yee
 )
 
 from PyPIC3D.J import (
@@ -308,6 +308,10 @@ def initialize_simulation(toml_file):
         print("Using curl-curl solver")
         evolve_loop = time_loop_curl_curl
 
+    elif solver == "time_loop_noether_yee":
+        print("Using Noether Yee electrodynamic solver")
+        evolve_loop = time_loop_noether_yee
+
     else:
         print(f"Using electrodynamic solver with: {solver}")
         evolve_loop = time_loop_electrodynamic
@@ -330,6 +334,11 @@ def initialize_simulation(toml_file):
     elif solver == "curl_curl":
         fields = (E, B, J, rho, phi, E, B, E, B, J)
         # add the additional fields for the curl-curl solver
+    elif solver == "time_loop_noether_yee":
+        E_prev = jax.numpy.zeros_like(E)
+        B_prev = jax.numpy.zeros_like(B)
+        fields = (E, B, J, rho, phi, E_prev, B_prev)
+        # define the fields tuple for the Noether Yee solver
     else:
         fields = (E, B, J, rho, phi)
         # define the fields tuple for the electrodynamic and electrostatic solvers
