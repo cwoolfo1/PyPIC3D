@@ -9,10 +9,12 @@ from functools import partial
 from PyPIC3D.boris import (
     particle_push
 )
+from PyPIC3D.gr_particle_pusher import particle_push_relativistic_metric
 
 from PyPIC3D.solvers.first_order_yee import (
     update_E, update_B, calculateE
 )
+from PyPIC3D.solvers.GR_fields import update_DB_and_recover_EH
 
 from PyPIC3D.solvers.vector_potential import (
     E_from_A, B_from_A, update_vector_potential
@@ -147,6 +149,32 @@ def time_loop_electrodynamic(particles, fields, world, constants, curl_func, J_f
     # pack the fields into a tuple
     
 
+    return particles, fields
+
+
+@partial(jit, static_argnames=("curl_func", "J_func", "solver", "relativistic"))
+def time_loop_electrodynamic_metric(particles, fields, world, constants, curl_func, J_func, solver, relativistic=True):
+    """
+    Electrodynamic loop variant using the metric-aware relativistic particle pusher.
+    """
+    E, B, D, H, J, rho, phi = fields
+    center_grid = world['grids']['center']
+    vertex_grid = world['grids']['vertex']
+    metric = world['metric']
+
+    for i in range(len(particles)):
+        particles[i] = particle_push_relativistic_metric(
+            particles[i], E, B, center_grid, vertex_grid, world['dt'], constants, metric
+        )
+        particles[i].update_position()
+
+    J = J_func(particles, J, constants, world)
+    E, B, D, H = update_DB_and_recover_EH(D, B, J, world, constants, curl_func)
+
+    for i in range(len(particles)):
+        particles[i].boundary_conditions()
+
+    fields = (E, B, D, H, J, rho, phi)
     return particles, fields
 
 

@@ -63,7 +63,7 @@ def run_PyPIC3D(config_file):
     scalar_field_names = ["rho", "mass_density"]
     vector_field_names = ["E", "B", "J"]
 
-    E, B, J, rho, *rest = fields
+    E, B, J, rho, rest = _unpack_fields(fields)
     # unpack the fields
     e_energy, b_energy, kinetic_energy = compute_energy(particles, E, B, world, constants)
     # Compute the energy of the system
@@ -85,7 +85,7 @@ def run_PyPIC3D(config_file):
             plot_num = t // plotting_parameters['plotting_interval']
             # determine the plot number
 
-            E, B, J, rho, *rest = fields
+            E, B, J, rho, rest = _unpack_fields(fields)
             # unpack the fields
 
             e_energy, b_energy, kinetic_energy = compute_energy(particles, E, B, world, constants)
@@ -140,7 +140,7 @@ def run_PyPIC3D(config_file):
                 write_openpmd_fields(fields, world, os.path.join(output_dir, "data"), plot_num, t,  "fields", ".h5")
             # Write the fields in openPMD format
 
-            fields = (E, B, J, rho, *rest)
+            fields = _repack_fields(E, B, J, rho, rest)
             # repack the fields
 
         particles, fields = jit_loop(
@@ -157,6 +157,25 @@ def run_PyPIC3D(config_file):
 
 
     return Nt, plotting_parameters, simulation_parameters, plasma_parameters, constants, particles, fields, world
+
+
+def _unpack_fields(fields):
+    # Standard: (E, B, J, rho, phi)
+    # GR metric loop: (E, B, D, H, J, rho, phi)
+    if len(fields) == 7:
+        E, B, D, H, J, rho, phi = fields
+        return E, B, J, rho, (D, H, phi)
+    if len(fields) >= 5:
+        E, B, J, rho, *rest = fields
+        return E, B, J, rho, tuple(rest)
+    raise ValueError(f"Unexpected field tuple length: {len(fields)}")
+
+
+def _repack_fields(E, B, J, rho, rest):
+    if len(rest) == 3:
+        D, H, phi = rest
+        return (E, B, D, H, J, rho, phi)
+    return (E, B, J, rho, *rest)
 
 def main():
     ###################### JAX SETTINGS ########################################################################
@@ -181,7 +200,7 @@ def main():
     end = time.time()
     # end the timer
 
-    E, B, J, *rest = fields
+    E, B, J, _, _ = _unpack_fields(fields)
     # unpack the fields
 
     e_energy, b_energy, kinetic_energy = compute_energy(particles, E, B, world, constants)

@@ -17,6 +17,8 @@ from . import utils
 from .solvers import pstd
 from .solvers import fdtd
 from . import boris
+from . import gr_particle_pusher
+from . import metric
 from . import rho
 from . import evolve
 from .solvers import vector_potential

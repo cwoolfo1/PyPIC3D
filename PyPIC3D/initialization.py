@@ -45,13 +45,15 @@ from PyPIC3D.diagnostics.openPMD import (
 
 
 from PyPIC3D.evolve import (
-    time_loop_electrodynamic, time_loop_electrostatic, time_loop_vector_potential
+    time_loop_electrodynamic, time_loop_electrostatic, time_loop_vector_potential,
+    time_loop_electrodynamic_metric
 )
 
 from PyPIC3D.J import (
     J_from_rhov, Esirkepov_current
 )
 from PyPIC3D.solvers.vector_potential import initialize_vector_potential
+from PyPIC3D.metric import build_metric_from_parameters
 
 
 def _encode_field_bc(bc_name):
@@ -126,6 +128,9 @@ def default_parameters():
         "shape_factor" : 1, # shape factor for the simulation (1 for 1st order, 2 for 2nd order)
         "current_calculation": "j_from_rhov",  # current calculation method: esirkepov, villasenor_buneman, j_from_rhov
         "filter_j": "bilinear",  # filter for the current density: bilinear, digital, none
+        "metric": "minkowski",  # metric model: minkowski, cylindrical, static
+        "metric_file": None,  # path to static metric tensor (.npy/.npz/.toml) when metric=static
+        "metric_regularization": 1e-12,  # regularization near coordinate singularities
     }
     # dictionary for simulation parameters
 
@@ -233,6 +238,8 @@ def initialize_simulation(toml_file):
     # adjust t_wind if both dt and Nt are provided
 
 
+    metric = build_metric_from_parameters(simulation_parameters)
+
     world = {
         'dt': dt,
         'Nt': Nt,
@@ -250,6 +257,7 @@ def initialize_simulation(toml_file):
             'y': _encode_field_bc(simulation_parameters['y_bc']),
             'z': _encode_field_bc(simulation_parameters['z_bc']),
         },
+        'metric': metric,
     }
     # set the simulation world parameters
 
@@ -335,6 +343,14 @@ def initialize_simulation(toml_file):
     else:
         print("Non-relativistic simulation")
 
+    metric_type = int(world["metric"]["metric_type"])
+    if metric_type == 0:
+        print("Metric: Minkowski")
+    elif metric_type == 1:
+        print("Metric: Cylindrical coordinates")
+    else:
+        print("Metric: User-defined static tensor")
+
     if electrostatic:
         print("Using electrostatic solver")
         evolve_loop = time_loop_electrostatic
@@ -345,8 +361,12 @@ def initialize_simulation(toml_file):
         evolve_loop = time_loop_vector_potential
 
     else:
-        print(f"Using electrodynamic solver with: {solver}")
-        evolve_loop = time_loop_electrodynamic
+        if relativistic and metric_type != 0:
+            print(f"Using metric-aware relativistic electrodynamic solver with: {solver}")
+            evolve_loop = time_loop_electrodynamic_metric
+        else:
+            print(f"Using electrodynamic solver with: {solver}")
+            evolve_loop = time_loop_electrodynamic
     # set the evolve loop function based on the electrostatic flag
 
     if simulation_parameters['current_calculation'] == "esirkepov":
@@ -364,8 +384,22 @@ def initialize_simulation(toml_file):
         fields = (E, B, J, rho, phi, A2, A1, A0)
         # define the fields tuple for the vector potential solver
     else:
-        fields = (E, B, J, rho, phi)
-        # define the fields tuple for the electrodynamic and electrostatic solvers
+        if relativistic and metric_type != 0 and not electrostatic:
+            # Start from vacuum-like constitutive relation for initialization.
+            D = (
+                constants["eps"] * E[0],
+                constants["eps"] * E[1],
+                constants["eps"] * E[2],
+            )
+            H = (
+                B[0] / constants["mu"],
+                B[1] / constants["mu"],
+                B[2] / constants["mu"],
+            )
+            fields = (E, B, D, H, J, rho, phi)
+        else:
+            fields = (E, B, J, rho, phi)
+        # define the fields tuple for the electrodynamic/electrostatic solvers
 
     if plotting_parameters['dump_fields']:
         write_openpmd_initial_fields(fields, world, simulation_parameters['output_dir'], filename="initial_fields.h5")
