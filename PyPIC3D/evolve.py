@@ -9,12 +9,15 @@ from functools import partial
 from PyPIC3D.boris import (
     particle_push
 )
-from PyPIC3D.gr_particle_pusher import particle_push_relativistic_metric
+from PyPIC3D.general_relativity.gr_particle_pusher import particle_push_relativistic_metric
 
 from PyPIC3D.solvers.first_order_yee import (
     update_E, update_B, calculateE
 )
-from PyPIC3D.solvers.GR_fields import update_DB_and_recover_EH
+from PyPIC3D.general_relativity.GR_fields import (
+    GR_Update_D, GR_Update_H,
+    GR_Update_B, GR_Update_E
+)
 
 from PyPIC3D.solvers.vector_potential import (
     E_from_A, B_from_A, update_vector_potential
@@ -53,10 +56,7 @@ def time_loop_electrostatic(particles, fields, world, constants, curl_func, J_fu
     for i in range(len(particles)):
 
         particles[i] = particle_push(particles[i], E, B, vertex_grid, center_grid, world['dt'], constants, relativistic=relativistic)
-        # use boris push for particle velocities
-
-        particles[i].update_position()
-        # update the particle positions
+        # use boris push for particle velocities and update the particle positions
 
     ############### SOLVE E FIELD ############################################################################################
     E, phi, rho = calculateE(world, particles, constants, rho, phi, solver, 'periodic')
@@ -128,10 +128,7 @@ def time_loop_electrodynamic(particles, fields, world, constants, curl_func, J_f
     for i in range(len(particles)):
 
         particles[i] = particle_push(particles[i], E, B, center_grid, vertex_grid, world['dt'], constants, relativistic=relativistic)
-        # use boris push for particle velocities
-
-        particles[i].update_position()
-        # update the particle positions
+        # use boris push for particle velocities and update the particle positions
 
     ################ FIELD UPDATE ################################################################################################
     J = J_func(particles, J, constants, world)
@@ -149,32 +146,6 @@ def time_loop_electrodynamic(particles, fields, world, constants, curl_func, J_f
     # pack the fields into a tuple
     
 
-    return particles, fields
-
-
-@partial(jit, static_argnames=("curl_func", "J_func", "solver", "relativistic"))
-def time_loop_electrodynamic_metric(particles, fields, world, constants, curl_func, J_func, solver, relativistic=True):
-    """
-    Electrodynamic loop variant using the metric-aware relativistic particle pusher.
-    """
-    E, B, D, H, J, rho, phi = fields
-    center_grid = world['grids']['center']
-    vertex_grid = world['grids']['vertex']
-    metric = world['metric']
-
-    for i in range(len(particles)):
-        particles[i] = particle_push_relativistic_metric(
-            particles[i], E, B, center_grid, vertex_grid, world['dt'], constants, metric
-        )
-        particles[i].update_position()
-
-    J = J_func(particles, J, constants, world)
-    E, B, D, H = update_DB_and_recover_EH(D, B, J, world, constants, curl_func)
-
-    for i in range(len(particles)):
-        particles[i].boundary_conditions()
-
-    fields = (E, B, D, H, J, rho, phi)
     return particles, fields
 
 
@@ -242,10 +213,7 @@ def time_loop_vector_potential(particles, fields, world, constants, curl_func, J
     for i in range(len(particles)):
 
         particles[i] = particle_push(particles[i], E, B, center_grid, vertex_grid, world['dt'], constants, relativistic=relativistic)
-        # use boris push for particle velocities
-
-        particles[i].update_position()
-        # update the particle positions
+        # use boris push for particle velocities and update the particle positions
 
     ################ FIELD UPDATE ################################################################################################
     A0 = A1
@@ -269,4 +237,33 @@ def time_loop_vector_potential(particles, fields, world, constants, curl_func, J
     # pack the fields into a tuple
 
 
+    return particles, fields
+
+@partial(jit, static_argnames=("curl_func", "J_func", "solver", "relativistic"))
+def time_loop_GR_electrodynamic(particles, fields, world, constants, curl_func, J_func, solver, relativistic=True):
+    """
+    Electrodynamic loop variant using the metric-aware relativistic particle pusher.
+    """
+    E, B, D, H, J, rho, phi = fields
+    # unpack the fields
+
+    for i in range(len(particles)):
+        particles[i] = particle_push_relativistic_metric( particles[i], E, B, world, constants )
+        # advance the particles using relativistic EOM with metric effects
+
+    J = J_func(particles, J, constants, world)
+    # calculate the current density based on the selected method
+
+    D = GR_Update_D(D, H, J, world, constants)
+    B = GR_Update_B(B, E, world, constants)
+    # update D and B using the GR field update routines
+
+    H = GR_Update_H(B, D, world, constants)
+    E = GR_Update_E(B, D, world, constants)
+    # recover E and H from the updated D and B using the GR constitutive relations
+
+    for i in range(len(particles)):
+        particles[i].boundary_conditions()
+
+    fields = (E, B, D, H, J, rho, phi)
     return particles, fields

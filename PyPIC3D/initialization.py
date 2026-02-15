@@ -46,14 +46,13 @@ from PyPIC3D.diagnostics.openPMD import (
 
 from PyPIC3D.evolve import (
     time_loop_electrodynamic, time_loop_electrostatic, time_loop_vector_potential,
-    time_loop_electrodynamic_metric
+    time_loop_GR_electrodynamic
 )
 
 from PyPIC3D.J import (
     J_from_rhov, Esirkepov_current
 )
 from PyPIC3D.solvers.vector_potential import initialize_vector_potential
-from PyPIC3D.metric import build_metric_from_parameters
 
 
 def _encode_field_bc(bc_name):
@@ -105,7 +104,6 @@ def default_parameters():
         "output_dir": os.getcwd(),
         "solver": "fdtd",  # solver: spectral, fdtd, vector_potential, curl_curl
         "particle_bc": "periodic",  # particle boundary conditions: periodic, absorb, reflect
-        # "bc": "periodic",  # boundary conditions: periodic, dirichlet, neumann
         "x_bc": "periodic",  # x boundary conditions: periodic, conducting
         "y_bc": "periodic",  # y boundary conditions: periodic, conducting
         "z_bc": "periodic",  # z boundary conditions: periodic, conducting
@@ -208,10 +206,6 @@ def initialize_simulation(toml_file):
     GPUs = simulation_parameters['GPUs']
     # set the simulation parameters
 
-    # if 'ncores' in simulation_parameters:
-        # os.environ["XLA_FLAGS"] = f'--xla_force_host_platform_device_count={simulation_parameters['ncores']}'
-    # set the number of cores to use
-
     setup_write_dir(simulation_parameters, plotting_parameters)
     # setup the write directory
 
@@ -238,7 +232,13 @@ def initialize_simulation(toml_file):
     # adjust t_wind if both dt and Nt are provided
 
 
-    metric = build_metric_from_parameters(simulation_parameters)
+    # metric = build_metric_from_parameters(simulation_parameters)
+    metric = jnp.zeros((4, 4, Nx, Ny, Nz))  # placeholder using a flat metric for now.
+    metric = metric.at[0, 0, :, :, :].set(-1.0)
+    metric = metric.at[1, 1, :, :, :].set(1.0)
+    metric = metric.at[2, 2, :, :, :].set(1.0)
+    metric = metric.at[3, 3, :, :, :].set(1.0)
+    # build the metric descriptor for the simulation
 
     world = {
         'dt': dt,
@@ -343,30 +343,39 @@ def initialize_simulation(toml_file):
     else:
         print("Non-relativistic simulation")
 
-    metric_type = int(world["metric"]["metric_type"])
-    if metric_type == 0:
-        print("Metric: Minkowski")
-    elif metric_type == 1:
-        print("Metric: Cylindrical coordinates")
-    else:
-        print("Metric: User-defined static tensor")
-
     if electrostatic:
         print("Using electrostatic solver")
         evolve_loop = time_loop_electrostatic
+        fields = (E, B, J, rho, phi)
 
     elif solver == "vector_potential":
         raise NotImplementedError("Vector potential solver is not fully functional yet.")
         print("Using vector potential solver")
         evolve_loop = time_loop_vector_potential
+        A2, A1, A0 = initialize_vector_potential(J, world, constants)
+        # initialize the vector potential A based on the current density J
+        fields = (E, B, J, rho, phi, A2, A1, A0)
+        # define the fields tuple for the vector potential solver
+
+    elif solver == "GR":
+        print("Using metric-aware relativistic electrodynamic solver")
+        evolve_loop = time_loop_GR_electrodynamic
+        D = (
+                constants["eps"] * E[0],
+                constants["eps"] * E[1],
+                constants["eps"] * E[2],
+            )
+        H = (
+            B[0] / constants["mu"],
+            B[1] / constants["mu"],
+            B[2] / constants["mu"],
+        )
+        fields = (E, B, D, H, J, rho, phi)
 
     else:
-        if relativistic and metric_type != 0:
-            print(f"Using metric-aware relativistic electrodynamic solver with: {solver}")
-            evolve_loop = time_loop_electrodynamic_metric
-        else:
-            print(f"Using electrodynamic solver with: {solver}")
-            evolve_loop = time_loop_electrodynamic
+        print(f"Using electrodynamic solver with: {solver}")
+        evolve_loop = time_loop_electrodynamic
+        fields = (E, B, J, rho, phi)
     # set the evolve loop function based on the electrostatic flag
 
     if simulation_parameters['current_calculation'] == "esirkepov":
@@ -378,39 +387,14 @@ def initialize_simulation(toml_file):
         J_func = functools.partial(J_from_rhov, filter=simulation_parameters['filter_j'])
 
 
-    if solver == "vector_potential":
-        A2, A1, A0 = initialize_vector_potential(J, world, constants)
-        # initialize the vector potential A based on the current density J
-        fields = (E, B, J, rho, phi, A2, A1, A0)
-        # define the fields tuple for the vector potential solver
-    else:
-        if relativistic and metric_type != 0 and not electrostatic:
-            # Start from vacuum-like constitutive relation for initialization.
-            D = (
-                constants["eps"] * E[0],
-                constants["eps"] * E[1],
-                constants["eps"] * E[2],
-            )
-            H = (
-                B[0] / constants["mu"],
-                B[1] / constants["mu"],
-                B[2] / constants["mu"],
-            )
-            fields = (E, B, D, H, J, rho, phi)
-        else:
-            fields = (E, B, J, rho, phi)
-        # define the fields tuple for the electrodynamic/electrostatic solvers
-
     if plotting_parameters['dump_fields']:
         write_openpmd_initial_fields(fields, world, simulation_parameters['output_dir'], filename="initial_fields.h5")
     # write the initial fields to an openPMD file
-
 
     if GPUs:
         print(f"GPUs Detected! Using GPUs for simulation\n")
         particles = jax.device_put(particles, jax.devices("gpu")[0])
     # put the particles on the GPU if GPUs are enabled
-
 
     return evolve_loop, particles, fields, world, simulation_parameters, constants, plotting_parameters, plasma_parameters, \
         solver, electrostatic, verbose, GPUs, Nt, curl_func, J_func, relativistic

@@ -79,6 +79,9 @@ def particle_push(particles, E, B, grid, staggered_grid, dt, constants, periodic
 
     particles.set_velocity(newvx, newvy, newvz)
     # set the new velocities of the particles
+
+    particles.update_position()
+    # update the positions of the particles using the updated velocities
     return particles
 
 @jit
