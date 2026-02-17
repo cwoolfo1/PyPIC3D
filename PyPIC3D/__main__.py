@@ -161,7 +161,15 @@ def run_PyPIC3D(config_file):
 
 def _unpack_fields(fields):
     # Standard: (E, B, J, rho, phi)
+    # GR full choreography loop: (E, B, D, H, D0, B0, J, J0, rho, phi)
     # GR metric loop: (E, B, D, H, J, rho, phi)
+    # GR entity-sequenced loop: (E, B, D, H, J, J0, rho, phi)
+    if len(fields) == 10:
+        E, B, D, H, D0, B0, J, J0, rho, phi = fields
+        return E, B, J, rho, (D, H, D0, B0, J0, phi)
+    if len(fields) == 8:
+        E, B, D, H, J, J0, rho, phi = fields
+        return E, B, J, rho, (D, H, J0, phi)
     if len(fields) == 7:
         E, B, D, H, J, rho, phi = fields
         return E, B, J, rho, (D, H, phi)
@@ -172,6 +180,12 @@ def _unpack_fields(fields):
 
 
 def _repack_fields(E, B, J, rho, rest):
+    if len(rest) == 6:
+        D, H, D0, B0, J0, phi = rest
+        return (E, B, D, H, D0, B0, J, J0, rho, phi)
+    if len(rest) == 4:
+        D, H, J0, phi = rest
+        return (E, B, D, H, J, J0, rho, phi)
     if len(rest) == 3:
         D, H, phi = rest
         return (E, B, D, H, J, rho, phi)

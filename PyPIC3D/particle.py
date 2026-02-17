@@ -58,6 +58,7 @@ def load_particles_from_toml(config, simulation_parameters, world, constants):
     C   = constants['C']
     # get the constants
 
+    base_seed = int(simulation_parameters.get("random_seed", 0))
     i = 0
     # initialize the random number generator key
     # this is used to generate random numbers for the initial positions and velocities of the particles
@@ -72,7 +73,11 @@ def load_particles_from_toml(config, simulation_parameters, world, constants):
 
 
     for toml_key in particle_keys:
-        key1, key2, key3 = jax.random.key(i), jax.random.key(i+1), jax.random.key(i+2)
+        # Keep particle initialization reproducible across runs and species.
+        key1 = jax.random.key(base_seed + i)
+        key2 = jax.random.key(base_seed + i + 1)
+        key3 = jax.random.key(base_seed + i + 2)
+        np_rng = np.random.default_rng(base_seed + 1000 + i)
         i += 3
         # build the particle random number generator keys
         particle_name = config[toml_key]['name']
@@ -111,7 +116,25 @@ def load_particles_from_toml(config, simulation_parameters, world, constants):
         zmin = read_value('zmin', toml_key, config, -z_wind / 2)
         zmax = read_value('zmax', toml_key, config, z_wind / 2)
         # set the bounds for the particle species
-        x, y, z, vx, vy, vz = initial_particles(N_per_cell, N_particles, xmin, xmax, ymin, ymax, zmin, zmax, mass, Tx, Ty, Tz, kb, key1, key2, key3)
+        x, y, z, vx, vy, vz = initial_particles(
+            N_per_cell,
+            N_particles,
+            xmin,
+            xmax,
+            ymin,
+            ymax,
+            zmin,
+            zmax,
+            mass,
+            Tx,
+            Ty,
+            Tz,
+            kb,
+            key1,
+            key2,
+            key3,
+            np_rng,
+        )
         # initialize the positions and velocities of the particles
 
         x_bc = 'periodic'
@@ -370,7 +393,25 @@ def compute_macroparticle_weight(config, particle_keys, simulation_parameters, w
 
     return weight
 
-def initial_particles(N_per_cell, N_particles, minx, maxx, miny, maxy, minz, maxz, mass, Tx, Ty, Tz, kb, key1, key2, key3):
+def initial_particles(
+    N_per_cell,
+    N_particles,
+    minx,
+    maxx,
+    miny,
+    maxy,
+    minz,
+    maxz,
+    mass,
+    Tx,
+    Ty,
+    Tz,
+    kb,
+    key1,
+    key2,
+    key3,
+    np_rng,
+):
     """
     Initializes the velocities and positions of the particles.
 
@@ -410,9 +451,9 @@ def initial_particles(N_per_cell, N_particles, minx, maxx, miny, maxy, minz, max
     std_x = T_to_vth( Tx, mass, kb )
     std_y = T_to_vth( Ty, mass, kb )
     std_z = T_to_vth( Tz, mass, kb )
-    v_x = np.random.normal(0, std_x, N_particles)
-    v_y = np.random.normal(0, std_y, N_particles)
-    v_z = np.random.normal(0, std_z, N_particles)
+    v_x = np_rng.normal(0, std_x, N_particles)
+    v_y = np_rng.normal(0, std_y, N_particles)
+    v_z = np_rng.normal(0, std_z, N_particles)
     # initialize the particles with a maxwell boltzmann distribution.
     return x, y, z, v_x, v_y, v_z
 
@@ -534,7 +575,8 @@ class particle_species:
     def __init__(self, name, N_particles, charge, mass, T, v1, v2, v3, x1, x2, x3, \
             xwind, ywind, zwind, dx, dy, dz, weight=1, x_bc="periodic", y_bc="periodic", \
                 z_bc="periodic", update_x=True, update_y=True, update_z=True, \
-                update_vx=True, update_vy=True, update_vz=True, update_pos=True, update_v=True, shape=1, dt = 0):
+                update_vx=True, update_vy=True, update_vz=True, update_pos=True, update_v=True, shape=1, dt = 0, \
+                x1_prev=None, x2_prev=None, x3_prev=None):
         self.name = name
         self.N_particles = N_particles
         self.charge = charge
@@ -577,6 +619,9 @@ class particle_species:
         self.x1 = x1
         self.x2 = x2
         self.x3 = x3
+        self.x1_prev = x1 if x1_prev is None else x1_prev
+        self.x2_prev = x2 if x2_prev is None else x2_prev
+        self.x3_prev = x3 if x3_prev is None else x3_prev
 
     def get_name(self):
         return self.name
@@ -595,6 +640,9 @@ class particle_species:
 
     def get_forward_position(self):
         return self.x1, self.x2, self.x3
+
+    def get_previous_forward_position(self):
+        return self.x1_prev, self.x2_prev, self.x3_prev
 
     def get_position(self):
         x1_back = self.x1 - self.v1 * self.dt / 2
@@ -645,6 +693,11 @@ class particle_species:
         self.x1 = x1
         self.x2 = x2
         self.x3 = x3
+    
+    def set_previous_forward_position(self, x1_prev, x2_prev, x3_prev):
+        self.x1_prev = x1_prev
+        self.x2_prev = x2_prev
+        self.x3_prev = x3_prev
 
     def set_mass(self, mass):
         self.mass = mass
@@ -689,6 +742,7 @@ class particle_species:
         children = (
             self.v1, self.v2, self.v3, \
             self.x1, self.x2, self.x3, \
+            self.x1_prev, self.x2_prev, self.x3_prev, \
         )
 
         aux_data = (
@@ -702,7 +756,7 @@ class particle_species:
 
     @classmethod
     def tree_unflatten(cls, aux_data, children):
-        v1, v2, v3, x1, x2, x3 = children
+        v1, v2, v3, x1, x2, x3, x1_prev, x2_prev, x3_prev = children
 
 
         name, N_particles, charge, mass, T, x_wind, y_wind, z_wind, dx, dy, \
@@ -741,7 +795,10 @@ class particle_species:
             update_pos=update_pos,
             update_v=update_v,
             shape=shape,
-            dt=dt
+            dt=dt,
+            x1_prev=x1_prev,
+            x2_prev=x2_prev,
+            x3_prev=x3_prev,
         )
 
         return obj

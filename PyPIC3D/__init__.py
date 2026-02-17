@@ -18,7 +18,6 @@ from .solvers import pstd
 from .solvers import fdtd
 from . import boris
 from .general_relativity import gr_particle_pusher
-from .general_relativity import metric
 from . import rho
 from . import evolve
 from .solvers import vector_potential

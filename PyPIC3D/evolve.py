@@ -9,15 +9,11 @@ from functools import partial
 from PyPIC3D.boris import (
     particle_push
 )
-from PyPIC3D.general_relativity.gr_particle_pusher import particle_push_relativistic_metric
 
 from PyPIC3D.solvers.first_order_yee import (
     update_E, update_B, calculateE
 )
-from PyPIC3D.general_relativity.GR_fields import (
-    GR_Update_D, GR_Update_H,
-    GR_Update_B, GR_Update_E
-)
+from PyPIC3D.general_relativity.gr_choreography import gr_entity_choreography_step
 
 from PyPIC3D.solvers.vector_potential import (
     E_from_A, B_from_A, update_vector_potential
@@ -244,26 +240,13 @@ def time_loop_GR_electrodynamic(particles, fields, world, constants, curl_func, 
     """
     Electrodynamic loop variant using the metric-aware relativistic particle pusher.
     """
-    E, B, D, H, J, rho, phi = fields
-    # unpack the fields
-
-    for i in range(len(particles)):
-        particles[i] = particle_push_relativistic_metric( particles[i], E, B, world, constants )
-        # advance the particles using relativistic EOM with metric effects
-
-    J = J_func(particles, J, constants, world)
-    # calculate the current density based on the selected method
-
-    D = GR_Update_D(D, H, J, world, constants)
-    B = GR_Update_B(B, E, world, constants)
-    # update D and B using the GR field update routines
-
-    H = GR_Update_H(B, D, world, constants)
-    E = GR_Update_E(B, D, world, constants)
-    # recover E and H from the updated D and B using the GR constitutive relations
+    E, B, D, H, D0, B0, J, J0, rho, phi = fields
+    particles, E, B, D, H, D0, B0, J, J0 = gr_entity_choreography_step(
+        particles, E, B, D, H, D0, B0, J, J0, world, constants
+    )
 
     for i in range(len(particles)):
         particles[i].boundary_conditions()
 
-    fields = (E, B, D, H, J, rho, phi)
+    fields = (E, B, D, H, D0, B0, J, J0, rho, phi)
     return particles, fields

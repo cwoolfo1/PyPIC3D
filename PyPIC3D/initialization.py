@@ -126,9 +126,8 @@ def default_parameters():
         "shape_factor" : 1, # shape factor for the simulation (1 for 1st order, 2 for 2nd order)
         "current_calculation": "j_from_rhov",  # current calculation method: esirkepov, villasenor_buneman, j_from_rhov
         "filter_j": "bilinear",  # filter for the current density: bilinear, digital, none
-        "metric": "minkowski",  # metric model: minkowski, cylindrical, static
-        "metric_file": None,  # path to static metric tensor (.npy/.npz/.toml) when metric=static
-        "metric_regularization": 1e-12,  # regularization near coordinate singularities
+        "metric_path": None,  # path to the metric file for GR simulations
+        "random_seed": 0,  # deterministic seed for particle initialization
     }
     # dictionary for simulation parameters
 
@@ -231,15 +230,6 @@ def initialize_simulation(toml_file):
         simulation_parameters['t_wind'] = t_wind
     # adjust t_wind if both dt and Nt are provided
 
-
-    # metric = build_metric_from_parameters(simulation_parameters)
-    metric = jnp.zeros((4, 4, Nx, Ny, Nz))  # placeholder using a flat metric for now.
-    metric = metric.at[0, 0, :, :, :].set(-1.0)
-    metric = metric.at[1, 1, :, :, :].set(1.0)
-    metric = metric.at[2, 2, :, :, :].set(1.0)
-    metric = metric.at[3, 3, :, :, :].set(1.0)
-    # build the metric descriptor for the simulation
-
     world = {
         'dt': dt,
         'Nt': Nt,
@@ -257,9 +247,30 @@ def initialize_simulation(toml_file):
             'y': _encode_field_bc(simulation_parameters['y_bc']),
             'z': _encode_field_bc(simulation_parameters['z_bc']),
         },
-        'metric': metric,
     }
     # set the simulation world parameters
+
+    if solver == "GR":
+        metric = jnp.zeros((4, 4, Nx, Ny, Nz))
+        metric = metric.at[0, 0, :, :, :].set(-1.0 * constants["C"]**2) 
+        metric = metric.at[1, 1, :, :, :].set(1.0)
+        metric = metric.at[2, 2, :, :, :].set(1.0)
+        metric = metric.at[3, 3, :, :, :].set(1.0)
+        # build a flat space metric
+
+        metric_path = simulation_parameters['metric_path']
+        if metric_path is not None:
+            full_metric_path = os.path.join(os.getcwd(), metric_path)
+        else:
+            full_metric_path = None
+
+        if full_metric_path is not None and os.path.exists(full_metric_path):
+            metric = jnp.load(full_metric_path)
+            print(f"Loaded metric from {full_metric_path}")
+
+        world['metric'] = metric
+    # if using the GR solver, initialize the metric and add it to the world parameters
+
 
     world = convert_to_jax_compatible(world)
     constants = convert_to_jax_compatible(constants)
@@ -370,7 +381,10 @@ def initialize_simulation(toml_file):
             B[1] / constants["mu"],
             B[2] / constants["mu"],
         )
-        fields = (E, B, D, H, J, rho, phi)
+        D0 = (D[0].copy(), D[1].copy(), D[2].copy())
+        B0 = (B[0].copy(), B[1].copy(), B[2].copy())
+        J0 = (J[0].copy(), J[1].copy(), J[2].copy())
+        fields = (E, B, D, H, D0, B0, J, J0, rho, phi)
 
     else:
         print(f"Using electrodynamic solver with: {solver}")
