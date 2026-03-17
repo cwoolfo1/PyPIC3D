@@ -1,5 +1,6 @@
 import jax
 import jax.numpy as jnp
+from PyPIC3D.particles.species_class import apply_axis_boundary_condition
 
 
 @jax.tree_util.register_pytree_node_class
@@ -54,12 +55,21 @@ class flat_particle_species:
         self.x_wind = x_wind
         self.y_wind = y_wind
         self.z_wind = z_wind
+        self.half_x_wind = 0.5 * x_wind
+        self.half_y_wind = 0.5 * y_wind
+        self.half_z_wind = 0.5 * z_wind
         self.dx = dx
         self.dy = dy
         self.dz = dz
         self.x_bc = x_bc
         self.y_bc = y_bc
         self.z_bc = z_bc
+        self.x_periodic = x_bc == "periodic"
+        self.x_reflecting = x_bc == "reflecting"
+        self.y_periodic = y_bc == "periodic"
+        self.y_reflecting = y_bc == "reflecting"
+        self.z_periodic = z_bc == "periodic"
+        self.z_reflecting = z_bc == "reflecting"
         self.update_pos = update_pos
         self.update_v = update_v
         self.update_x = update_x
@@ -95,25 +105,26 @@ class flat_particle_species:
         x2_back = self.x2 - self.v2 * self.dt / 2
         x3_back = self.x3 - self.v3 * self.dt / 2
 
-        half_x = self.x_wind / 2
-        half_y = self.y_wind / 2
-        half_z = self.z_wind / 2
+        if self.x_periodic:
+            x1_back = jnp.where(
+                x1_back > self.half_x_wind,
+                x1_back - self.x_wind,
+                jnp.where(x1_back < -self.half_x_wind, x1_back + self.x_wind, x1_back),
+            )
 
-        x1_back = jnp.where(
-            x1_back > half_x,
-            x1_back - self.x_wind,
-            jnp.where(x1_back < -half_x, x1_back + self.x_wind, x1_back),
-        )
-        x2_back = jnp.where(
-            x2_back > half_y,
-            x2_back - self.y_wind,
-            jnp.where(x2_back < -half_y, x2_back + self.y_wind, x2_back),
-        )
-        x3_back = jnp.where(
-            x3_back > half_z,
-            x3_back - self.z_wind,
-            jnp.where(x3_back < -half_z, x3_back + self.z_wind, x3_back),
-        )
+        if self.y_periodic:
+            x2_back = jnp.where(
+                x2_back > self.half_y_wind,
+                x2_back - self.y_wind,
+                jnp.where(x2_back < -self.half_y_wind, x2_back + self.y_wind, x2_back),
+            )
+
+        if self.z_periodic:
+            x3_back = jnp.where(
+                x3_back > self.half_z_wind,
+                x3_back - self.z_wind,
+                jnp.where(x3_back < -self.half_z_wind, x3_back + self.z_wind, x3_back),
+            )
 
         return x1_back, x2_back, x3_back
 
@@ -149,25 +160,21 @@ class flat_particle_species:
                 self.x3 = self.x3 + self.v3 * self.dt
 
     def boundary_conditions(self):
-        half_x = self.x_wind / 2
-        half_y = self.y_wind / 2
-        half_z = self.z_wind / 2
+        x1, x2, x3 = self.x1, self.x2, self.x3
+        v1, v2, v3 = self.v1, self.v2, self.v3
 
-        self.x1 = jnp.where(
-            self.x1 > half_x,
-            self.x1 - self.x_wind,
-            jnp.where(self.x1 < -half_x, self.x1 + self.x_wind, self.x1),
+        x1, v1 = apply_axis_boundary_condition(
+            x1, v1, self.x_wind, self.half_x_wind, self.x_periodic, self.x_reflecting
         )
-        self.x2 = jnp.where(
-            self.x2 > half_y,
-            self.x2 - self.y_wind,
-            jnp.where(self.x2 < -half_y, self.x2 + self.y_wind, self.x2),
+        x2, v2 = apply_axis_boundary_condition(
+            x2, v2, self.y_wind, self.half_y_wind, self.y_periodic, self.y_reflecting
         )
-        self.x3 = jnp.where(
-            self.x3 > half_z,
-            self.x3 - self.z_wind,
-            jnp.where(self.x3 < -half_z, self.x3 + self.z_wind, self.x3),
+        x3, v3 = apply_axis_boundary_condition(
+            x3, v3, self.z_wind, self.half_z_wind, self.z_periodic, self.z_reflecting
         )
+
+        self.x1, self.x2, self.x3 = x1, x2, x3
+        self.v1, self.v2, self.v3 = v1, v2, v3
 
     def tree_flatten(self):
         children = (self.x1, self.x2, self.x3, self.v1, self.v2, self.v3)
@@ -286,8 +293,6 @@ def check_flat_compat(particles):
     if not _same([p.get_shape() for p in particles]):
         return False
     if not _same([p.x_bc for p in particles]) or not _same([p.y_bc for p in particles]) or not _same([p.z_bc for p in particles]):
-        return False
-    if particles[0].x_bc != "periodic" or particles[0].y_bc != "periodic" or particles[0].z_bc != "periodic":
         return False
     if not _same([p.update_pos for p in particles]) or not _same([p.update_v for p in particles]):
         return False
