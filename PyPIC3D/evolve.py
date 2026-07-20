@@ -1,16 +1,19 @@
 from PyPIC3D.deposition.Esirkepov import Esirkepov_current
+from PyPIC3D.deposition.GR_direct_deposition import GR_direct_deposition
 from PyPIC3D.deposition.J_from_rhov import J_from_rhov
 from PyPIC3D.particles.particle_tile_communication import (
     refresh_tiled_particle_tiles,
     update_tiled_particle_positions,
 )
 from PyPIC3D.pusher.particle_push import particle_push
+from PyPIC3D.pusher.hybrid_boris_geodesic import hybrid_boris_geodesic_push
 from PyPIC3D.solvers.electrostatic_yee import calculate_tiled_electrostatic_fields
 from PyPIC3D.solvers.first_order_yee import update_B, update_E
+from PyPIC3D.solvers.static_metric import step_static_metric_fields
 from PyPIC3D.utils import add_external_fields
 
 
-__all__ = ["time_loop_electrodynamic", "time_loop_electrostatic"]
+__all__ = ["time_loop_electrodynamic", "time_loop_electrostatic", "time_loop_static_metric"]
 
 
 def time_loop_electrodynamic(
@@ -153,5 +156,87 @@ def time_loop_electrostatic(
 
     fields = (E_tiles, B_tiles, J_tiles, rho_tiles, phi_tiles, external_fields, pml_state, overflow)
     # pack the tiled field state
+
+    return particles, fields
+
+
+def time_loop_static_metric(
+    particles,
+    species_config,
+    fields,
+    static_parameters,
+    dynamic_parameters,
+):
+    """
+    Advance a tiled PIC system in a prescribed 3+1 metric.
+
+    The first field slot is the contravariant displacement field ``D^i``.  The
+    particle velocity slot stores covariant spatial components ``u_i``.
+    """
+
+    D_tiles, B_tiles, J_tiles, rho_tiles, phi_tiles, external_fields, metric, static_metric_state, overflow_previous = fields
+    # unpack the fixed-metric field state
+
+    push_D_tiles, push_B_tiles = add_external_fields(D_tiles, B_tiles, external_fields)
+    # particles see evolved fields plus prescribed external fields
+
+    particles, centered_particles = hybrid_boris_geodesic_push(
+        particles,
+        species_config,
+        push_D_tiles,
+        push_B_tiles,
+        metric,
+        static_parameters,
+        dynamic_parameters,
+    )
+    # advance full-step particles and keep the Strang-centered particles for J
+
+    centered_particles, centered_overflow = refresh_tiled_particle_tiles(
+        centered_particles,
+        static_parameters,
+        dynamic_parameters,
+    )
+    # direct current must be deposited from tile-owned midpoint particles
+
+    J_tiles = GR_direct_deposition(
+        centered_particles,
+        species_config,
+        J_tiles,
+        metric,
+        static_parameters,
+        dynamic_parameters,
+    )
+    # deposit lapse-scaled contravariant current density
+
+    particles, particle_overflow = refresh_tiled_particle_tiles(
+        particles,
+        static_parameters,
+        dynamic_parameters,
+    )
+    overflow = overflow_previous | centered_overflow | particle_overflow
+    # refresh tile ownership after the full-step particle update
+
+    D_tiles, B_tiles, static_metric_state = step_static_metric_fields(
+        D_tiles,
+        B_tiles,
+        J_tiles,
+        metric,
+        static_metric_state,
+        static_parameters,
+        dynamic_parameters,
+    )
+    # update the curvilinear Maxwell fields using the centered current
+
+    fields = (
+        D_tiles,
+        B_tiles,
+        J_tiles,
+        rho_tiles,
+        phi_tiles,
+        external_fields,
+        metric,
+        static_metric_state,
+        overflow,
+    )
 
     return particles, fields

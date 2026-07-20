@@ -33,10 +33,20 @@ from PyPIC3D.boundary_conditions.ghost_cells import (
     make_field_mesh,
     update_tiled_vector_ghost_cells,
 )
-from PyPIC3D.evolve import time_loop_electrodynamic, time_loop_electrostatic
+from PyPIC3D.evolve import time_loop_electrodynamic, time_loop_electrostatic, time_loop_static_metric
 from PyPIC3D.boundary_conditions.grid_and_stencil import BC_CONDUCTING, BC_PERIODIC
 from PyPIC3D.boundary_conditions.PML import initialize_tiled_pml_state, load_pml_from_toml
 from PyPIC3D.parameters import build_dynamic_parameters, build_static_parameters
+from PyPIC3D.relativity.flat import (
+    initialize_flat_cartesian_metric,
+    initialize_flat_cylindrical_metric,
+    initialize_flat_spherical_metric,
+)
+from PyPIC3D.relativity.kerr_schild import (
+    initialize_kerr_schild_cartesian_metric,
+    initialize_kerr_schild_spherical_metric,
+)
+from PyPIC3D.solvers.static_metric import initialize_static_metric_state
 
 
 def _encode_field_bc(bc_name):
@@ -71,10 +81,10 @@ def validate_field_solver(solver):
     Keep the active field-solver names explicit so stale configs do not silently
     fall through to a different numerical update.
     """
-    supported_solvers = ("electrodynamic_yee", "electrostatic")
+    supported_solvers = ("electrodynamic_yee", "electrostatic", "static_metric")
     if solver not in supported_solvers:
         raise ValueError(
-            f"Unsupported solver: {solver}. Use 'electrodynamic_yee' or 'electrostatic'."
+            f"Unsupported solver: {solver}. Use 'electrodynamic_yee', 'electrostatic', or 'static_metric'."
         )
 
 
@@ -87,10 +97,12 @@ def _tile_shape_from_static_config(static_config):
 
 
 def _encode_current_calculation(current_calculation):
-    if current_calculation not in ("j_from_rhov", "esirkepov"):
-        raise ValueError("Unsupported current_calculation. Use 'j_from_rhov' or 'esirkepov'.")
+    if current_calculation not in ("j_from_rhov", "esirkepov", "GR_direct_deposition", "gr_direct_deposition", "GR_direct"):
+        raise ValueError("Unsupported current_calculation. Use 'j_from_rhov', 'esirkepov', or 'GR_direct_deposition'.")
     if current_calculation == "esirkepov":
         return "esirkepov"
+    if current_calculation in ("GR_direct_deposition", "gr_direct_deposition", "GR_direct"):
+        return "GR_direct"
     return "direct"
 
 
@@ -107,9 +119,14 @@ def _validate_tiled_yee_configuration(static_config, dynamic_config):
     Keep the first tile-native PIC path tied to the kernels that exist today.
     """
 
-    if static_config["current_calculation"] not in ("j_from_rhov", "esirkepov"):
+    if static_config["solver"] == "static_metric":
+        if static_config["current_calculation"] not in ("GR_direct_deposition", "gr_direct_deposition", "GR_direct"):
+            raise ValueError("static_metric requires current_calculation='GR_direct_deposition'")
+        if static_config["particle_pusher"] != "hybrid_boris_geodesic":
+            raise ValueError("static_metric requires particle_pusher='hybrid_boris_geodesic'")
+    elif static_config["current_calculation"] not in ("j_from_rhov", "esirkepov"):
         raise ValueError("Yee runtime currently supports current_calculation='j_from_rhov' or 'esirkepov'")
-    if static_config["particle_pusher"] not in ("boris", "higuera_cary"):
+    if static_config["solver"] != "static_metric" and static_config["particle_pusher"] not in ("boris", "higuera_cary"):
         raise ValueError("Yee runtime currently supports only particle_pusher='boris' or 'higuera_cary'")
     if static_config["filter_j"] not in ("none", "digital", "bilinear"):
         raise ValueError("Yee runtime currently supports only filter_j='none', filter_j='digital', or 'bilinear'")
@@ -177,6 +194,9 @@ def default_parameters():
         "benchmark": False,
         "verbose": False,
         "GPUs": False,
+        "metric": "flat_cartesian",
+        "metric_mass": 1.0,
+        "metric_spin": 0.0,
         "cfl": 1.0,
         "ds_per_debye": None,
         "shape_factor": 1,
@@ -208,6 +228,34 @@ def default_parameters():
     return plotting_parameters, static_parameters, dynamic_parameters
 
 
+def build_static_metric_state(static_parameters, dynamic_parameters):
+    metric_name = static_parameters.metric
+    if metric_name == "flat_cartesian":
+        return initialize_flat_cartesian_metric(static_parameters, dynamic_parameters)
+    if metric_name == "flat_cylindrical":
+        return initialize_flat_cylindrical_metric(static_parameters, dynamic_parameters)
+    if metric_name == "flat_spherical":
+        return initialize_flat_spherical_metric(static_parameters, dynamic_parameters)
+    if metric_name == "kerr_schild_cartesian":
+        return initialize_kerr_schild_cartesian_metric(
+            static_parameters,
+            dynamic_parameters,
+            mass=static_parameters.metric_mass,
+            spin=static_parameters.metric_spin,
+        )
+    if metric_name == "kerr_schild_spherical":
+        return initialize_kerr_schild_spherical_metric(
+            static_parameters,
+            dynamic_parameters,
+            mass=static_parameters.metric_mass,
+            spin=static_parameters.metric_spin,
+        )
+    raise ValueError(
+        "Unsupported static metric. Use 'flat_cartesian', 'flat_cylindrical', "
+        "'flat_spherical', 'kerr_schild_cartesian', or 'kerr_schild_spherical'."
+    )
+
+
 def setup_write_dir(static_config, plotting_parameters):
     output_dir = static_config["output_dir"]
     make_dir(f"{output_dir}/data")
@@ -235,6 +283,7 @@ def initialize_simulation(toml_file):
     solver = static_config["solver"]
     validate_field_solver(solver)
     electrostatic = solver == "electrostatic"
+    static_metric = solver == "static_metric"
     static_config["electrostatic"] = electrostatic
 
     Nx, Ny, Nz = dynamic_config["Nx"], dynamic_config["Ny"], dynamic_config["Nz"]
@@ -299,6 +348,8 @@ def initialize_simulation(toml_file):
     pml_active = bool(raw_pml)
     if pml_active and electrostatic:
         raise ValueError("PML is only supported for the electrodynamic_yee solver")
+    if pml_active and static_metric:
+        raise ValueError("PML is not yet supported for the static_metric solver")
 
     _validate_tiled_yee_configuration(static_config, dynamic_config)
 
@@ -418,19 +469,26 @@ def initialize_simulation(toml_file):
     external_B = update_tiled_vector_ghost_cells(external_B, static_parameters, num_guard_cells=guard_cells)
     external_fields = (external_E, external_B)
 
-    total_E, total_B = add_external_fields(E, B, external_fields)
-    e_energy, b_energy, kinetic_energy = compute_energy(
-        particles,
-        total_E,
-        total_B,
-        static_parameters,
-        dynamic_parameters,
-        species_config=species_config,
-    )
-    print(f"Initial Electric Field Energy: {e_energy:.2e} J")
-    print(f"Initial Magnetic Field Energy: {b_energy:.2e} J")
-    print(f"Initial Kinetic Energy: {kinetic_energy:.2e} J")
-    print(f"Total Initial Energy: {e_energy + b_energy + kinetic_energy:.2e} J\n")
+    metric = None
+    static_metric_state = None
+    if static_metric:
+        metric = build_static_metric_state(static_parameters, dynamic_parameters)
+        static_metric_state = initialize_static_metric_state(E, B)
+        print("Skipping flat-space energy diagnostics for static_metric fields and covariant particle u_i\n")
+    else:
+        total_E, total_B = add_external_fields(E, B, external_fields)
+        e_energy, b_energy, kinetic_energy = compute_energy(
+            particles,
+            total_E,
+            total_B,
+            static_parameters,
+            dynamic_parameters,
+            species_config=species_config,
+        )
+        print(f"Initial Electric Field Energy: {e_energy:.2e} J")
+        print(f"Initial Magnetic Field Energy: {b_energy:.2e} J")
+        print(f"Initial Kinetic Energy: {kinetic_energy:.2e} J")
+        print(f"Total Initial Energy: {e_energy + b_energy + kinetic_energy:.2e} J\n")
 
     if static_parameters.relativistic:
         print("Relativistic simulation")
@@ -438,7 +496,10 @@ def initialize_simulation(toml_file):
         print("Non-relativistic simulation")
     print(f"Using {static_parameters.particle_pusher} particle pusher")
 
-    if electrostatic:
+    if static_metric:
+        print(f"Using static_metric solver with {static_parameters.metric} metric")
+        evolve_loop = time_loop_static_metric
+    elif electrostatic:
         print("Using electrostatic solver")
         evolve_loop = time_loop_electrostatic
     else:
@@ -447,13 +508,17 @@ def initialize_simulation(toml_file):
 
     if static_config["current_calculation"] == "esirkepov":
         print("Using Esirkepov current calculation method")
+    elif static_config["current_deposition"] == "GR_direct":
+        print(f"Using GR direct current calculation method with filter: {static_config['filter_j']}")
     elif static_config["current_calculation"] == "j_from_rhov":
         print(f"Using J from rhov current calculation method with filter: {static_config['filter_j']}")
 
     print(f"Using tiled Yee storage with tile shape: {tile_shape}")
 
     overflow = jnp.asarray(False)
-    if electrostatic:
+    if static_metric:
+        fields = (E, B, J, rho, phi, external_fields, metric, static_metric_state, overflow)
+    elif electrostatic:
         fields = (E, B, J, rho, phi, external_fields, None, overflow)
     else:
         pml_state = None

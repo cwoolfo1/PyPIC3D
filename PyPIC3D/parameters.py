@@ -24,6 +24,9 @@ class StaticParameters(NamedTuple):
     particle_pusher: str
     current_deposition: str
     current_filter: str
+    metric: str
+    metric_mass: float
+    metric_spin: float
     shape_factor: int
     guard_cells: int
     tile_shape: tuple
@@ -110,6 +113,9 @@ def build_static_parameters(static_config):
         particle_pusher=static_config.get("particle_pusher", "boris"),
         current_deposition=static_config.get("current_deposition", "direct"),
         current_filter=static_config.get("current_filter", "none"),
+        metric=static_config.get("metric", "flat_cartesian"),
+        metric_mass=float(static_config.get("metric_mass", 1.0)),
+        metric_spin=float(static_config.get("metric_spin", 0.0)),
         shape_factor=int(static_config["shape_factor"]),
         guard_cells=int(static_config["guard_cells"]),
         tile_shape=tile_shape,

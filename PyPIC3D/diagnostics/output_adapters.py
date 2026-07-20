@@ -139,6 +139,9 @@ def fields_for_output(fields, static_parameters):
     if not rest:
         return output_fields
 
+    if getattr(static_parameters, "solver", None) == "static_metric":
+        return output_fields
+
     pml_state = rest[0]
     return output_fields + (pml_state,)
 

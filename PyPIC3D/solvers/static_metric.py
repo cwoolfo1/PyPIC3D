@@ -1,0 +1,171 @@
+import jax.numpy as jnp
+
+from PyPIC3D.boundary_conditions import ghost_cells
+from PyPIC3D.relativity.core import B_FIELD_LOCATIONS, D_FIELD_LOCATIONS
+
+
+def _location_interpolate_axis(field, source_location, target_location, axis):
+    array_axis = axis + 3
+    if source_location[axis] == target_location[axis]:
+        return field
+    if source_location[axis] == "C":
+        return 0.5 * (field + jnp.roll(field, -1, axis=array_axis))
+    return 0.5 * (field + jnp.roll(field, 1, axis=array_axis))
+
+
+def _location_interpolate(field, source_location, target_location):
+    interpolated = field
+    for axis in range(3):
+        interpolated = _location_interpolate_axis(interpolated, source_location, target_location, axis)
+    return interpolated
+
+
+def _metric_weighted_interpolate(field, source_metric, target_metric, source_location, target_location):
+    weighted = source_metric.sqrt_gamma * field
+    weighted = _location_interpolate(weighted, source_location, target_location)
+    return weighted / target_metric.sqrt_gamma
+
+
+def compute_covariant_E(D_tiles, metric):
+    """
+    Convert contravariant D^i to covariant E_i on the D component locations.
+    """
+
+    E_cov = []
+    for i, target_location in enumerate(D_FIELD_LOCATIONS):
+        component = 0.0
+        for j, source_location in enumerate(D_FIELD_LOCATIONS):
+            D_on_target = _metric_weighted_interpolate(
+                D_tiles[j],
+                metric.D[j],
+                metric.D[i],
+                source_location,
+                target_location,
+            )
+            component = component + metric.D[i].gamma[..., i, j] * D_on_target
+        E_cov.append(component)
+    return tuple(E_cov)
+
+
+def compute_covariant_H(B_tiles, metric):
+    """
+    Convert contravariant B^i to covariant H_i on the B component locations.
+    """
+
+    H_cov = []
+    for i, target_location in enumerate(B_FIELD_LOCATIONS):
+        component = 0.0
+        for j, source_location in enumerate(B_FIELD_LOCATIONS):
+            B_on_target = _metric_weighted_interpolate(
+                B_tiles[j],
+                metric.B[j],
+                metric.B[i],
+                source_location,
+                target_location,
+            )
+            component = component + metric.B[i].gamma[..., i, j] * B_on_target
+        H_cov.append(component)
+    return tuple(H_cov)
+
+
+def update_D(D_tiles, B_tiles, J_tiles, metric, static_parameters, dynamic_parameters, dt):
+    """
+    Update contravariant displacement field D^i in a fixed 3+1 metric.
+    """
+
+    Dx, Dy, Dz = D_tiles
+    Jx, Jy, Jz = J_tiles
+    Hx, Hy, Hz = compute_covariant_H(
+        ghost_cells.update_tiled_vector_ghost_cells(B_tiles, static_parameters, static_parameters.guard_cells),
+        metric,
+    )
+
+    g = int(static_parameters.guard_cells)
+    active = slice(g, -g)
+    backward = slice(g - 1, -g - 1)
+    dx, dy, dz = dynamic_parameters.dx, dynamic_parameters.dy, dynamic_parameters.dz
+
+    dHz_dy = (Hz[:, :, :, active, active, active] - Hz[:, :, :, active, backward, active]) / dy
+    dHy_dz = (Hy[:, :, :, active, active, active] - Hy[:, :, :, active, active, backward]) / dz
+    dHx_dz = (Hx[:, :, :, active, active, active] - Hx[:, :, :, active, active, backward]) / dz
+    dHz_dx = (Hz[:, :, :, active, active, active] - Hz[:, :, :, backward, active, active]) / dx
+    dHy_dx = (Hy[:, :, :, active, active, active] - Hy[:, :, :, backward, active, active]) / dx
+    dHx_dy = (Hx[:, :, :, active, active, active] - Hx[:, :, :, active, backward, active]) / dy
+
+    sqrt_Dx = metric.D[0].sqrt_gamma[:, :, :, active, active, active]
+    sqrt_Dy = metric.D[1].sqrt_gamma[:, :, :, active, active, active]
+    sqrt_Dz = metric.D[2].sqrt_gamma[:, :, :, active, active, active]
+    current = slice(g, -g)
+
+    Dx = Dx.at[:, :, :, active, active, active].set(
+        Dx[:, :, :, active, active, active]
+        + dt * ((dHz_dy - dHy_dz) / sqrt_Dx - 4.0 * jnp.pi * Jx[:, :, :, current, current, current])
+    )
+    Dy = Dy.at[:, :, :, active, active, active].set(
+        Dy[:, :, :, active, active, active]
+        + dt * ((dHx_dz - dHz_dx) / sqrt_Dy - 4.0 * jnp.pi * Jy[:, :, :, current, current, current])
+    )
+    Dz = Dz.at[:, :, :, active, active, active].set(
+        Dz[:, :, :, active, active, active]
+        + dt * ((dHy_dx - dHx_dy) / sqrt_Dz - 4.0 * jnp.pi * Jz[:, :, :, current, current, current])
+    )
+
+    return ghost_cells.update_tiled_vector_ghost_cells((Dx, Dy, Dz), static_parameters, g)
+
+
+def update_B(D_tiles, B_tiles, metric, static_parameters, dynamic_parameters, dt):
+    """
+    Update contravariant magnetic field B^i in a fixed 3+1 metric.
+    """
+
+    Bx, By, Bz = B_tiles
+    Ex, Ey, Ez = compute_covariant_E(
+        ghost_cells.update_tiled_vector_ghost_cells(D_tiles, static_parameters, static_parameters.guard_cells),
+        metric,
+    )
+
+    g = int(static_parameters.guard_cells)
+    active = slice(g, -g)
+    forward = slice(g + 1, None if g == 1 else -g + 1)
+    dx, dy, dz = dynamic_parameters.dx, dynamic_parameters.dy, dynamic_parameters.dz
+
+    dEz_dy = (Ez[:, :, :, active, forward, active] - Ez[:, :, :, active, active, active]) / dy
+    dEy_dz = (Ey[:, :, :, active, active, forward] - Ey[:, :, :, active, active, active]) / dz
+    dEx_dz = (Ex[:, :, :, active, active, forward] - Ex[:, :, :, active, active, active]) / dz
+    dEz_dx = (Ez[:, :, :, forward, active, active] - Ez[:, :, :, active, active, active]) / dx
+    dEy_dx = (Ey[:, :, :, forward, active, active] - Ey[:, :, :, active, active, active]) / dx
+    dEx_dy = (Ex[:, :, :, active, forward, active] - Ex[:, :, :, active, active, active]) / dy
+
+    sqrt_Bx = metric.B[0].sqrt_gamma[:, :, :, active, active, active]
+    sqrt_By = metric.B[1].sqrt_gamma[:, :, :, active, active, active]
+    sqrt_Bz = metric.B[2].sqrt_gamma[:, :, :, active, active, active]
+
+    Bx = Bx.at[:, :, :, active, active, active].set(
+        Bx[:, :, :, active, active, active] - dt * (dEz_dy - dEy_dz) / sqrt_Bx
+    )
+    By = By.at[:, :, :, active, active, active].set(
+        By[:, :, :, active, active, active] - dt * (dEx_dz - dEz_dx) / sqrt_By
+    )
+    Bz = Bz.at[:, :, :, active, active, active].set(
+        Bz[:, :, :, active, active, active] - dt * (dEy_dx - dEx_dy) / sqrt_Bz
+    )
+
+    return ghost_cells.update_tiled_vector_ghost_cells((Bx, By, Bz), static_parameters, g)
+
+
+def initialize_static_metric_state(D_tiles, B_tiles):
+    return (B_tiles, B_tiles, D_tiles, D_tiles)
+
+
+def step_static_metric_fields(D_tiles, B_tiles, J_tiles, metric, state, static_parameters, dynamic_parameters):
+    """
+    Second-order centered field step for a fixed metric and centered current.
+    """
+
+    dt = dynamic_parameters.dt
+    D_left_half = update_D(D_tiles, B_tiles, J_tiles, metric, static_parameters, dynamic_parameters, dt / 2.0)
+    B_latest = update_B(D_left_half, B_tiles, metric, static_parameters, dynamic_parameters, dt)
+    D_right_half = update_D(D_left_half, B_latest, J_tiles, metric, static_parameters, dynamic_parameters, dt / 2.0)
+    B_previous = state[1] if state is not None else B_tiles
+
+    return D_right_half, B_latest, (B_previous, B_latest, D_left_half, D_right_half)
