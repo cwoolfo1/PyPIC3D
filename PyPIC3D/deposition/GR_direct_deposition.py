@@ -93,10 +93,10 @@ def GR_direct_deposition(
     """
     Direct current deposition for a fixed 3+1 metric.
 
-    ``particles.u`` stores covariant spatial components ``u_i``.  The deposited
-    current uses the contravariant FIDO three-velocity and the lapse scaling
+    ``particles.u`` stores covariant spatial components ``u_i``.  The returned
+    source current follows the FPIC Maxwell convention
 
-        J^i = alpha(x) * (q / dV) * S(x) * v^i.
+        J^i = (q / dV) * S(x) * (alpha v^i - beta^i).
     """
 
     current_filter = static_parameters.current_filter
@@ -148,10 +148,10 @@ def GR_direct_deposition(
             shape_factor,
         )
         v_con = contravariant_three_velocity(u_cov, metric_at_particles.gamma_inv)
-        lapse_v = metric_at_particles.lapse[:, jnp.newaxis] * v_con
-        vx = lapse_v[:, 0]
-        vy = lapse_v[:, 1]
-        vz = lapse_v[:, 2]
+        source_velocity = metric_at_particles.lapse[:, jnp.newaxis] * v_con - metric_at_particles.shift
+        vx = source_velocity[:, 0]
+        vy = source_velocity[:, 1]
+        vz = source_velocity[:, 2]
 
         x, x0, deltax_node, xpts = prepare_particle_axis_stencil(
             x,

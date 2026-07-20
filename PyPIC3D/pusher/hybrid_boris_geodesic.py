@@ -138,9 +138,11 @@ def _magnetic_boris_rotation(u_minus, B_con, metric, q_over_m, dt):
     t_cov = lower_vector(t_con, metric.gamma)
     t_norm = jnp.einsum("...i,...i->...", t_con, t_cov)
 
-    u_prime = u_minus + metric.sqrt_gamma[..., jnp.newaxis] * jnp.cross(u_minus, t_con)
+    u_minus_con = jnp.einsum("...ij,...j->...i", metric.gamma_inv, u_minus)
+    u_prime = u_minus + metric.sqrt_gamma[..., jnp.newaxis] * jnp.cross(u_minus_con, t_con)
     s_con = 2.0 * t_con / (1.0 + t_norm)[..., jnp.newaxis]
-    return u_minus + metric.sqrt_gamma[..., jnp.newaxis] * jnp.cross(u_prime, s_con)
+    u_prime_con = jnp.einsum("...ij,...j->...i", metric.gamma_inv, u_prime)
+    return u_minus + metric.sqrt_gamma[..., jnp.newaxis] * jnp.cross(u_prime_con, s_con)
 
 
 def _electromagnetic_boris_step(position, u_cov, q_over_m, D_tiles, B_tiles, metric_tiles, static_parameters, dynamic_parameters, tx, ty, tz, dt):

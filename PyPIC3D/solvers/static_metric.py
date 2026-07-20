@@ -26,45 +26,100 @@ def _metric_weighted_interpolate(field, source_metric, target_metric, source_loc
     return weighted / target_metric.sqrt_gamma
 
 
-def compute_covariant_E(D_tiles, metric):
+def _shift_cross_component(beta, vector_components, component):
+    beta_x = beta[..., 0]
+    beta_y = beta[..., 1]
+    beta_z = beta[..., 2]
+    vector_x, vector_y, vector_z = vector_components
+
+    if component == 0:
+        return beta_y * vector_z - beta_z * vector_y
+    if component == 1:
+        return beta_z * vector_x - beta_x * vector_z
+    return beta_x * vector_y - beta_y * vector_x
+
+
+def compute_covariant_E(D_tiles, B_tiles, metric):
     """
-    Convert contravariant D^i to covariant E_i on the D component locations.
+    Compute covariant E_i on the D component locations using FPIC Eq. (10).
     """
 
     E_cov = []
     for i, target_location in enumerate(D_FIELD_LOCATIONS):
-        component = 0.0
+        D_on_target = []
+        B_on_target = []
         for j, source_location in enumerate(D_FIELD_LOCATIONS):
-            D_on_target = _metric_weighted_interpolate(
-                D_tiles[j],
-                metric.D[j],
-                metric.D[i],
-                source_location,
-                target_location,
+            D_on_target.append(
+                _metric_weighted_interpolate(
+                    D_tiles[j],
+                    metric.D[j],
+                    metric.D[i],
+                    source_location,
+                    target_location,
+                )
             )
-            component = component + metric.D[i].gamma[..., i, j] * D_on_target
-        E_cov.append(component)
+        for j, source_location in enumerate(B_FIELD_LOCATIONS):
+            B_on_target.append(
+                _metric_weighted_interpolate(
+                    B_tiles[j],
+                    metric.B[j],
+                    metric.D[i],
+                    source_location,
+                    target_location,
+                )
+            )
+
+        D_lower_i = 0.0
+        for j in range(3):
+            D_lower_i = D_lower_i + metric.D[i].gamma[..., i, j] * D_on_target[j]
+
+        shift_cross = _shift_cross_component(metric.D[i].shift, tuple(B_on_target), i)
+        E_cov.append(
+            metric.D[i].lapse * D_lower_i
+            + metric.D[i].sqrt_gamma * shift_cross
+        )
     return tuple(E_cov)
 
 
-def compute_covariant_H(B_tiles, metric):
+def compute_covariant_H(D_tiles, B_tiles, metric):
     """
-    Convert contravariant B^i to covariant H_i on the B component locations.
+    Compute covariant H_i on the B component locations using FPIC Eq. (9).
     """
 
     H_cov = []
     for i, target_location in enumerate(B_FIELD_LOCATIONS):
-        component = 0.0
+        B_on_target = []
+        D_on_target = []
         for j, source_location in enumerate(B_FIELD_LOCATIONS):
-            B_on_target = _metric_weighted_interpolate(
-                B_tiles[j],
-                metric.B[j],
-                metric.B[i],
-                source_location,
-                target_location,
+            B_on_target.append(
+                _metric_weighted_interpolate(
+                    B_tiles[j],
+                    metric.B[j],
+                    metric.B[i],
+                    source_location,
+                    target_location,
+                )
             )
-            component = component + metric.B[i].gamma[..., i, j] * B_on_target
-        H_cov.append(component)
+        for j, source_location in enumerate(D_FIELD_LOCATIONS):
+            D_on_target.append(
+                _metric_weighted_interpolate(
+                    D_tiles[j],
+                    metric.D[j],
+                    metric.B[i],
+                    source_location,
+                    target_location,
+                )
+            )
+
+        B_lower_i = 0.0
+        for j in range(3):
+            B_lower_i = B_lower_i + metric.B[i].gamma[..., i, j] * B_on_target[j]
+
+        shift_cross = _shift_cross_component(metric.B[i].shift, tuple(D_on_target), i)
+        H_cov.append(
+            metric.B[i].lapse * B_lower_i
+            - metric.B[i].sqrt_gamma * shift_cross
+        )
     return tuple(H_cov)
 
 
@@ -76,6 +131,7 @@ def update_D(D_tiles, B_tiles, J_tiles, metric, static_parameters, dynamic_param
     Dx, Dy, Dz = D_tiles
     Jx, Jy, Jz = J_tiles
     Hx, Hy, Hz = compute_covariant_H(
+        ghost_cells.update_tiled_vector_ghost_cells(D_tiles, static_parameters, static_parameters.guard_cells),
         ghost_cells.update_tiled_vector_ghost_cells(B_tiles, static_parameters, static_parameters.guard_cells),
         metric,
     )
@@ -121,6 +177,7 @@ def update_B(D_tiles, B_tiles, metric, static_parameters, dynamic_parameters, dt
     Bx, By, Bz = B_tiles
     Ex, Ey, Ez = compute_covariant_E(
         ghost_cells.update_tiled_vector_ghost_cells(D_tiles, static_parameters, static_parameters.guard_cells),
+        ghost_cells.update_tiled_vector_ghost_cells(B_tiles, static_parameters, static_parameters.guard_cells),
         metric,
     )
 

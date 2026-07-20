@@ -1,6 +1,12 @@
 import jax.numpy as jnp
 
-from PyPIC3D.relativity.core import B_FIELD_LOCATIONS, D_FIELD_LOCATIONS, Metric, YeeMetric
+from PyPIC3D.relativity.core import (
+    B_FIELD_LOCATIONS,
+    D_FIELD_LOCATIONS,
+    Metric,
+    YeeMetric,
+    fill_metric_derivatives,
+)
 
 
 def _coordinate_mesh(grid):
@@ -90,11 +96,44 @@ def _flat_spherical_metric_on_grid(grid):
     return _metric_from_diagonal(gamma_diag)
 
 
-def _build_yee_metric(dynamic_parameters, metric_on_grid):
-    D = tuple(metric_on_grid(_location_grid(location, dynamic_parameters)) for location in D_FIELD_LOCATIONS)
-    B = tuple(metric_on_grid(_location_grid(location, dynamic_parameters)) for location in B_FIELD_LOCATIONS)
-    center = metric_on_grid(dynamic_parameters.grids.tiled_center_grid)
-    vertex = metric_on_grid(dynamic_parameters.grids.tiled_vertex_grid)
+def _maybe_fill_derivatives(metric, dynamic_parameters, fill_derivatives):
+    if not fill_derivatives:
+        return metric
+    return fill_metric_derivatives(
+        metric,
+        dynamic_parameters.dx,
+        dynamic_parameters.dy,
+        dynamic_parameters.dz,
+    )
+
+
+def _build_yee_metric(dynamic_parameters, metric_on_grid, fill_derivatives=False):
+    D = tuple(
+        _maybe_fill_derivatives(
+            metric_on_grid(_location_grid(location, dynamic_parameters)),
+            dynamic_parameters,
+            fill_derivatives,
+        )
+        for location in D_FIELD_LOCATIONS
+    )
+    B = tuple(
+        _maybe_fill_derivatives(
+            metric_on_grid(_location_grid(location, dynamic_parameters)),
+            dynamic_parameters,
+            fill_derivatives,
+        )
+        for location in B_FIELD_LOCATIONS
+    )
+    center = _maybe_fill_derivatives(
+        metric_on_grid(dynamic_parameters.grids.tiled_center_grid),
+        dynamic_parameters,
+        fill_derivatives,
+    )
+    vertex = _maybe_fill_derivatives(
+        metric_on_grid(dynamic_parameters.grids.tiled_vertex_grid),
+        dynamic_parameters,
+        fill_derivatives,
+    )
     return YeeMetric(D=D, B=B, center=center, vertex=vertex)
 
 
@@ -113,7 +152,11 @@ def initialize_flat_cylindrical_metric(static_parameters, dynamic_parameters):
     """
 
     del static_parameters
-    return _build_yee_metric(dynamic_parameters, _flat_cylindrical_metric_on_grid)
+    return _build_yee_metric(
+        dynamic_parameters,
+        _flat_cylindrical_metric_on_grid,
+        fill_derivatives=True,
+    )
 
 
 def initialize_flat_spherical_metric(static_parameters, dynamic_parameters):
@@ -122,4 +165,8 @@ def initialize_flat_spherical_metric(static_parameters, dynamic_parameters):
     """
 
     del static_parameters
-    return _build_yee_metric(dynamic_parameters, _flat_spherical_metric_on_grid)
+    return _build_yee_metric(
+        dynamic_parameters,
+        _flat_spherical_metric_on_grid,
+        fill_derivatives=True,
+    )

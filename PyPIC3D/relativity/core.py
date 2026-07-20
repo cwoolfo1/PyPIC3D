@@ -97,17 +97,13 @@ def fill_metric_derivatives(metric, dx, dy, dz):
         axis=-2,
     )
 
-    grad_gamma = jnp.stack(
-        [
-            [
-                centered_metric_gradient(metric.gamma[..., i, j], dx, dy, dz)
-                for j in range(3)
-            ]
-            for i in range(3)
-        ],
-        axis=-2,
-    )
-    grad_gamma = jnp.moveaxis(grad_gamma, 0, -3)
+    grad_gamma_rows = []
+    for i in range(3):
+        row = []
+        for j in range(3):
+            row.append(centered_metric_gradient(metric.gamma[..., i, j], dx, dy, dz))
+        grad_gamma_rows.append(jnp.stack(tuple(row), axis=-2))
+    grad_gamma = jnp.stack(tuple(grad_gamma_rows), axis=-3)
 
     christoffel = jnp.zeros_like(metric.christoffel)
     for k in range(3):
