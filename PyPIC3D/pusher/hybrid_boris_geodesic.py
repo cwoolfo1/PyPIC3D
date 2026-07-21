@@ -120,7 +120,7 @@ def geodesic_rhs(position, u_cov, metric):
 
     grad_gamma_inv = _grad_gamma_inv_from_christoffel(metric.gamma_inv, metric.christoffel)
     grad_beta_term = jnp.einsum("...j,...ji->...i", u_cov, metric.grad_shift)
-    metric_force = -0.5 * metric.lapse / Gamma * jnp.einsum(
+    metric_force = (-0.5 * metric.lapse / Gamma)[..., jnp.newaxis] * jnp.einsum(
         "...l,...m,...ilm->...i",
         u_cov,
         u_cov,

@@ -244,6 +244,57 @@ def test_hybrid_boris_geodesic_push_advances_flat_neutral_particle_with_u_over_g
     assert jnp.allclose(pushed.u[0, 0, 0, 0, 0], jnp.asarray((0.3, 0.4, 0.0)))
 
 
+def test_hybrid_boris_geodesic_push_accepts_multiple_species_in_one_tile():
+    static_parameters, dynamic_parameters = kernel_parameters(
+        Nx=4,
+        Ny=4,
+        Nz=4,
+        x_wind=4.0,
+        y_wind=4.0,
+        z_wind=4.0,
+        dt=0.2,
+    )
+    metric = initialize_flat_cartesian_metric(static_parameters, dynamic_parameters)
+    zeros = empty_tiled_vector(static_parameters, dynamic_parameters)
+    x = jnp.zeros((1, 1, 1, 2, 3, 3))
+    u = jnp.asarray(
+        (
+            ((0.1, 0.0, 0.0), (0.2, 0.0, 0.0), (0.0, 0.0, 0.0)),
+            ((-0.1, 0.0, 0.0), (-0.2, 0.0, 0.0), (0.0, 0.0, 0.0)),
+        ),
+        dtype=float,
+    ).reshape((1, 1, 1, 2, 3, 3))
+    active = jnp.asarray(
+        (
+            (True, True, False),
+            (True, True, False),
+        ),
+        dtype=bool,
+    ).reshape((1, 1, 1, 2, 3))
+    particles = TiledParticles(x=x, u=u, active=active)
+    species = SpeciesConfig(
+        charge=jnp.asarray([0.0, 0.0]),
+        mass=jnp.asarray([1.0, 2.0]),
+        weight=jnp.asarray([1.0, 1.0]),
+        update_x=jnp.asarray([[True, True, True], [True, True, True]]),
+        update_u=jnp.asarray([[True, True, True], [True, True, True]]),
+    )
+
+    pushed, centered = hybrid_boris_geodesic_push(
+        particles,
+        species,
+        zeros,
+        zeros,
+        metric,
+        static_parameters,
+        dynamic_parameters,
+    )
+
+    assert pushed.x.shape == x.shape
+    assert centered.x.shape == x.shape
+    assert jnp.all(jnp.isfinite(pushed.x))
+
+
 def test_GR_direct_deposition_uses_lapse_scaled_contravariant_three_velocity():
     static_parameters, dynamic_parameters = kernel_parameters(
         Nx=1,
