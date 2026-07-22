@@ -108,16 +108,24 @@ def _grad_gamma_inv_from_christoffel(gamma_inv, christoffel):
     return grad_gamma_inv
 
 
-def geodesic_rhs(position, u_cov, metric):
+def GR_position_update(position, u_cov, metric):
     """
-    Right-hand side of the 3+1 geodesic equation for covariant u_i.
+    Coordinate velocity dx^i/dt from covariant spatial momentum u_i.
     """
 
     del position
     Gamma = covariant_lorentz_factor(u_cov, metric.gamma_inv)
     u_con = jnp.einsum("...ij,...j->...i", metric.gamma_inv, u_cov)
-    dx_dt = metric.lapse[..., jnp.newaxis] * u_con / Gamma[..., jnp.newaxis] - metric.shift
+    return metric.lapse[..., jnp.newaxis] * u_con / Gamma[..., jnp.newaxis] - metric.shift
 
+
+def geodesic_velocity(position, u_cov, metric):
+    """
+    Geodesic source term du_i/dt for covariant spatial momentum.
+    """
+
+    del position
+    Gamma = covariant_lorentz_factor(u_cov, metric.gamma_inv)
     grad_gamma_inv = _grad_gamma_inv_from_christoffel(metric.gamma_inv, metric.christoffel)
     grad_beta_term = jnp.einsum("...j,...ji->...i", u_cov, metric.grad_shift)
     metric_force = (-0.5 * metric.lapse / Gamma)[..., jnp.newaxis] * jnp.einsum(
@@ -126,9 +134,8 @@ def geodesic_rhs(position, u_cov, metric):
         u_cov,
         grad_gamma_inv,
     )
-    du_dt = -Gamma[..., jnp.newaxis] * metric.grad_lapse + grad_beta_term + metric_force
 
-    return dx_dt, du_dt
+    return -Gamma[..., jnp.newaxis] * metric.grad_lapse + grad_beta_term + metric_force
 
 
 def _magnetic_boris_rotation(u_minus, B_con, metric, q_over_m, dt):
@@ -187,11 +194,11 @@ def _electromagnetic_boris_step(position, u_cov, q_over_m, D_tiles, B_tiles, met
     return u_new
 
 
-def _geodesic_leapfrog_step(position, u_cov, metric_tiles, static_parameters, dynamic_parameters, tx, ty, tz, dt):
+def _sample_center_metric_at_position(position, metric_tiles, static_parameters, dynamic_parameters, tx, ty, tz):
     shape_factor = static_parameters.shape_factor
     center_grid = _metric_component_grid(("C", "C", "C"), dynamic_parameters, tx, ty, tz)
 
-    metric = _sample_metric(
+    return _sample_metric(
         _metric_tile(metric_tiles.center, tx, ty, tz),
         position[..., 0],
         position[..., 1],
@@ -199,23 +206,6 @@ def _geodesic_leapfrog_step(position, u_cov, metric_tiles, static_parameters, dy
         center_grid,
         shape_factor,
     )
-    dx_dt, du_dt = geodesic_rhs(position, u_cov, metric)
-    x_half = position + 0.5 * dt * dx_dt
-    u_half = u_cov + 0.5 * dt * du_dt
-
-    metric_half = _sample_metric(
-        _metric_tile(metric_tiles.center, tx, ty, tz),
-        x_half[..., 0],
-        x_half[..., 1],
-        x_half[..., 2],
-        center_grid,
-        shape_factor,
-    )
-    dx_dt_half, du_dt_half = geodesic_rhs(x_half, u_half, metric_half)
-    x_new = position + dt * dx_dt_half
-    u_new = u_cov + dt * du_dt_half
-
-    return x_new, u_new
 
 
 @partial(jax.jit, static_argnames="static_parameters")
@@ -245,6 +235,15 @@ def hybrid_boris_geodesic_push(
     def push_one_tile(x_tile, u_tile, active_tile, tx, ty, tz):
         active = active_tile[..., jnp.newaxis]
         qom_tile = jnp.broadcast_to(q_over_m, active_tile.shape)
+        metric_n = _sample_center_metric_at_position(
+            x_tile,
+            metric,
+            static_parameters,
+            dynamic_parameters,
+            tx,
+            ty,
+            tz,
+        )
 
         u_after_first_em = _electromagnetic_boris_step(
             x_tile,
@@ -263,24 +262,14 @@ def hybrid_boris_geodesic_push(
         u_after_first_em = jnp.where(active & update_u, u_after_first_em, u_tile)
         # first half of the electromagnetic Boris step, updating only active particles that have update_u=True
 
-        x_new, u_new = _geodesic_leapfrog_step(
-            x_tile,
-            u_after_first_em,
-            metric,
-            static_parameters,
-            dynamic_parameters,
-            tx,
-            ty,
-            tz,
-            dt,
-        )
-        x_new = jnp.where(active & update_x, x_new, x_tile)
-        u_new = jnp.where(active & update_u, u_new, u_tile)
-        # then full step of the geodesic leapfrog, updating only active particles that have update_x=True and update_u=True
+        du_dt = geodesic_velocity(x_tile, u_after_first_em, metric_n)
+        u_after_geodesic = u_after_first_em + dt * du_dt
+        u_after_geodesic = jnp.where(active & update_u, u_after_geodesic, u_tile)
+        # full geodesic velocity source at x^n; positions remain staggered until the velocity update is complete.
 
         u_new = _electromagnetic_boris_step(
-            x_new,
-            u_new,
+            x_tile,
+            u_after_geodesic,
             qom_tile,
             D_tiles,
             B_tiles,
@@ -293,9 +282,18 @@ def hybrid_boris_geodesic_push(
             dt / 2.0,
         )
         u_new = jnp.where(active & update_u, u_new, u_tile)
+        # second half of the electromagnetic Boris step, reinterpolated at the same x^n position.
 
-        x_half = (x_new + x_tile) / 2.0
-        # take the average of the old and new positions to get the half-step position for current deposition
+        dx_dt = GR_position_update(
+            x_tile,
+            u_new,
+            metric_n,
+        )
+        x_half = x_tile + 0.5 * dt * dx_dt
+        x_new = x_tile + dt * dx_dt
+        x_half = jnp.where(active & update_x, x_half, x_tile)
+        x_new = jnp.where(active & update_x, x_new, x_tile)
+        # centered particles use x^{n+1/2} with the same u^{n+1/2} used by the final position update.
 
         return x_new, u_new, x_half
 

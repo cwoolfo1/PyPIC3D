@@ -5,6 +5,7 @@ import jax
 import jax.numpy as jnp
 
 from PyPIC3D.particles.particle_class import SpeciesConfig, TiledParticles
+import PyPIC3D.pusher.hybrid_boris_geodesic as hybrid_pusher
 from PyPIC3D.pusher.hybrid_boris_geodesic import hybrid_boris_geodesic_push
 from PyPIC3D.relativity.flat import initialize_flat_cartesian_metric
 from PyPIC3D.solvers.static_metric import update_B_relativity
@@ -78,9 +79,28 @@ class TestStaticMetricConvergence(unittest.TestCase):
             D = (D[0].at[:, :, :, :, :, :].set(0.05), D[1], D[2])
             B = (B[0], B[1], B[2].at[:, :, :, :, :, :].set(0.25))
 
+            x_0 = jnp.zeros((1, 1, 3))
+            u_0 = jnp.asarray((0.1, 0.03, 0.0), dtype=float).reshape((1, 1, 3))
+            q_over_m = jnp.ones((1, 1))
+            u_n_minushalf = hybrid_pusher._electromagnetic_boris_step(
+                x_0,
+                u_0,
+                q_over_m,
+                D,
+                B,
+                metric,
+                static_parameters,
+                dynamic_parameters,
+                0,
+                0,
+                0,
+                -0.5 * dt,
+            )
+            # The pusher stores u at half time steps.  Initialize each refinement
+            # from the same physical u(t=0), then move it back to u^{-1/2}.
             particles = TiledParticles(
-                x=jnp.zeros((1, 1, 1, 1, 1, 3)),
-                u=jnp.asarray((0.1, 0.03, 0.0), dtype=float).reshape((1, 1, 1, 1, 1, 3)),
+                x=x_0.reshape((1, 1, 1, 1, 1, 3)),
+                u=u_n_minushalf.reshape((1, 1, 1, 1, 1, 3)),
                 active=jnp.ones((1, 1, 1, 1, 1), dtype=bool),
             )
             species = SpeciesConfig(
@@ -102,7 +122,24 @@ class TestStaticMetricConvergence(unittest.TestCase):
                     static_parameters,
                     dynamic_parameters,
                 )
-            return particles.x[0, 0, 0, 0, 0], particles.u[0, 0, 0, 0, 0]
+
+            u_at_T = hybrid_pusher._electromagnetic_boris_step(
+                particles.x[0, 0, 0],
+                particles.u[0, 0, 0],
+                q_over_m,
+                D,
+                B,
+                metric,
+                static_parameters,
+                dynamic_parameters,
+                0,
+                0,
+                0,
+                0.5 * dt,
+            )
+            # Recenter the final u^{N-1/2} to the common physical time T before
+            # comparing across different dt values.
+            return particles.x[0, 0, 0, 0, 0], u_at_T[0, 0]
 
         x_1, u_1 = run_with_dt(0.05)
         x_2, u_2 = run_with_dt(0.025)
@@ -116,8 +153,8 @@ class TestStaticMetricConvergence(unittest.TestCase):
         first_order = math.log(float(error_1 / error_2), 2.0)
         second_order = math.log(float(error_2 / error_4), 2.0)
 
-        self.assertGreater(first_order, 1.5)
-        self.assertGreater(second_order, 1.5)
+        self.assertGreater(first_order, 1.8)
+        self.assertGreater(second_order, 1.8)
 
 
 if __name__ == "__main__":
