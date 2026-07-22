@@ -64,6 +64,8 @@ def kernel_parameters(
     GPUs=False,
     benchmark=False,
     pml_active=False,
+    supergaussian_active=False,
+    supergaussian_layers=(),
     particle_tile_capacity_factor=1.0,
 ):
     if dx is None:
@@ -103,6 +105,8 @@ def kernel_parameters(
         tile_shape=tile_shape,
         particle_tile_capacity_factor=float(particle_tile_capacity_factor),
         pml_active=bool(pml_active),
+        supergaussian_active=bool(supergaussian_active),
+        supergaussian_layers=tuple(supergaussian_layers),
         boundary_conditions=tuple(int(value) for value in boundary_conditions),
         particle_boundary_conditions=tuple(int(value) for value in particle_boundary_conditions),
         field_mesh=make_field_mesh(tile_grid_shape),
@@ -212,6 +216,8 @@ def kernel_parameters_from_values(parameter_set, dynamic_values=None):
         GPUs=parameter_set.get("GPUs", False),
         benchmark=parameter_set.get("benchmark", False),
         pml_active=parameter_set.get("pml_active", False),
+        supergaussian_active=parameter_set.get("supergaussian", (False, False, False, False, ()))[0],
+        supergaussian_layers=parameter_set.get("supergaussian", (False, False, False, False, ()))[-1],
         particle_tile_capacity_factor=parameter_set.get("particle_tile_capacity_factor", 1.0),
     )
 
@@ -258,6 +264,8 @@ def particle_parameters_from_values(parameter_set, tile_shape=None, dynamic_valu
         tile_shape=tile_shape,
         particle_tile_capacity_factor=float(parameter_set.get("particle_tile_capacity_factor", 1.0)),
         pml_active=bool(parameter_set.get("pml_active", False)),
+        supergaussian_active=bool(parameter_set.get("supergaussian", (False, False, False, False, ()))[0]),
+        supergaussian_layers=tuple(parameter_set.get("supergaussian", (False, False, False, False, ()))[-1]),
         boundary_conditions=_axis_tuple(parameter_set.get("boundary_conditions", (0, 0, 0))),
         particle_boundary_conditions=_axis_tuple(parameter_set.get("particle_boundary_conditions", (0, 0, 0))),
         field_mesh=None,

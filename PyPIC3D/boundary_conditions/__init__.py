@@ -24,3 +24,10 @@ from PyPIC3D.boundary_conditions.ghost_cells import (
     fold_tiled_ghost_cells,
     fold_tiled_vector_ghost_cells,
 )
+
+from PyPIC3D.boundary_conditions.supergaussian import (
+    SUPERGAUSSIAN_WALLS,
+    load_supergaussian_from_toml,
+    build_supergaussian_envelope,
+    apply_tiled_supergaussian_absorber,
+)

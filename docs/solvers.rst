@@ -79,6 +79,30 @@ Supported values:
 For conducting boundaries, tangential electric-field components are zeroed on
 boundary faces during the ``E`` update.
 
+Supergaussian Absorber
+^^^^^^^^^^^^^^^^^^^^^^
+
+For electrodynamic Yee runs, a lightweight sponge absorber can be added with
+top-level ``[[supergaussian]]`` entries:
+
+.. code-block:: toml
+
+    [[supergaussian]]
+    wall = "+x"              # -x, +x, -y, +y, -z, +z
+    width = 16               # active cells
+    order = 4.0
+    target_reflection = 1e-8
+
+``sigma_max`` may be supplied directly instead of ``target_reflection``.  The
+absorber multiplies the evolved electric and magnetic fields by a smooth
+``exp(-sigma dt)`` envelope near the requested walls.  It does not damp
+particles, deposited current, charge density, electrostatic potential, or
+external-only fields.
+
+When a supergaussian layer is active on an axis, PyPIC3D uses non-periodic
+field halos for that axis from initialization onward, matching the existing PML
+boundary setup.
+
 Current Deposition Selection
 ----------------------------
 

@@ -36,6 +36,7 @@ from PyPIC3D.boundary_conditions.ghost_cells import (
 from PyPIC3D.evolve import time_loop_electrodynamic, time_loop_electrostatic, time_loop_static_metric
 from PyPIC3D.boundary_conditions.grid_and_stencil import BC_CONDUCTING, BC_PERIODIC
 from PyPIC3D.boundary_conditions.PML import initialize_tiled_pml_state, load_pml_from_toml
+from PyPIC3D.boundary_conditions.supergaussian import load_supergaussian_from_toml
 from PyPIC3D.parameters import build_dynamic_parameters, build_static_parameters
 from PyPIC3D.relativity.flat import (
     initialize_flat_cartesian_metric,
@@ -151,6 +152,17 @@ def _apply_pml_field_boundaries(static_config, pml_config):
             static_config["boundary_conditions"][axis] = BC_CONDUCTING
 
 
+def _apply_supergaussian_field_boundaries(static_config, supergaussian_config):
+    """
+    Supergaussian-active axes use nonwrapping field halos from initialization onward.
+    """
+
+    _, sg_x, sg_y, sg_z, _ = supergaussian_config
+    for axis, sg_axis_active in zip(("x", "y", "z"), (sg_x, sg_y, sg_z)):
+        if sg_axis_active and static_config["boundary_conditions"][axis] == BC_PERIODIC:
+            static_config["boundary_conditions"][axis] = BC_CONDUCTING
+
+
 def default_parameters():
     """
     Return plotting, static, and dynamic parameter dictionaries.
@@ -206,6 +218,8 @@ def default_parameters():
         "particle_tile_capacity_factor": 1.0,
         "current_calculation": "j_from_rhov",
         "filter_j": "bilinear",
+        "supergaussian_active": False,
+        "supergaussian_layers": (),
     }
 
     dynamic_parameters = {
@@ -350,12 +364,23 @@ def initialize_simulation(toml_file):
     if pml_active and static_metric:
         raise ValueError("PML is not yet supported for the static_metric solver")
 
+    raw_supergaussian = config.get("supergaussian", [])
+    supergaussian_active = bool(raw_supergaussian)
+    if supergaussian_active and electrostatic:
+        raise ValueError("supergaussian is only supported for the electrodynamic_yee solver")
+    if supergaussian_active and static_metric:
+        raise ValueError("supergaussian is not yet supported for the static_metric solver")
+
     _validate_tiled_yee_configuration(static_config, dynamic_config)
 
     dynamic_setup = SimpleNamespace(**convert_to_jax_compatible(dynamic_config))
     pml_config = load_pml_from_toml(raw_pml, None, dynamic_setup)
     static_config["pml_active"] = pml_config[0]
     _apply_pml_field_boundaries(static_config, pml_config)
+    supergaussian_config = load_supergaussian_from_toml(raw_supergaussian, dynamic_setup)
+    static_config["supergaussian_active"] = supergaussian_config[0]
+    static_config["supergaussian_layers"] = supergaussian_config[-1]
+    _apply_supergaussian_field_boundaries(static_config, supergaussian_config)
 
     if electrostatic:
         center_grid, vertex_grid = build_collocated_grid(dynamic_setup)

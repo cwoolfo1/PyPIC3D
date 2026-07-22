@@ -32,6 +32,8 @@ class StaticParameters(NamedTuple):
     tile_shape: tuple
     particle_tile_capacity_factor: float
     pml_active: bool
+    supergaussian_active: bool
+    supergaussian_layers: tuple
     boundary_conditions: tuple
     particle_boundary_conditions: tuple
     field_mesh: object
@@ -121,6 +123,8 @@ def build_static_parameters(static_config):
         tile_shape=tile_shape,
         particle_tile_capacity_factor=float(static_config.get("particle_tile_capacity_factor", 1.0)),
         pml_active=bool(static_config.get("pml_active", False)),
+        supergaussian_active=bool(static_config.get("supergaussian_active", False)),
+        supergaussian_layers=tuple(static_config.get("supergaussian_layers", ())),
         boundary_conditions=_axis_tuple(static_config["boundary_conditions"]),
         particle_boundary_conditions=_axis_tuple(
             static_config.get("particle_boundary_conditions", {"x": 0, "y": 0, "z": 0})

@@ -90,6 +90,9 @@ Key Notes
 
 - Field boundary conditions use ``simulation_parameters.x_bc/y_bc/z_bc`` with
   values ``periodic`` or ``conducting``.
+- Supergaussian field absorbers are configured with top-level
+  ``[[supergaussian]]`` sections.  Each section uses ``wall`` plus ``width`` in
+  cells and optional ``order``, ``target_reflection``, or ``sigma_max``.
 - Particle boundary conditions are global simulation parameters:
   ``particle_x_bc/particle_y_bc/particle_z_bc`` with values ``periodic``,
   ``reflecting``, or ``absorbing``.
