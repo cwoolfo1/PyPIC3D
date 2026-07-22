@@ -215,7 +215,7 @@ def _geodesic_leapfrog_step(position, u_cov, metric_tiles, static_parameters, dy
     x_new = position + dt * dx_dt_half
     u_new = u_cov + dt * du_dt_half
 
-    return x_new, u_new, x_half, u_half
+    return x_new, u_new
 
 
 @partial(jax.jit, static_argnames="static_parameters")
@@ -261,8 +261,9 @@ def hybrid_boris_geodesic_push(
             dt / 2.0,
         )
         u_after_first_em = jnp.where(active & update_u, u_after_first_em, u_tile)
+        # first half of the electromagnetic Boris step, updating only active particles that have update_u=True
 
-        x_new, u_new, x_half, u_half = _geodesic_leapfrog_step(
+        x_new, u_new = _geodesic_leapfrog_step(
             x_tile,
             u_after_first_em,
             metric,
@@ -275,8 +276,7 @@ def hybrid_boris_geodesic_push(
         )
         x_new = jnp.where(active & update_x, x_new, x_tile)
         u_new = jnp.where(active & update_u, u_new, u_tile)
-        x_half = jnp.where(active & update_x, x_half, x_tile)
-        u_half = jnp.where(active & update_u, u_half, u_tile)
+        # then full step of the geodesic leapfrog, updating only active particles that have update_x=True and update_u=True
 
         u_new = _electromagnetic_boris_step(
             x_new,
@@ -294,7 +294,10 @@ def hybrid_boris_geodesic_push(
         )
         u_new = jnp.where(active & update_u, u_new, u_tile)
 
-        return x_new, u_new, x_half, u_half
+        x_half = (x_new + x_tile) / 2.0
+        # take the average of the old and new positions to get the half-step position for current deposition
+
+        return x_new, u_new, x_half
 
     tx, ty, tz = jnp.meshgrid(
         jnp.arange(ntx),
@@ -308,7 +311,7 @@ def hybrid_boris_geodesic_push(
     push_tiles = jax.vmap(push_tiles, in_axes=(0, 0, 0, 0, 0, 0), out_axes=0)
     push_tiles = jax.vmap(push_tiles, in_axes=(0, 0, 0, 0, 0, 0), out_axes=0)
 
-    x_new, u_new, x_half, u_half = push_tiles(
+    x_new, u_new, x_half = push_tiles(
         particles.x,
         particles.u,
         particles.active,
