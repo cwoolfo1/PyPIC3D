@@ -319,7 +319,7 @@ def hybrid_boris_geodesic_push(
 
     particles = TiledParticles(x=x_new, u=u_new, active=particles.active)
     # pack the tiled particles into a single TiledParticles object.
-    particles_n_minushalf = TiledParticles(x=x_half, u=u_new, active=particles.active)
+    particles_n_plushalf = TiledParticles(x=x_half, u=u_new, active=particles.active)
     # pack the intermediate particles into a single TiledParticles object for centered current deposition.
 
-    return particles, particles_n_minushalf
+    return particles, particles_n_plushalf

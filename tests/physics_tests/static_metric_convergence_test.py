@@ -7,7 +7,7 @@ import jax.numpy as jnp
 from PyPIC3D.particles.particle_class import SpeciesConfig, TiledParticles
 from PyPIC3D.pusher.hybrid_boris_geodesic import hybrid_boris_geodesic_push
 from PyPIC3D.relativity.flat import initialize_flat_cartesian_metric
-from PyPIC3D.solvers.static_metric import update_B
+from PyPIC3D.solvers.static_metric import update_B_relativity
 from tests.kernel_fixtures import empty_tiled_vector, kernel_parameters
 
 
@@ -45,7 +45,7 @@ class TestStaticMetricConvergence(unittest.TestCase):
             Dz_values = jnp.sin(x_center)[:, :, :, :, jnp.newaxis, jnp.newaxis]
             Dz = Dz.at[:, :, :, active, active, active].set(Dz_values)
 
-            _Bx, By, _Bz = update_B((Dx, Dy, Dz), B, metric, static_parameters, dynamic_parameters, dynamic_parameters.dt)
+            _Bx, By, _Bz = update_B_relativity((Dx, Dy, Dz), B, metric, static_parameters, dynamic_parameters, dynamic_parameters.dt)
 
             x_vertex = dynamic_parameters.grids.tiled_vertex_grid[0][:, :, :, active]
             exact_By = dynamic_parameters.dt * jnp.cos(x_vertex)

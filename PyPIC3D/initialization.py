@@ -46,7 +46,6 @@ from PyPIC3D.relativity.kerr_schild import (
     initialize_kerr_schild_cartesian_metric,
     initialize_kerr_schild_spherical_metric,
 )
-from PyPIC3D.solvers.static_metric import initialize_static_metric_state
 
 
 def _encode_field_bc(bc_name):
