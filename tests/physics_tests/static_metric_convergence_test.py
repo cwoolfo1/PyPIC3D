@@ -5,7 +5,6 @@ import jax
 import jax.numpy as jnp
 
 from PyPIC3D.particles.particle_class import SpeciesConfig, TiledParticles
-import PyPIC3D.pusher.hybrid_boris_geodesic as hybrid_pusher
 from PyPIC3D.pusher.hybrid_boris_geodesic import hybrid_boris_geodesic_push
 from PyPIC3D.relativity.flat import initialize_flat_cartesian_metric
 from PyPIC3D.relativity.kerr_schild import initialize_kerr_schild_cartesian_metric
@@ -59,10 +58,10 @@ def _constant_tiled_vector(static_parameters, dynamic_parameters, values):
     return tuple(vector[i].at[:, :, :, :, :, :].set(values[i]) for i in range(3))
 
 
-def _split_velocity_update_at_position(
+def _velocity_update_with_production_pusher(
     position,
     u_cov,
-    q_over_m,
+    charge,
     D,
     B,
     metric,
@@ -70,52 +69,26 @@ def _split_velocity_update_at_position(
     dynamic_parameters,
     dt,
 ):
-    position = position.reshape((1, 1, 3))
-    u_cov = u_cov.reshape((1, 1, 3))
-    metric_at_position = hybrid_pusher._sample_center_metric_at_position(
-        position,
-        metric,
-        static_parameters,
-        dynamic_parameters,
-        0,
-        0,
-        0,
+    particles = _single_particle(position, u_cov)
+    velocity_only_species = SpeciesConfig(
+        charge=jnp.asarray([charge]),
+        mass=jnp.asarray([1.0]),
+        weight=jnp.asarray([1.0]),
+        update_x=jnp.asarray([[False, False, False]]),
+        update_u=jnp.asarray([[True, True, True]]),
     )
+    velocity_only_dynamic_parameters = dynamic_parameters._replace(dt=jnp.asarray(dt))
 
-    u_after_first_em = hybrid_pusher._electromagnetic_boris_step(
-        position,
-        u_cov,
-        q_over_m,
+    particles, _centered = hybrid_boris_geodesic_push(
+        particles,
+        velocity_only_species,
         D,
         B,
         metric,
         static_parameters,
-        dynamic_parameters,
-        0,
-        0,
-        0,
-        0.5 * dt,
+        velocity_only_dynamic_parameters,
     )
-    u_after_geodesic = u_after_first_em + dt * hybrid_pusher.geodesic_velocity(
-        position,
-        u_after_first_em,
-        metric_at_position,
-    )
-    u_new = hybrid_pusher._electromagnetic_boris_step(
-        position,
-        u_after_geodesic,
-        q_over_m,
-        D,
-        B,
-        metric,
-        static_parameters,
-        dynamic_parameters,
-        0,
-        0,
-        0,
-        0.5 * dt,
-    )
-    return u_new[0, 0]
+    return particles.u[0, 0, 0, 0, 0]
 
 
 def _run_hybrid_pusher_trajectory(
@@ -140,12 +113,11 @@ def _run_hybrid_pusher_trajectory(
 
     x_0 = jnp.asarray(x_0, dtype=float)
     u_0 = jnp.asarray(u_0, dtype=float)
-    q_over_m = jnp.asarray([[charge]])
 
-    u_n_minushalf = _split_velocity_update_at_position(
+    u_n_minushalf = _velocity_update_with_production_pusher(
         x_0,
         u_0,
-        q_over_m,
+        charge,
         D,
         B,
         metric,
@@ -172,10 +144,10 @@ def _run_hybrid_pusher_trajectory(
 
     x_final = particles.x[0, 0, 0, 0, 0]
     u_final = particles.u[0, 0, 0, 0, 0]
-    u_at_T = _split_velocity_update_at_position(
+    u_at_T = _velocity_update_with_production_pusher(
         x_final,
         u_final,
-        q_over_m,
+        charge,
         D,
         B,
         metric,

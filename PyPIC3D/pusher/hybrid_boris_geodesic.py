@@ -262,10 +262,12 @@ def hybrid_boris_geodesic_push(
         u_after_first_em = jnp.where(active & update_u, u_after_first_em, u_tile)
         # first half of the electromagnetic Boris step, updating only active particles that have update_u=True
 
-        du_dt = geodesic_velocity(x_tile, u_after_first_em, metric_n)
-        u_after_geodesic = u_after_first_em + dt * du_dt
+        du_dt_n = geodesic_velocity(x_tile, u_after_first_em, metric_n)
+        u_geo_mid = u_after_first_em + 0.5 * dt * du_dt_n
+        du_dt_mid = geodesic_velocity(x_tile, u_geo_mid, metric_n)
+        u_after_geodesic = u_after_first_em + dt * du_dt_mid
         u_after_geodesic = jnp.where(active & update_u, u_after_geodesic, u_tile)
-        # full geodesic velocity source at x^n; positions remain staggered until the velocity update is complete.
+        # midpoint geodesic velocity source at x^n; positions remain staggered until the velocity update is complete.
 
         u_new = _electromagnetic_boris_step(
             x_tile,
@@ -284,16 +286,31 @@ def hybrid_boris_geodesic_push(
         u_new = jnp.where(active & update_u, u_new, u_tile)
         # second half of the electromagnetic Boris step, reinterpolated at the same x^n position.
 
-        dx_dt = GR_position_update(
+        dx_dt_n = GR_position_update(
             x_tile,
             u_new,
             metric_n,
         )
-        x_half = x_tile + 0.5 * dt * dx_dt
-        x_new = x_tile + dt * dx_dt
+        x_half = x_tile + 0.5 * dt * dx_dt_n
         x_half = jnp.where(active & update_x, x_half, x_tile)
+
+        metric_half = _sample_center_metric_at_position(
+            x_half,
+            metric,
+            static_parameters,
+            dynamic_parameters,
+            tx,
+            ty,
+            tz,
+        )
+        dx_dt_half = GR_position_update(
+            x_half,
+            u_new,
+            metric_half,
+        )
+        x_new = x_tile + dt * dx_dt_half
         x_new = jnp.where(active & update_x, x_new, x_tile)
-        # centered particles use x^{n+1/2} with the same u^{n+1/2} used by the final position update.
+        # centered particles use x^{n+1/2}; x^{n+1} uses a metric/RHS sampled at that midpoint.
 
         return x_new, u_new, x_half
 
