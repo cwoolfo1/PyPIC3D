@@ -184,8 +184,8 @@ def time_loop_static_metric(
     D_n_minusone, B_n_minusthreehalves = previous_fields
     # unpack the previous fixed-metric field state
 
-    D_n_minushalf = (D_n + D_n_minusone) / 2.0
-    B_n_minusone  = (B_n_minushalf + B_n_minusthreehalves) / 2.0
+    D_n_minushalf = tuple( 0.5 * (D_n[i] + D_n_minusone[i]) for i in range(3) )
+    B_n_minusone = tuple( 0.5 * (B_n_minushalf[i] + B_n_minusthreehalves[i]) for i in range(3) )
     # compute the centered fields for the current time step
 
     E_n_minusonehalf = compute_covariant_E(D_n_minushalf, B_n_minushalf, metric)
@@ -224,7 +224,7 @@ def time_loop_static_metric(
     B_n_plushalf = update_B_relativity(E_n, B_n_minushalf, metric, static_parameters, dynamic_parameters, dynamic_parameters.dt)
     # update the contravariant magnetic field using the updated displacement field
 
-    J_n = (J_n_plushalf + J_n_minushalf) / 2.0
+    J_n = tuple( 0.5 * (J_n_plushalf[i] + J_n_minushalf[i]) for i in range(3))
     # compute the centered current for the current time step
 
     D_n_plushalf = update_D_relativity(D_n_minushalf, H_n, J_n, metric, static_parameters, dynamic_parameters, dynamic_parameters.dt)
