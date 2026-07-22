@@ -473,7 +473,7 @@ def initialize_simulation(toml_file):
     static_metric_state = None
     if static_metric:
         metric = build_static_metric_state(static_parameters, dynamic_parameters)
-        static_metric_state = initialize_static_metric_state(E, B)
+        static_metric_state = E, B
         print("Skipping flat-space energy diagnostics for static_metric fields and covariant particle u_i\n")
     else:
         total_E, total_B = add_external_fields(E, B, external_fields)
