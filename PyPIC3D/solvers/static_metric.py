@@ -123,18 +123,20 @@ def compute_covariant_H(D_tiles, B_tiles, metric):
     return tuple(H_cov)
 
 
-def update_D(D_tiles, B_tiles, J_tiles, metric, static_parameters, dynamic_parameters, dt):
+def update_D_relativity(D_tiles, H_tiles, J_tiles, metric, static_parameters, dynamic_parameters, dt):
     """
     Update contravariant displacement field D^i in a fixed 3+1 metric.
     """
 
     Dx, Dy, Dz = D_tiles
     Jx, Jy, Jz = J_tiles
-    Hx, Hy, Hz = compute_covariant_H(
-        ghost_cells.update_tiled_vector_ghost_cells(D_tiles, static_parameters, static_parameters.guard_cells),
-        ghost_cells.update_tiled_vector_ghost_cells(B_tiles, static_parameters, static_parameters.guard_cells),
-        metric,
-    )
+    Hx, Hy, Hz = H_tiles
+    
+    # Hx, Hy, Hz = compute_covariant_H(
+    #     ghost_cells.update_tiled_vector_ghost_cells(D_tiles, static_parameters, static_parameters.guard_cells),
+    #     ghost_cells.update_tiled_vector_ghost_cells(B_tiles, static_parameters, static_parameters.guard_cells),
+    #     metric,
+    # )
 
     g = int(static_parameters.guard_cells)
     active = slice(g, -g)
@@ -169,17 +171,19 @@ def update_D(D_tiles, B_tiles, J_tiles, metric, static_parameters, dynamic_param
     return ghost_cells.update_tiled_vector_ghost_cells((Dx, Dy, Dz), static_parameters, g)
 
 
-def update_B(D_tiles, B_tiles, metric, static_parameters, dynamic_parameters, dt):
+def update_B_relativity(E_tiles, B_tiles, metric, static_parameters, dynamic_parameters, dt):
     """
     Update contravariant magnetic field B^i in a fixed 3+1 metric.
     """
 
     Bx, By, Bz = B_tiles
-    Ex, Ey, Ez = compute_covariant_E(
-        ghost_cells.update_tiled_vector_ghost_cells(D_tiles, static_parameters, static_parameters.guard_cells),
-        ghost_cells.update_tiled_vector_ghost_cells(B_tiles, static_parameters, static_parameters.guard_cells),
-        metric,
-    )
+    Ex, Ey, Ez = E_tiles
+
+    # Ex, Ey, Ez = compute_covariant_E(
+    #     ghost_cells.update_tiled_vector_ghost_cells(D_tiles, static_parameters, static_parameters.guard_cells),
+    #     ghost_cells.update_tiled_vector_ghost_cells(B_tiles, static_parameters, static_parameters.guard_cells),
+    #     metric,
+    # )
 
     g = int(static_parameters.guard_cells)
     active = slice(g, -g)
@@ -214,15 +218,15 @@ def initialize_static_metric_state(D_tiles, B_tiles):
     return (B_tiles, B_tiles, D_tiles, D_tiles)
 
 
-def step_static_metric_fields(D_tiles, B_tiles, J_tiles, metric, state, static_parameters, dynamic_parameters):
-    """
-    Second-order centered field step for a fixed metric and centered current.
-    """
+# def step_static_metric_fields(D_tiles, B_tiles, J_tiles, metric, state, static_parameters, dynamic_parameters):
+#     """
+#     Second-order centered field step for a fixed metric and centered current.
+#     """
 
-    dt = dynamic_parameters.dt
-    D_left_half = update_D(D_tiles, B_tiles, J_tiles, metric, static_parameters, dynamic_parameters, dt / 2.0)
-    B_latest = update_B(D_left_half, B_tiles, metric, static_parameters, dynamic_parameters, dt)
-    D_right_half = update_D(D_left_half, B_latest, J_tiles, metric, static_parameters, dynamic_parameters, dt / 2.0)
-    B_previous = state[1] if state is not None else B_tiles
+#     dt = dynamic_parameters.dt
+#     D_left_half = update_D_relativity(D_tiles, B_tiles, J_tiles, metric, static_parameters, dynamic_parameters, dt / 2.0)
+#     B_latest = update_B(D_left_half, B_tiles, metric, static_parameters, dynamic_parameters, dt)
+#     D_right_half = update_D(D_left_half, B_latest, J_tiles, metric, static_parameters, dynamic_parameters, dt / 2.0)
+#     B_previous = state[1] if state is not None else B_tiles
 
-    return D_right_half, B_latest, (B_previous, B_latest, D_left_half, D_right_half)
+#     return D_right_half, B_latest, (B_previous, B_latest, D_left_half, D_right_half)

@@ -9,7 +9,7 @@ from PyPIC3D.pusher.particle_push import particle_push
 from PyPIC3D.pusher.hybrid_boris_geodesic import hybrid_boris_geodesic_push
 from PyPIC3D.solvers.electrostatic_yee import calculate_tiled_electrostatic_fields
 from PyPIC3D.solvers.first_order_yee import update_B, update_E
-from PyPIC3D.solvers.static_metric import step_static_metric_fields
+from PyPIC3D.solvers.static_metric import update_B_relativity, update_D_relativity, compute_covariant_E, compute_covariant_H
 from PyPIC3D.utils import add_external_fields
 
 
@@ -178,69 +178,79 @@ def time_loop_static_metric(
     particle velocity slot stores covariant spatial components ``u_i``.
     """
 
-    D_tiles, B_tiles, J_tiles, rho_tiles, phi_tiles, external_fields, metric, static_metric_state, overflow_previous = fields
+    D_n, B_n_minushalf, J_n_minushalf, rho, phi, external_fields, metric, previous_fields, overflow_previous = fields
     # unpack the fixed-metric field state
 
-    push_D_tiles, push_B_tiles = add_external_fields(D_tiles, B_tiles, external_fields)
-    # particles see evolved fields plus prescribed external fields
+    D_n_minusone, B_n_minusthreehalves = previous_fields
+    # unpack the previous fixed-metric field state
+
+    D_n_minushalf = (D_n + D_n_minusone) / 2.0
+    B_n_minusone  = (B_n_minushalf + B_n_minusthreehalves) / 2.0
+    # compute the centered fields for the current time step
+
+    E_n_minusonehalf = compute_covariant_E(D_n_minushalf, B_n_minushalf, metric)
+    # compute the covariant electric field from the centered displacement and magnetic fields
+
+    B_n = update_B_relativity(E_n_minusonehalf, B_n_minusone, metric, static_parameters, dynamic_parameters, dynamic_parameters.dt)
+    # update the contravariant magnetic field using the centered displacement field
 
     particles, centered_particles = hybrid_boris_geodesic_push(
         particles,
         species_config,
-        push_D_tiles,
-        push_B_tiles,
+        D_n,
+        B_n,
         metric,
         static_parameters,
         dynamic_parameters,
     )
-    # advance full-step particles and keep the Strang-centered particles for J
+    # advance full-step particles and keep the intermediate particles (x_n_plushalf, v_n_plushalf) for the centered current deposition
 
-    centered_particles, centered_overflow = refresh_tiled_particle_tiles(
-        centered_particles,
-        static_parameters,
-        dynamic_parameters,
-    )
-    # direct current must be deposited from tile-owned midpoint particles
-
-    J_tiles = GR_direct_deposition(
+    J_n_plushalf = GR_direct_deposition(
         centered_particles,
         species_config,
-        J_tiles,
+        J_n_minushalf,
         metric,
         static_parameters,
         dynamic_parameters,
     )
-    # deposit lapse-scaled contravariant current density
+    # deposit contravariant current density from the centered particles
 
-    particles, particle_overflow = refresh_tiled_particle_tiles(
-        particles,
-        static_parameters,
-        dynamic_parameters,
-    )
-    overflow = overflow_previous | centered_overflow | particle_overflow
-    # refresh tile ownership after the full-step particle update
 
-    D_tiles, B_tiles, static_metric_state = step_static_metric_fields(
-        D_tiles,
-        B_tiles,
-        J_tiles,
-        metric,
-        static_metric_state,
-        static_parameters,
-        dynamic_parameters,
-    )
-    # update the curvilinear Maxwell fields using the centered current
+    E_n = compute_covariant_E(D_n, B_n, metric)
+    # compute the covariant electric field from the updated displacement and magnetic fields
+    H_n = compute_covariant_H(D_n, B_n, metric)
+    # compute the covariant magnetic field from the updated displacement and magnetic fields
+
+    B_n_plushalf = update_B_relativity(E_n, B_n_minushalf, metric, static_parameters, dynamic_parameters, dynamic_parameters.dt)
+    # update the contravariant magnetic field using the updated displacement field
+
+    J_n = (J_n_plushalf + J_n_minushalf) / 2.0
+    # compute the centered current for the current time step
+
+    D_n_plushalf = update_D_relativity(D_n_minushalf, H_n, J_n, metric, static_parameters, dynamic_parameters, dynamic_parameters.dt)
+    # update the contravariant displacement field using the updated magnetic field and current
+
+    H_n_plushalf = compute_covariant_H(D_n_plushalf, B_n_plushalf, metric)
+    # compute the covariant magnetic field from the updated displacement and magnetic fields
+
+    D_n_plusone = update_D_relativity(D_n, H_n_plushalf, J_n_plushalf, metric, static_parameters, dynamic_parameters, dynamic_parameters.dt)
+    # update the contravariant displacement field using the updated magnetic field and current
+
+
+    previous_fields = (D_n, B_n_minushalf)
+    # store the current fields for the next time step
 
     fields = (
-        D_tiles,
-        B_tiles,
-        J_tiles,
-        rho_tiles,
-        phi_tiles,
+        D_n_plusone,
+        B_n_plushalf,
+        J_n_plushalf,
+        rho,
+        phi,
         external_fields,
         metric,
-        static_metric_state,
-        overflow,
+        previous_fields,
+        overflow_previous,
     )
+    # pack the fixed-metric field state
 
     return particles, fields

@@ -262,7 +262,7 @@ def hybrid_boris_geodesic_push(
         )
         u_after_first_em = jnp.where(active & update_u, u_after_first_em, u_tile)
 
-        x_geo, u_geo, x_half, u_half = _geodesic_leapfrog_step(
+        x_new, u_new, x_half, u_half = _geodesic_leapfrog_step(
             x_tile,
             u_after_first_em,
             metric,
@@ -273,14 +273,14 @@ def hybrid_boris_geodesic_push(
             tz,
             dt,
         )
-        x_geo = jnp.where(active & update_x, x_geo, x_tile)
-        u_geo = jnp.where(active & update_u, u_geo, u_after_first_em)
+        x_new = jnp.where(active & update_x, x_new, x_tile)
+        u_new = jnp.where(active & update_u, u_new, u_tile)
         x_half = jnp.where(active & update_x, x_half, x_tile)
-        u_half = jnp.where(active & update_u, u_half, u_after_first_em)
+        u_half = jnp.where(active & update_u, u_half, u_tile)
 
         u_new = _electromagnetic_boris_step(
-            x_geo,
-            u_geo,
+            x_new,
+            u_new,
             qom_tile,
             D_tiles,
             B_tiles,
@@ -292,9 +292,9 @@ def hybrid_boris_geodesic_push(
             tz,
             dt / 2.0,
         )
-        u_new = jnp.where(active & update_u, u_new, u_geo)
+        u_new = jnp.where(active & update_u, u_new, u_tile)
 
-        return x_geo, u_new, x_half, u_half
+        return x_new, u_new, x_half, u_half
 
     tx, ty, tz = jnp.meshgrid(
         jnp.arange(ntx),
@@ -317,11 +317,9 @@ def hybrid_boris_geodesic_push(
         tz,
     )
 
-    return (
-        TiledParticles(x=x_new, u=u_new, active=particles.active),
-        TiledParticles(x=x_half, u=u_half, active=particles.active),
-    )
+    particles = TiledParticles(x=x_new, u=u_new, active=particles.active)
+    # pack the tiled particles into a single TiledParticles object.
+    particles_n_minushalf = TiledParticles(x=x_half, u=u_new, active=particles.active)
+    # pack the intermediate particles into a single TiledParticles object for centered current deposition.
 
-
-def covariant_velocity_to_contravariant_three_velocity(u_cov, metric):
-    return contravariant_three_velocity(u_cov, metric.gamma_inv)
+    return particles, particles_n_minushalf
