@@ -208,6 +208,13 @@ def time_loop_static_metric(
     )
     # advance full-step particles and keep the intermediate particles (x_n_plushalf, v_n_plushalf) for the centered current deposition
 
+    centered_particles, centered_overflow = refresh_tiled_particle_tiles(
+        centered_particles,
+        static_parameters,
+        dynamic_parameters,
+    )
+    # apply particle boundaries and move midpoint particles into the tiles that own the current-deposition positions
+
     J_n_plushalf = GR_direct_deposition(
         centered_particles,
         species_config,
@@ -217,6 +224,14 @@ def time_loop_static_metric(
         dynamic_parameters,
     )
     # deposit contravariant current density from the centered particles
+
+    particles, fullstep_overflow = refresh_tiled_particle_tiles(
+        particles,
+        static_parameters,
+        dynamic_parameters,
+    )
+    overflow = overflow_previous | centered_overflow | fullstep_overflow
+    # apply boundaries and restore full-step tile ownership for the next push while preserving all overflow events
 
 
     E_n = compute_covariant_E(D_n, B_n, metric)
@@ -252,7 +267,7 @@ def time_loop_static_metric(
         external_fields,
         metric,
         previous_fields,
-        overflow_previous,
+        overflow,
     )
     # pack the fixed-metric field state
 

@@ -93,10 +93,13 @@ def GR_direct_deposition(
     """
     Direct current deposition for a fixed 3+1 metric.
 
-    ``particles.u`` stores covariant spatial components ``u_i``.  The returned
-    source current follows the FPIC Maxwell convention
+    ``particles.u`` stores covariant spatial components ``u_i``.  Deposition,
+    ghost folding, and filtering operate on the conformal current
+    ``sqrt(gamma) J^i``.  The returned source current follows the physical FPIC
+    Maxwell convention
 
-        J^i = (q / dV) * S(x) * (alpha v^i - beta^i).
+        J^i = (q / (sqrt(gamma) d^3x)) * S(x)
+              * (alpha v^i - beta^i).
     """
 
     current_filter = static_parameters.current_filter
@@ -261,27 +264,44 @@ def GR_direct_deposition(
         tz,
     )
 
-    J = fold_tiled_vector_ghost_cells((Jx, Jy, Jz), static_parameters, g, bc_type=1)
-    J = update_tiled_vector_ghost_cells(J, static_parameters, g, bc_type=1)
+    conformal_J = fold_tiled_vector_ghost_cells((Jx, Jy, Jz), static_parameters, g, bc_type=1)
+    conformal_J = update_tiled_vector_ghost_cells(conformal_J, static_parameters, g, bc_type=1)
 
-    def bilinear_filtered_current(J):
-        J = bilinear_filter_vector(J, num_guard_cells=g)
-        return update_tiled_vector_ghost_cells(J, static_parameters, num_guard_cells=g, bc_type=1)
+    def bilinear_filtered_current(conformal_J):
+        conformal_J = bilinear_filter_vector(conformal_J, num_guard_cells=g)
+        return update_tiled_vector_ghost_cells(
+            conformal_J,
+            static_parameters,
+            num_guard_cells=g,
+            bc_type=1,
+        )
 
-    def digital_filtered_current(J):
-        J = digital_filter_vector(J, dynamic_parameters.alpha, num_guard_cells=g)
-        return update_tiled_vector_ghost_cells(J, static_parameters, num_guard_cells=g, bc_type=1)
+    def digital_filtered_current(conformal_J):
+        conformal_J = digital_filter_vector(
+            conformal_J,
+            dynamic_parameters.alpha,
+            num_guard_cells=g,
+        )
+        return update_tiled_vector_ghost_cells(
+            conformal_J,
+            static_parameters,
+            num_guard_cells=g,
+            bc_type=1,
+        )
 
-    J = jax.lax.cond(
+    conformal_J = jax.lax.cond(
         current_filter == "bilinear",
         bilinear_filtered_current,
-        lambda J: jax.lax.cond(
+        lambda conformal_J: jax.lax.cond(
             current_filter == "digital",
             digital_filtered_current,
-            lambda J: J,
-            J,
+            lambda conformal_J: conformal_J,
+            conformal_J,
         ),
-        J,
+        conformal_J,
     )
 
-    return J
+    return tuple(
+        conformal_J[i] / metric.D[i].sqrt_gamma
+        for i in range(3)
+    )
