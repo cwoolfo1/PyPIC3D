@@ -4,6 +4,7 @@ import jax
 import jax.numpy as jnp
 
 from PyPIC3D.particles.particle_class import TiledParticles
+from PyPIC3D.utilities.grids import grid_domain_bounds
 
 
 class ParticleOutputRecord(NamedTuple):
@@ -146,15 +147,15 @@ def fields_for_output(fields, static_parameters):
     return output_fields + (pml_state,)
 
 
-def _axis_diagnostic_position(x, u, dt, wind, bc):
+def _axis_diagnostic_position(x, u, dt, axis_min, axis_max, bc):
     x_diagnostic = x - u * dt / 2
 
     if int(jnp.asarray(bc).item()) == 0:
-        half_wind = wind / 2
+        wind = axis_max - axis_min
         x_diagnostic = jnp.where(
-            x_diagnostic > half_wind,
+            x_diagnostic > axis_max,
             x_diagnostic - wind,
-            jnp.where(x_diagnostic < -half_wind, x_diagnostic + wind, x_diagnostic),
+            jnp.where(x_diagnostic < axis_min, x_diagnostic + wind, x_diagnostic),
         )
 
     return x_diagnostic
@@ -163,9 +164,10 @@ def _axis_diagnostic_position(x, u, dt, wind, bc):
 def _diagnostic_position(x, u, static_parameters, dynamic_parameters):
     particle_bc = static_parameters.particle_boundary_conditions
     dt = dynamic_parameters.dt
-    x_diagnostic = _axis_diagnostic_position(x[:, 0], u[:, 0], dt, dynamic_parameters.x_wind, particle_bc[0])
-    y_diagnostic = _axis_diagnostic_position(x[:, 1], u[:, 1], dt, dynamic_parameters.y_wind, particle_bc[1])
-    z_diagnostic = _axis_diagnostic_position(x[:, 2], u[:, 2], dt, dynamic_parameters.z_wind, particle_bc[2])
+    x_bounds, y_bounds, z_bounds = grid_domain_bounds(dynamic_parameters)
+    x_diagnostic = _axis_diagnostic_position(x[:, 0], u[:, 0], dt, x_bounds[0], x_bounds[1], particle_bc[0])
+    y_diagnostic = _axis_diagnostic_position(x[:, 1], u[:, 1], dt, y_bounds[0], y_bounds[1], particle_bc[1])
+    z_diagnostic = _axis_diagnostic_position(x[:, 2], u[:, 2], dt, z_bounds[0], z_bounds[1], particle_bc[2])
 
     return jnp.stack((x_diagnostic, y_diagnostic, z_diagnostic), axis=-1)
 

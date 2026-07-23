@@ -35,7 +35,7 @@ Common Optional Fields
 
 - Thermal setup: ``temperature`` or ``vth`` (optionally ``Tx``, ``Ty``, ``Tz``)
 - Weighting: ``weight`` or ``ds_per_debye``
-- Spatial bounds: ``xmin/xmax``, ``ymin/ymax``, ``zmin/zmax``
+- Species sampling bounds: ``xmin/xmax``, ``ymin/ymax``, ``zmin/zmax``
 - External initial state: ``initial_x/y/z``, ``initial_vx/vy/vz`` (``.npy``)
 - Update controls: ``update_pos``, ``update_v``, component-level flags
 
@@ -44,9 +44,14 @@ Initialization Behavior
 
 If external arrays are not provided:
 
-- positions are sampled uniformly inside species bounds
+- positions are sampled uniformly inside species bounds, or across the full
+  grid domain when species bounds are omitted
 - velocities are sampled from thermal distributions derived from
   ``temperature``/``vth``
+
+The species keys ``xmin/xmax`` are local particle sampling limits. The grid
+domain itself is configured in ``[simulation_parameters]`` with
+``x_min/x_max`` or the older centered ``x_wind`` width.
 
 If scalar ``initial_x/y/z`` values are used, PyPIC3D places particles near that
 location with sub-cell variation when applicable.

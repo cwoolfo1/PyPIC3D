@@ -9,6 +9,14 @@ import numpy as np
 from functools import partial
 
 from PyPIC3D.diagnostics.output_adapters import particles_for_output
+from PyPIC3D.utilities.grids import grid_axis_width
+
+
+def _expanded_axis_range(center_axis):
+    lower, upper = center_axis[1], center_axis[-1]
+    width = grid_axis_width(center_axis)
+    center = 0.5 * (lower + upper)
+    return [float(center - (2 / 3) * width), float(center + (2 / 3) * width)]
 
 def plot_positions(particles, t, static_parameters, dynamic_parameters, path, species_config=None, species_names=None):
     """
@@ -25,9 +33,7 @@ def plot_positions(particles, t, static_parameters, dynamic_parameters, path, sp
     """
     fig = go.Figure()
 
-    x_wind = dynamic_parameters.x_wind
-    y_wind = dynamic_parameters.y_wind
-    z_wind = dynamic_parameters.z_wind
+    center_grid = dynamic_parameters.grids.center
 
     particles = particles_for_output(
         particles,
@@ -50,9 +56,9 @@ def plot_positions(particles, t, static_parameters, dynamic_parameters, path, sp
 
     fig.update_layout(
         scene=dict(
-            xaxis=dict(range=[-(2/3)*x_wind, (2/3)*x_wind]),
-            yaxis=dict(range=[-(2/3)*y_wind, (2/3)*y_wind]),
-            zaxis=dict(range=[-(2/3)*z_wind, (2/3)*z_wind]),
+            xaxis=dict(range=_expanded_axis_range(center_grid[0])),
+            yaxis=dict(range=_expanded_axis_range(center_grid[1])),
+            zaxis=dict(range=_expanded_axis_range(center_grid[2])),
             xaxis_title='X (m)',
             yaxis_title='Y (m)',
             zaxis_title='Z (m)'
@@ -122,9 +128,7 @@ def particles_phase_space(particles, static_parameters, dynamic_parameters, t, n
         None
     """
 
-    x_wind = dynamic_parameters.x_wind
-    y_wind = dynamic_parameters.y_wind
-    z_wind = dynamic_parameters.z_wind
+    center_grid = dynamic_parameters.grids.center
 
     colors = ['r', 'b', 'g', 'c', 'm', 'y', 'k']
     idx = 0
@@ -148,7 +152,7 @@ def particles_phase_space(particles, static_parameters, dynamic_parameters, t, n
     plt.xlabel("Position")
     plt.ylabel("Velocity")
     #plt.ylim(-1e10, 1e10)
-    plt.xlim(-(2/3)*x_wind, (2/3)*x_wind)
+    plt.xlim(*_expanded_axis_range(center_grid[0]))
     plt.title(f"{name} Phase Space")
     plt.savefig(f"{path}/data/phase_space/x/{name}_phase_space.{t:09}.png", dpi=300)
     plt.close()
@@ -161,7 +165,7 @@ def particles_phase_space(particles, static_parameters, dynamic_parameters, t, n
         idx += 1
     plt.xlabel("Position")
     plt.ylabel("Velocity")
-    plt.xlim(-(2/3)*y_wind, (2/3)*y_wind)
+    plt.xlim(*_expanded_axis_range(center_grid[1]))
     plt.title(f"{name} Phase Space")
     plt.savefig(f"{path}/data/phase_space/y/{name}_phase_space.{t:09}.png", dpi=150)
     plt.close()
@@ -174,7 +178,7 @@ def particles_phase_space(particles, static_parameters, dynamic_parameters, t, n
         idx += 1
     plt.xlabel("Position")
     plt.ylabel("Velocity")
-    plt.xlim(-(2/3)*z_wind, (2/3)*z_wind)
+    plt.xlim(*_expanded_axis_range(center_grid[2]))
     plt.title(f"{name} Phase Space")
     plt.savefig(f"{path}/data/phase_space/z/{name}_phase_space.{t:09}.png", dpi=150)
     plt.close()
@@ -204,15 +208,13 @@ def plot_initial_histograms(particle_record, dynamic_parameters, name, path):
     x, y, z = particle_record.x_diagnostic[:, 0], particle_record.x_diagnostic[:, 1], particle_record.x_diagnostic[:, 2]
     vx, vy, vz = particle_record.u[:, 0], particle_record.u[:, 1], particle_record.u[:, 2]
 
-    x_wind = dynamic_parameters.x_wind
-    y_wind = dynamic_parameters.y_wind
-    z_wind = dynamic_parameters.z_wind
+    center_grid = dynamic_parameters.grids.center
 
 
     plt.hist(x, bins=50)
     plt.xlabel("X")
     plt.ylabel("Number of Particles")
-    plt.xlim(-(2/3)*x_wind, (2/3)*x_wind)
+    plt.xlim(*_expanded_axis_range(center_grid[0]))
     plt.title(f"{name} Initial X Position Histogram")
     plt.savefig(f"{path}/{name}_initial_x_histogram.png", dpi=150)
     plt.close()
@@ -220,7 +222,7 @@ def plot_initial_histograms(particle_record, dynamic_parameters, name, path):
     plt.hist(y, bins=50)
     plt.xlabel("Y")
     plt.ylabel("Number of Particles")
-    plt.xlim(-(2/3)*y_wind, (2/3)*y_wind)
+    plt.xlim(*_expanded_axis_range(center_grid[1]))
     plt.title(f"{name} Initial Y Position Histogram")
     plt.savefig(f"{path}/{name}_initial_y_histogram.png", dpi=150)
     plt.close()
@@ -228,7 +230,7 @@ def plot_initial_histograms(particle_record, dynamic_parameters, name, path):
     plt.hist(z, bins=50)
     plt.xlabel("Z")
     plt.ylabel("Number of Particles")
-    plt.xlim(-(2/3)*z_wind, (2/3)*z_wind)
+    plt.xlim(*_expanded_axis_range(center_grid[2]))
     plt.title(f"{name} Initial Z Position Histogram")
     plt.savefig(f"{path}/{name}_initial_z_histogram.png", dpi=150)
     plt.close()

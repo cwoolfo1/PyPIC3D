@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import jax
 import jax.numpy as jnp
 
-from PyPIC3D.boundary_conditions.grid_and_stencil import BC_CONDUCTING, BC_PERIODIC
+from PyPIC3D.boundary_conditions.grid_and_stencil import BC_CONDUCTING, BC_CONSTANT, BC_PERIODIC
 from PyPIC3D.boundary_conditions import ghost_cells
 
 jax.config.update("jax_enable_x64", True)
@@ -159,6 +159,24 @@ class TestGhostCells(unittest.TestCase):
         result = ghost_cells.apply_tiled_constant_boundary(field, parameter_set, axis=0, num_guard_cells=self.g)
 
         self.assertTrue(jnp.allclose(result, refreshed))
+
+    def test_update_tiled_ghost_cells_constant_copies_adjacent_global_interiors(self):
+        parameter_set = SimpleNamespace(
+            tile_shape=self.tile_shape,
+            guard_cells=self.g,
+            field_mesh=ghost_cells.make_field_mesh((1, 1, 1)),
+            boundary_conditions=(BC_CONSTANT, BC_PERIODIC, BC_PERIODIC),
+        )
+        field = jnp.zeros((1, 1, 1, 4, 4, 4), dtype=float)
+        field = field.at[0, 0, 0, 1, :, :].set(2.0)
+        field = field.at[0, 0, 0, 2, :, :].set(7.0)
+
+        result = ghost_cells.update_tiled_ghost_cells(field, parameter_set, self.g)
+
+        self.assertTrue(jnp.allclose(result[0, 0, 0, 0, :, :], result[0, 0, 0, 1, :, :]))
+        self.assertTrue(jnp.allclose(result[0, 0, 0, -1, :, :], result[0, 0, 0, -2, :, :]))
+        self.assertTrue(jnp.allclose(result[0, 0, 0, 1, :, :], 2.0))
+        self.assertTrue(jnp.allclose(result[0, 0, 0, 2, :, :], 7.0))
 
 
 if __name__ == '__main__':

@@ -14,7 +14,11 @@ By default, initialization builds a Yee-style pair of grids:
 - ``world['grids']['vertex']``: staggered half-cell grid with one ghost cell
   on each side
 
-These are generated from ``Nx, Ny, Nz`` and ``x_wind, y_wind, z_wind``.
+These are generated from ``Nx, Ny, Nz`` and the resolved coordinate bounds.
+Old configs can continue to give centered widths with
+``x_wind, y_wind, z_wind``. New configs can instead give explicit
+``x_min/x_max``, ``y_min/y_max``, and ``z_min/z_max`` pairs. Once the grid is
+constructed, the grid arrays are the source of truth for the physical domain.
 
 The field components follow the legacy PyPIC3D Yee placement. Electric current
 and electric field components use the vertex grid along their component axis

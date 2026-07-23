@@ -11,6 +11,7 @@ import numpy as np
 import importlib.metadata
 
 from PyPIC3D.diagnostics.output_adapters import fields_for_output, particles_for_output
+from PyPIC3D.utilities.grids import grid_domain_bounds
 
 
 @dataclass(frozen=True)
@@ -66,18 +67,19 @@ def _configure_openpmd_mesh(mesh, dynamic_parameters, active_dims=(1,1,1)):
     ds      = []
     offsets = []
     # initialize lists for axes, spacings, and offsets
+    x_bounds, y_bounds, z_bounds = grid_domain_bounds(dynamic_parameters)
     if active_dims[0]:
         axes.append("x")
         ds.append(float(dynamic_parameters.dx))
-        offsets.append(-float(dynamic_parameters.x_wind) / 2.0)
+        offsets.append(float(x_bounds[0]))
     if active_dims[1]:
         axes.append("y")
         ds.append(float(dynamic_parameters.dy))
-        offsets.append(-float(dynamic_parameters.y_wind) / 2.0)
+        offsets.append(float(y_bounds[0]))
     if active_dims[2]:
         axes.append("z")
         ds.append(float(dynamic_parameters.dz))
-        offsets.append(-float(dynamic_parameters.z_wind) / 2.0)
+        offsets.append(float(z_bounds[0]))
     # determine the active axes being used and set them
 
     mesh.axis_labels = axes
@@ -419,15 +421,15 @@ def write_openpmd_particles_to_iteration(
         mass.unit_SI = 1.0
 
 
-def _axis_diagnostic_position_array(x, u, dt, wind, bc):
+def _axis_diagnostic_position_array(x, u, dt, axis_min, axis_max, bc):
     x_diagnostic = x - u * dt / 2.0
 
     if int(np.asarray(bc)) == 0:
-        half_wind = wind / 2.0
+        wind = axis_max - axis_min
         x_diagnostic = np.where(
-            x_diagnostic > half_wind,
+            x_diagnostic > axis_max,
             x_diagnostic - wind,
-            np.where(x_diagnostic < -half_wind, x_diagnostic + wind, x_diagnostic),
+            np.where(x_diagnostic < axis_min, x_diagnostic + wind, x_diagnostic),
         )
 
     return x_diagnostic
@@ -436,12 +438,13 @@ def _axis_diagnostic_position_array(x, u, dt, wind, bc):
 def _diagnostic_position_array(x, u, static_parameters, dynamic_parameters):
     particle_bc = static_parameters.particle_boundary_conditions
     dt = float(dynamic_parameters.dt)
+    x_bounds, y_bounds, z_bounds = grid_domain_bounds(dynamic_parameters)
 
     return np.stack(
         (
-            _axis_diagnostic_position_array(x[:, 0], u[:, 0], dt, float(dynamic_parameters.x_wind), particle_bc[0]),
-            _axis_diagnostic_position_array(x[:, 1], u[:, 1], dt, float(dynamic_parameters.y_wind), particle_bc[1]),
-            _axis_diagnostic_position_array(x[:, 2], u[:, 2], dt, float(dynamic_parameters.z_wind), particle_bc[2]),
+            _axis_diagnostic_position_array(x[:, 0], u[:, 0], dt, float(x_bounds[0]), float(x_bounds[1]), particle_bc[0]),
+            _axis_diagnostic_position_array(x[:, 1], u[:, 1], dt, float(y_bounds[0]), float(y_bounds[1]), particle_bc[1]),
+            _axis_diagnostic_position_array(x[:, 2], u[:, 2], dt, float(z_bounds[0]), float(z_bounds[1]), particle_bc[2]),
         ),
         axis=-1,
     )

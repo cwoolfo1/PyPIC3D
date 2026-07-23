@@ -15,6 +15,7 @@ from scipy import stats
 # import external libraries
 
 from PyPIC3D.parameters import dynamic_parameters_for_output, static_parameters_for_output
+from PyPIC3D.utilities.grids import grid_axis_width, grid_domain_bounds
 
 def setup_pmd_files(file_path, name, extension=".bp"):
     """
@@ -329,14 +330,15 @@ def print_stats(static_parameters, dynamic_parameters):
     dy = dynamic_parameters.dy
     dz = dynamic_parameters.dz
     dt = dynamic_parameters.dt
-    x_wind = dynamic_parameters.x_wind
-    y_wind = dynamic_parameters.y_wind
-    z_wind = dynamic_parameters.z_wind
+    x_bounds, y_bounds, z_bounds = grid_domain_bounds(dynamic_parameters)
+    x_wind = grid_axis_width(dynamic_parameters.grids.center[0])
+    y_wind = grid_axis_width(dynamic_parameters.grids.center[1])
+    z_wind = grid_axis_width(dynamic_parameters.grids.center[2])
     t_wind = Nt*dt
     print(f'\ntime window: {t_wind} s with {Nt} time steps of {dt} s')
-    print(f'x window: {x_wind} m with dx: {dx} m')
-    print(f'y window: {y_wind} m with dy: {dy} m')
-    print(f'z window: {z_wind} m with dz: {dz} m\n')
+    print(f'x window: {x_wind} m [{x_bounds[0]}, {x_bounds[1]}] with dx: {dx} m')
+    print(f'y window: {y_wind} m [{y_bounds[0]}, {y_bounds[1]}] with dy: {dy} m')
+    print(f'z window: {z_wind} m [{z_bounds[0]}, {z_bounds[1]}] with dz: {dz} m\n')
 
 def check_stability(plasma_parameters, dt):
     """
@@ -403,7 +405,11 @@ def build_plasma_parameters_dict(static_parameters, dynamic_parameters, electron
     kb = dynamic_parameters.kb
     dx, dy, dz = dynamic_parameters.dx, dynamic_parameters.dy, dynamic_parameters.dz
 
-    volume = dynamic_parameters.x_wind * dynamic_parameters.y_wind * dynamic_parameters.z_wind
+    volume = (
+        grid_axis_width(dynamic_parameters.grids.center[0])
+        * grid_axis_width(dynamic_parameters.grids.center[1])
+        * grid_axis_width(dynamic_parameters.grids.center[2])
+    )
     density = weight * N / volume
     theoretical_freq = jnp.sqrt(density) * jnp.abs(q) / jnp.sqrt(dynamic_parameters.eps * me)
     debye = jnp.sqrt(dynamic_parameters.eps * kb * Te / (density * q**2))

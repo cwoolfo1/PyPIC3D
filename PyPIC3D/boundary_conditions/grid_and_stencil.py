@@ -9,6 +9,7 @@ import jax.numpy as jnp
 # Integer codes that identify the boundary condition type on each axis.
 BC_PERIODIC = 0     # periodic (wrap-around); ghost cells mirror opposite interior edge
 BC_CONDUCTING = 1   # conducting (Dirichlet); tangential E components vanish at walls
+BC_CONSTANT = 2     # constant/extrapolated; exterior ghost cells copy adjacent interiors
 
 
 @jit

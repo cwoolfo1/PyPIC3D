@@ -136,6 +136,22 @@ class TestTiledParticleRefresh(unittest.TestCase):
         self.assertTrue(bool(refreshed.active[0, 0, 0, 0, 0]))
         self.assertTrue(jnp.allclose(refreshed.x[0, 0, 0, 0, 0, 0], -1.75))
 
+    def test_refresh_wraps_periodic_particle_using_shifted_grid_bounds(self):
+        parameter_set = self._build_parameter_values()
+        parameter_set["x_wind"] = 2.0
+        parameter_set["dx"] = 0.5
+        parameter_set["x_min"] = 1.0
+        parameter_set["x_max"] = 3.0
+        species = self._species(parameter_set, x1=[2.75], v1=[0.0])
+        tiled_particles, species_config = self._tiled_particles([species], parameter_set)
+        moved = tiled_particles._replace(x=tiled_particles.x.at[1, 0, 0, 0, 0, 0].set(3.25))
+
+        refreshed, overflow = refresh_tiled_particle_tiles(moved, *self._split_parameters(parameter_set, (2, 1, 1)))
+
+        self.assertFalse(bool(overflow))
+        self.assertTrue(bool(refreshed.active[0, 0, 0, 0, 0]))
+        self.assertTrue(jnp.allclose(refreshed.x[0, 0, 0, 0, 0, 0], 1.25))
+
     def test_refresh_reflects_particle_from_global_boundary_condition(self):
         parameter_set = self._build_parameter_values()
         parameter_set["particle_boundary_conditions"] = {"x": 1, "y": 0, "z": 0}

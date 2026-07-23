@@ -34,7 +34,7 @@ from PyPIC3D.boundary_conditions.ghost_cells import (
     update_tiled_vector_ghost_cells,
 )
 from PyPIC3D.evolve import time_loop_electrodynamic, time_loop_electrostatic, time_loop_static_metric
-from PyPIC3D.boundary_conditions.grid_and_stencil import BC_CONDUCTING, BC_PERIODIC
+from PyPIC3D.boundary_conditions.grid_and_stencil import BC_CONDUCTING, BC_CONSTANT, BC_PERIODIC
 from PyPIC3D.boundary_conditions.PML import initialize_tiled_pml_state, load_pml_from_toml
 from PyPIC3D.boundary_conditions.supergaussian import load_supergaussian_from_toml
 from PyPIC3D.parameters import build_dynamic_parameters, build_static_parameters
@@ -56,6 +56,7 @@ def _encode_field_bc(bc_name):
     bc_codes = {
         "periodic": BC_PERIODIC,
         "conducting": BC_CONDUCTING,
+        "constant": BC_CONSTANT,
     }
     if bc_name not in bc_codes:
         raise ValueError(f"Unsupported field boundary condition: {bc_name}")
@@ -163,6 +164,34 @@ def _apply_supergaussian_field_boundaries(static_config, supergaussian_config):
             static_config["boundary_conditions"][axis] = BC_CONDUCTING
 
 
+def _resolve_axis_bounds(dynamic_config, axis):
+    """
+    Resolve one coordinate domain before grid construction.
+    """
+
+    wind_key = f"{axis}_wind"
+    min_key = f"{axis}_min"
+    max_key = f"{axis}_max"
+
+    lower = dynamic_config.get(min_key)
+    upper = dynamic_config.get(max_key)
+    if (lower is None) != (upper is None):
+        raise ValueError(f"Both {min_key} and {max_key} must be provided together.")
+
+    if lower is None:
+        width = dynamic_config[wind_key]
+        lower = -width / 2
+        upper = width / 2
+    else:
+        width = upper - lower
+        if width <= 0:
+            raise ValueError(f"{max_key} must be greater than {min_key}.")
+
+    dynamic_config[wind_key] = width
+    dynamic_config[min_key] = lower
+    dynamic_config[max_key] = upper
+
+
 def default_parameters():
     """
     Return plotting, static, and dynamic parameter dictionaries.
@@ -229,6 +258,12 @@ def default_parameters():
         "x_wind": 1e-2,
         "y_wind": 1e-2,
         "z_wind": 1e-2,
+        "x_min": None,
+        "x_max": None,
+        "y_min": None,
+        "y_max": None,
+        "z_min": None,
+        "z_max": None,
         "t_wind": 1e-12,
         "dt": None,
         "eps": 8.85418782e-12,
@@ -298,6 +333,10 @@ def initialize_simulation(toml_file):
     electrostatic = solver == "electrostatic"
     static_metric = solver == "static_metric"
     static_config["electrostatic"] = electrostatic
+
+    _resolve_axis_bounds(dynamic_config, "x")
+    _resolve_axis_bounds(dynamic_config, "y")
+    _resolve_axis_bounds(dynamic_config, "z")
 
     Nx, Ny, Nz = dynamic_config["Nx"], dynamic_config["Ny"], dynamic_config["Nz"]
     x_wind, y_wind, z_wind = dynamic_config["x_wind"], dynamic_config["y_wind"], dynamic_config["z_wind"]

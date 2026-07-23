@@ -43,6 +43,10 @@ Minimal Working Example
     x_wind = 1.0
     y_wind = 1.0
     z_wind = 1.0
+    # Optional explicit grid bounds. If provided, min/max set the grid domain
+    # and PyPIC3D derives the corresponding *_wind width.
+    # x_min = 0.0
+    # x_max = 1.0
     t_wind = 1e-8
     cfl = 0.9
     shape_factor = 1                       # 1 or 2
@@ -90,6 +94,11 @@ Key Notes
 
 - Field boundary conditions use ``simulation_parameters.x_bc/y_bc/z_bc`` with
   values ``periodic`` or ``conducting``.
+- Grid domains can be specified either with centered widths
+  ``x_wind/y_wind/z_wind`` or with explicit pairs
+  ``x_min/x_max``, ``y_min/y_max``, and ``z_min/z_max``. If explicit bounds
+  are supplied, they define the grid axes and the corresponding ``*_wind`` is
+  derived from ``max - min``.
 - Supergaussian field absorbers are configured with top-level
   ``[[supergaussian]]`` sections.  Each section uses ``wall`` plus ``width`` in
   cells and optional ``order``, ``target_reflection``, or ``sigma_max``.

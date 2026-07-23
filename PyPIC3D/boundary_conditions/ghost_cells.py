@@ -6,7 +6,7 @@ import jax
 import jax.numpy as jnp
 from jax.sharding import Mesh, PartitionSpec as P
 
-from PyPIC3D.boundary_conditions.grid_and_stencil import BC_CONDUCTING, BC_PERIODIC
+from PyPIC3D.boundary_conditions.grid_and_stencil import BC_CONDUCTING, BC_CONSTANT, BC_PERIODIC
 
 
 MESH_AXES = ("tile_x", "tile_y", "tile_z")
@@ -152,6 +152,9 @@ def _local_refresh_reduced_axis(tile, axis, g, boundary_condition):
     if boundary_condition == BC_PERIODIC:
         tile = tile.at[tuple(lower_slice)].set(jnp.broadcast_to(interior, tile[tuple(lower_slice)].shape))
         tile = tile.at[tuple(upper_slice)].set(jnp.broadcast_to(interior, tile[tuple(upper_slice)].shape))
+    elif boundary_condition == BC_CONSTANT:
+        tile = tile.at[tuple(lower_slice)].set(jnp.broadcast_to(interior, tile[tuple(lower_slice)].shape))
+        tile = tile.at[tuple(upper_slice)].set(jnp.broadcast_to(interior, tile[tuple(upper_slice)].shape))
     else:
         tile = tile.at[tuple(lower_slice)].set(0.0)
         tile = tile.at[tuple(upper_slice)].set(0.0)
@@ -197,8 +200,6 @@ def _refresh_axis(tile, axis, g, axis_name, send_positive, send_negative):
 
 
 def _local_refresh_scalar_tile(tile, g, boundary_conditions, reduced_axes, mesh_shape, send_positive, send_negative):
-    del mesh_shape
-
     for axis, axis_name, boundary_condition, reduced_axis, positive, negative in zip(
         range(3),
         MESH_AXES,
@@ -211,6 +212,8 @@ def _local_refresh_scalar_tile(tile, g, boundary_conditions, reduced_axes, mesh_
             tile = _local_refresh_reduced_axis(tile, axis, g, boundary_condition)
         else:
             tile = _refresh_axis(tile, axis, g, axis_name, positive, negative)
+            if boundary_condition == BC_CONSTANT:
+                tile = _apply_local_constant_boundary_axis(tile, axis, g, axis_name, mesh_shape[axis])
 
     return tile
 
@@ -674,10 +677,10 @@ def apply_tiled_zero_boundary(field_tiles, static_parameters, axis, num_guard_ce
 
 def apply_tiled_constant_boundary(field_tiles, static_parameters, axis, num_guard_cells=2):
     """
-    Fill exterior ghost cells on a conducting wall from the adjacent interior plane.
+    Fill exterior ghost cells from the adjacent interior plane.
 
-    This is the scalar potential condition for a conducting boundary: the
-    potential is constant through the boundary.  Internal tile halos are still
+    This is used by the electrostatic scalar potential on conducting walls and
+    by explicit constant field boundaries.  Internal tile halos are still
     refreshed through the distributed ppermute path before the exterior ghosts
     are overwritten.
     """
@@ -686,7 +689,7 @@ def apply_tiled_constant_boundary(field_tiles, static_parameters, axis, num_guar
     field_tiles = update_tiled_ghost_cells(field_tiles, static_parameters, num_guard_cells)
 
     boundary_conditions = _boundary_tuple(static_parameters.boundary_conditions)
-    if boundary_conditions[axis] != BC_CONDUCTING:
+    if boundary_conditions[axis] not in (BC_CONDUCTING, BC_CONSTANT):
         return field_tiles
 
     tile_shape = tuple(int(width) for width in static_parameters.tile_shape)
