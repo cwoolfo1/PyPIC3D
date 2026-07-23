@@ -230,6 +230,10 @@ class TestSupergaussianInitialization(unittest.TestCase):
                     "x_bc": "constant",
                     "y_bc": "periodic",
                     "z_bc": "periodic",
+                    "x_min": 1.0,
+                    "x_max": 2.0,
+                    "y_min": 0.17,
+                    "y_max": 1.17,
                 }
             )
 

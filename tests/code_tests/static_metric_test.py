@@ -10,6 +10,7 @@ from PyPIC3D.initialization import (
     validate_field_solver,
 )
 from PyPIC3D.particles.particle_class import SpeciesConfig, TiledParticles
+from PyPIC3D.particles.particle_tile_communication import shard_tiled_particles
 import PyPIC3D.pusher.hybrid_boris_geodesic as hybrid_pusher
 from PyPIC3D.pusher.hybrid_boris_geodesic import (
     GR_position_update,
@@ -17,13 +18,26 @@ from PyPIC3D.pusher.hybrid_boris_geodesic import (
     geodesic_velocity,
     hybrid_boris_geodesic_push,
 )
-from PyPIC3D.relativity.core import Metric
-from PyPIC3D.relativity.flat import initialize_flat_cartesian_metric, initialize_flat_cylindrical_metric
+from PyPIC3D.relativity.core import (
+    B_FIELD_LOCATIONS,
+    D_FIELD_LOCATIONS,
+    Metric,
+    metric_for_location,
+)
+from PyPIC3D.relativity.flat import (
+    initialize_flat_cartesian_metric,
+    initialize_flat_cylindrical_metric,
+    initialize_flat_spherical_metric,
+)
 from PyPIC3D.relativity.kerr_schild import (
     initialize_kerr_schild_cartesian_metric,
     initialize_kerr_schild_spherical_metric,
 )
-from PyPIC3D.solvers.static_metric import compute_covariant_E, compute_covariant_H
+from PyPIC3D.solvers.static_metric import (
+    compute_covariant_E,
+    compute_covariant_H,
+    update_D_relativity,
+)
 from tests.kernel_fixtures import active_interior, empty_tiled_vector, kernel_parameters
 
 
@@ -65,6 +79,25 @@ def _replace_lapse_shift(metric, lapse, shift):
     )
 
 
+def _metric_locations_with_grids(metric, dynamic_parameters):
+    center_grid = dynamic_parameters.grids.tiled_center_grid
+    vertex_grid = dynamic_parameters.grids.tiled_vertex_grid
+    metric_locations = (
+        tuple(zip(metric.D, D_FIELD_LOCATIONS))
+        + tuple(zip(metric.B, B_FIELD_LOCATIONS))
+        + ((metric.center, ("C", "C", "C")),)
+        + ((metric.vertex, ("V", "V", "V")),)
+    )
+
+    return tuple(
+        (
+            metric_at_location,
+            metric_for_location(center_grid, vertex_grid, location),
+        )
+        for metric_at_location, location in metric_locations
+    )
+
+
 def test_flat_cartesian_metric_matches_center_grid_shape():
     static_parameters, dynamic_parameters = kernel_parameters(Nx=4, Ny=3, Nz=2)
 
@@ -84,9 +117,12 @@ def test_kerr_schild_metric_initializers_build_finite_derivatives():
         Nx=4,
         Ny=4,
         Nz=4,
-        x_wind=4.0,
-        y_wind=4.0,
-        z_wind=4.0,
+        x_wind=1.0,
+        y_wind=0.8,
+        z_wind=1.0,
+        x_min=2.0,
+        y_min=0.17,
+        z_min=0.5,
         tile_shape=(4, 4, 4),
         solver="static_metric",
         current_deposition="GR_direct",
@@ -122,6 +158,9 @@ def test_flat_cylindrical_metric_fills_nonzero_christoffels():
         x_wind=8.0,
         y_wind=1.0,
         z_wind=1.0,
+        x_min=2.5,
+        y_min=0.2,
+        z_min=0.2,
         tile_shape=(8, 2, 1),
         solver="static_metric",
         current_deposition="GR_direct",
@@ -507,6 +546,315 @@ def test_GR_direct_deposition_returns_fpic_shifted_source_current():
     assert jnp.allclose(J[0][interior], expected[0])
     assert jnp.allclose(J[1][interior], expected[1])
     assert jnp.allclose(J[2][interior], expected[2])
+
+
+def test_GR_direct_deposition_returns_physical_spherical_current():
+    static_parameters, dynamic_parameters = kernel_parameters(
+        Nx=8,
+        Ny=1,
+        Nz=1,
+        x_wind=8.0,
+        y_wind=1.0,
+        z_wind=1.0,
+        x_min=2.0,
+        y_min=0.4,
+        z_min=0.2,
+        dt=0.1,
+        tile_shape=(8, 1, 1),
+        shape_factor=1,
+        current_filter="none",
+        solver="static_metric",
+        current_deposition="GR_direct",
+        particle_pusher="hybrid_boris_geodesic",
+        metric="flat_spherical",
+    )
+    metric = initialize_flat_spherical_metric(static_parameters, dynamic_parameters)
+    J_template = empty_tiled_vector(static_parameters, dynamic_parameters)
+    species = SpeciesConfig(
+        charge=jnp.asarray([1.0]),
+        mass=jnp.asarray([1.0]),
+        weight=jnp.asarray([1.0]),
+        update_x=jnp.asarray([[True, True, True]]),
+        update_u=jnp.asarray([[True, True, True]]),
+    )
+
+    def deposit_radial_particle(radius):
+        particles = TiledParticles(
+            x=jnp.asarray((radius, 0.4, 0.2)).reshape((1, 1, 1, 1, 1, 3)),
+            u=jnp.asarray((0.5, 0.0, 0.0)).reshape((1, 1, 1, 1, 1, 3)),
+            active=jnp.ones((1, 1, 1, 1, 1), dtype=bool),
+        )
+        J = GR_direct_deposition(
+            particles,
+            species,
+            J_template,
+            metric,
+            static_parameters,
+            dynamic_parameters,
+        )
+
+        g = int(static_parameters.guard_cells)
+        active = (
+            slice(None),
+            slice(None),
+            slice(None),
+            slice(g, -g),
+            slice(g, -g),
+            slice(g, -g),
+        )
+        physical_current_sum = jnp.sum(J[0][active])
+        conformal_flux = jnp.sum(
+            metric.D[0].sqrt_gamma[active]
+            * J[0][active]
+            * dynamic_parameters.dx
+            * dynamic_parameters.dy
+            * dynamic_parameters.dz
+        )
+        return physical_current_sum, conformal_flux
+
+    inner_current, inner_flux = deposit_radial_particle(2.5)
+    outer_current, outer_flux = deposit_radial_particle(6.5)
+    expected_flux = 0.5 / jnp.sqrt(1.0 + 0.5**2)
+
+    assert jnp.allclose(inner_flux, expected_flux, rtol=1.0e-5, atol=1.0e-6)
+    assert jnp.allclose(outer_flux, expected_flux, rtol=1.0e-5, atol=1.0e-6)
+    assert inner_current > outer_current
+
+
+def test_update_D_relativity_consumes_physical_current_without_metric_rescaling():
+    static_parameters, dynamic_parameters = kernel_parameters(
+        Nx=4,
+        Ny=4,
+        Nz=1,
+        x_wind=1.0,
+        y_wind=0.8,
+        z_wind=1.0,
+        x_min=2.0,
+        y_min=0.17,
+        z_min=0.2,
+        dt=0.1,
+        tile_shape=(4, 4, 1),
+        solver="static_metric",
+        current_deposition="GR_direct",
+        particle_pusher="hybrid_boris_geodesic",
+        metric="flat_spherical",
+    )
+    metric = initialize_flat_spherical_metric(static_parameters, dynamic_parameters)
+    D = empty_tiled_vector(static_parameters, dynamic_parameters)
+    H = empty_tiled_vector(static_parameters, dynamic_parameters)
+    J = _constant_tiled_vector(static_parameters, dynamic_parameters, (1.0, 0.0, 0.0))
+
+    D_next = update_D_relativity(
+        D,
+        H,
+        J,
+        metric,
+        static_parameters,
+        dynamic_parameters,
+        dynamic_parameters.dt,
+    )
+
+    g = int(static_parameters.guard_cells)
+    active = (
+        slice(None),
+        slice(None),
+        slice(None),
+        slice(g, -g),
+        slice(g, -g),
+        slice(g, -g),
+    )
+    assert jnp.allclose(
+        D_next[0][active],
+        -4.0 * jnp.pi * dynamic_parameters.dt,
+    )
+
+
+def test_static_metric_time_loop_retiles_midpoint_and_fullstep_particles():
+    static_parameters, dynamic_parameters = kernel_parameters(
+        Nx=8,
+        Ny=1,
+        Nz=1,
+        x_wind=8.0,
+        y_wind=1.0,
+        z_wind=1.0,
+        dt=0.2,
+        tile_shape=(4, 1, 1),
+        solver="static_metric",
+        current_deposition="GR_direct",
+        particle_pusher="hybrid_boris_geodesic",
+    )
+    metric = initialize_flat_cartesian_metric(static_parameters, dynamic_parameters)
+    x = jnp.zeros((2, 1, 1, 1, 2, 3))
+    u = jnp.zeros_like(x)
+    active = jnp.zeros((2, 1, 1, 1, 2), dtype=bool)
+    x = x.at[0, 0, 0, 0, 0].set(jnp.asarray((-0.02, 0.0, 0.0)))
+    u = u.at[0, 0, 0, 0, 0].set(jnp.asarray((1.0, 0.0, 0.0)))
+    active = active.at[0, 0, 0, 0, 0].set(True)
+    particles = shard_tiled_particles(
+        TiledParticles(x=x, u=u, active=active),
+        static_parameters,
+    )
+    species = SpeciesConfig(
+        charge=jnp.asarray([1.0]),
+        mass=jnp.asarray([1.0]),
+        weight=jnp.asarray([1.0]),
+        update_x=jnp.asarray([[True, True, True]]),
+        update_u=jnp.asarray([[True, True, True]]),
+    )
+    D = empty_tiled_vector(static_parameters, dynamic_parameters)
+    B = empty_tiled_vector(static_parameters, dynamic_parameters)
+    J = empty_tiled_vector(static_parameters, dynamic_parameters)
+    rho = jnp.zeros_like(J[0])
+    phi = jnp.zeros_like(J[0])
+    fields = (D, B, J, rho, phi, (D, B), metric, (D, B), jnp.asarray(False))
+
+    particles, fields = time_loop_static_metric(
+        particles,
+        species,
+        fields,
+        static_parameters,
+        dynamic_parameters,
+    )
+
+    assert int(jnp.sum(particles.active[0, 0, 0])) == 0
+    assert int(jnp.sum(particles.active[1, 0, 0])) == 1
+    assert particles.x[1, 0, 0, 0, 0, 0] > 0.0
+    assert jnp.any(jnp.abs(fields[2][0][1, 0, 0]) > 0.0)
+    assert bool(fields[-1]) is False
+
+
+def test_static_metric_time_loop_reports_particle_refresh_overflow():
+    static_parameters, dynamic_parameters = kernel_parameters(
+        Nx=8,
+        Ny=1,
+        Nz=1,
+        x_wind=8.0,
+        y_wind=1.0,
+        z_wind=1.0,
+        dt=0.2,
+        tile_shape=(4, 1, 1),
+        solver="static_metric",
+        current_deposition="GR_direct",
+        particle_pusher="hybrid_boris_geodesic",
+    )
+    metric = initialize_flat_cartesian_metric(static_parameters, dynamic_parameters)
+    x = jnp.zeros((2, 1, 1, 1, 1, 3))
+    u = jnp.zeros_like(x)
+    active = jnp.ones((2, 1, 1, 1, 1), dtype=bool)
+    x = x.at[0, 0, 0, 0, 0].set(jnp.asarray((-0.02, 0.0, 0.0)))
+    x = x.at[1, 0, 0, 0, 0].set(jnp.asarray((1.0, 0.0, 0.0)))
+    u = u.at[0, 0, 0, 0, 0].set(jnp.asarray((1.0, 0.0, 0.0)))
+    particles = shard_tiled_particles(
+        TiledParticles(x=x, u=u, active=active),
+        static_parameters,
+    )
+    species = SpeciesConfig(
+        charge=jnp.asarray([0.0]),
+        mass=jnp.asarray([1.0]),
+        weight=jnp.asarray([1.0]),
+        update_x=jnp.asarray([[True, True, True]]),
+        update_u=jnp.asarray([[True, True, True]]),
+    )
+    D = empty_tiled_vector(static_parameters, dynamic_parameters)
+    B = empty_tiled_vector(static_parameters, dynamic_parameters)
+    J = empty_tiled_vector(static_parameters, dynamic_parameters)
+    rho = jnp.zeros_like(J[0])
+    phi = jnp.zeros_like(J[0])
+    fields = (D, B, J, rho, phi, (D, B), metric, (D, B), jnp.asarray(False))
+
+    particles, fields = time_loop_static_metric(
+        particles,
+        species,
+        fields,
+        static_parameters,
+        dynamic_parameters,
+    )
+
+    assert bool(fields[-1]) is True
+    assert int(jnp.sum(particles.active)) == 1
+
+
+def test_flat_cylindrical_metric_stores_signed_sqrt_gamma_at_all_yee_locations():
+    static_parameters, dynamic_parameters = kernel_parameters(
+        Nx=8,
+        Ny=2,
+        Nz=1,
+        x_wind=8.0,
+        y_wind=1.0,
+        z_wind=1.0,
+        x_min=-3.75,
+        y_min=0.2,
+        z_min=0.2,
+        tile_shape=(8, 2, 1),
+        solver="static_metric",
+        current_deposition="GR_direct",
+        particle_pusher="hybrid_boris_geodesic",
+        metric="flat_cylindrical",
+    )
+    metric = initialize_flat_cylindrical_metric(static_parameters, dynamic_parameters)
+
+    for metric_at_location, grid in _metric_locations_with_grids(metric, dynamic_parameters):
+        R = grid[0][..., :, jnp.newaxis, jnp.newaxis]
+        expected = jnp.broadcast_to(R, metric_at_location.sqrt_gamma.shape)
+
+        assert jnp.allclose(metric_at_location.sqrt_gamma, expected)
+        assert jnp.any(metric_at_location.sqrt_gamma < 0.0)
+        assert jnp.any(metric_at_location.sqrt_gamma > 0.0)
+
+
+def test_spherical_metrics_store_signed_sqrt_gamma_at_all_yee_locations():
+    ntheta = 8
+    dtheta = 2.0 * np.pi / ntheta
+    static_parameters, dynamic_parameters = kernel_parameters(
+        Nx=4,
+        Ny=ntheta,
+        Nz=1,
+        x_wind=1.0,
+        y_wind=2.0 * np.pi,
+        z_wind=1.0,
+        x_min=2.0,
+        y_min=0.25 * dtheta,
+        z_min=0.2,
+        tile_shape=(4, ntheta, 1),
+        solver="static_metric",
+        current_deposition="GR_direct",
+        particle_pusher="hybrid_boris_geodesic",
+    )
+    mass = 0.1
+    spin = 0.2
+    flat_metric = initialize_flat_spherical_metric(static_parameters, dynamic_parameters)
+    kerr_metric = initialize_kerr_schild_spherical_metric(
+        static_parameters,
+        dynamic_parameters,
+        mass=mass,
+        spin=spin,
+    )
+
+    for metric_at_location, grid in _metric_locations_with_grids(flat_metric, dynamic_parameters):
+        R = grid[0][..., :, jnp.newaxis, jnp.newaxis]
+        theta = grid[1][..., jnp.newaxis, :, jnp.newaxis]
+        expected = jnp.broadcast_to(
+            R**2 * jnp.sin(theta),
+            metric_at_location.sqrt_gamma.shape,
+        )
+
+        assert jnp.allclose(metric_at_location.sqrt_gamma, expected)
+        assert jnp.any(metric_at_location.sqrt_gamma < 0.0)
+        assert jnp.any(metric_at_location.sqrt_gamma > 0.0)
+
+    for metric_at_location, grid in _metric_locations_with_grids(kerr_metric, dynamic_parameters):
+        R = grid[0][..., :, jnp.newaxis, jnp.newaxis]
+        theta = grid[1][..., jnp.newaxis, :, jnp.newaxis]
+        rho_squared = R**2 + spin**2 * jnp.cos(theta) ** 2
+        xi = 1.0 + 2.0 * mass * R / rho_squared
+        expected = jnp.broadcast_to(
+            rho_squared * jnp.sqrt(xi) * jnp.sin(theta),
+            metric_at_location.sqrt_gamma.shape,
+        )
+
+        assert jnp.allclose(metric_at_location.sqrt_gamma, expected)
+        assert jnp.any(metric_at_location.sqrt_gamma < 0.0)
+        assert jnp.any(metric_at_location.sqrt_gamma > 0.0)
 
 
 def test_static_metric_time_loop_keeps_metric_state_tail():

@@ -34,7 +34,7 @@ def _zeros_like_metric_derivatives(shape, dtype):
     )
 
 
-def _metric_from_diagonal(gamma_diag):
+def _metric_from_diagonal(gamma_diag, sqrt_gamma):
     shape = gamma_diag.shape[:-1]
     dtype = gamma_diag.dtype
     eye = jnp.eye(3, dtype=dtype)
@@ -45,7 +45,6 @@ def _metric_from_diagonal(gamma_diag):
 
     lapse = jnp.ones(shape, dtype=dtype)
     shift = jnp.zeros(shape + (3,), dtype=dtype)
-    sqrt_gamma = jnp.sqrt(jnp.prod(gamma_diag, axis=-1))
     christoffel, grad_lapse, grad_shift = _zeros_like_metric_derivatives(shape, dtype)
 
     return Metric(
@@ -63,37 +62,37 @@ def _metric_from_diagonal(gamma_diag):
 def _flat_cartesian_metric_on_grid(grid):
     X, _, _ = _coordinate_mesh(grid)
     gamma_diag = jnp.ones(X.shape + (3,), dtype=X.dtype)
-    return _metric_from_diagonal(gamma_diag)
+    sqrt_gamma = jnp.ones_like(X)
+    return _metric_from_diagonal(gamma_diag, sqrt_gamma)
 
 
 def _flat_cylindrical_metric_on_grid(grid):
     R, _, _ = _coordinate_mesh(grid)
-    safe_R = jnp.where(jnp.abs(R) > 0.0, R, 1.0)
     gamma_diag = jnp.stack(
         (
             jnp.ones_like(R),
-            safe_R**2,
+            R**2,
             jnp.ones_like(R),
         ),
         axis=-1,
     )
-    return _metric_from_diagonal(gamma_diag)
+    sqrt_gamma = R
+    return _metric_from_diagonal(gamma_diag, sqrt_gamma)
 
 
 def _flat_spherical_metric_on_grid(grid):
     R, theta, _ = _coordinate_mesh(grid)
-    safe_R = jnp.where(jnp.abs(R) > 0.0, R, 1.0)
     sin_theta = jnp.sin(theta)
-    safe_sin_theta = jnp.where(jnp.abs(sin_theta) > 0.0, sin_theta, 1.0)
     gamma_diag = jnp.stack(
         (
             jnp.ones_like(R),
-            safe_R**2,
-            safe_R**2 * safe_sin_theta**2,
+            R**2,
+            R**2 * sin_theta**2,
         ),
         axis=-1,
     )
-    return _metric_from_diagonal(gamma_diag)
+    sqrt_gamma = R**2 * sin_theta
+    return _metric_from_diagonal(gamma_diag, sqrt_gamma)
 
 
 def _maybe_fill_derivatives(metric, dynamic_parameters, fill_derivatives):

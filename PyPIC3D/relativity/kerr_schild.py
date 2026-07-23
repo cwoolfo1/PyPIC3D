@@ -47,9 +47,9 @@ def _kerr_schild_cartesian_on_grid(grid, dynamic_parameters, mass=1.0, spin=0.0)
         - a**2
         + jnp.sqrt((rho_squared - a**2) ** 2 + 4.0 * a**2 * z**2)
     )
-    r = jnp.sqrt(jnp.maximum(r_squared, 1.0e-30))
+    r = jnp.sqrt(r_squared)
 
-    denominator = jnp.where(r_squared + a**2 != 0.0, r_squared + a**2, 1.0)
+    denominator = r_squared + a**2
     ell = jnp.stack(
         (
             (r * x + a * y) / denominator,
@@ -59,7 +59,7 @@ def _kerr_schild_cartesian_on_grid(grid, dynamic_parameters, mass=1.0, spin=0.0)
         axis=-1,
     )
 
-    H = mass * r**3 / jnp.where(r**4 + a**2 * z**2 != 0.0, r**4 + a**2 * z**2, 1.0)
+    H = mass * r**3 / (r**4 + a**2 * z**2)
     two_H = 2.0 * H
     lapse = 1.0 / jnp.sqrt(1.0 + two_H)
     shift = (two_H / (1.0 + two_H))[..., jnp.newaxis] * ell
@@ -91,10 +91,8 @@ def _kerr_schild_spherical_on_grid(grid, dynamic_parameters, mass=1.0, spin=0.0)
     a = spin
     sin_theta = jnp.sin(theta)
     cos_theta = jnp.cos(theta)
-    safe_sin_theta = jnp.where(jnp.abs(sin_theta) > 0.0, sin_theta, 1.0)
     rho_squared = r**2 + a**2 * cos_theta**2
-    safe_rho_squared = jnp.where(rho_squared != 0.0, rho_squared, 1.0)
-    xi = 1.0 + 2.0 * mass * r / safe_rho_squared
+    xi = 1.0 + 2.0 * mass * r / rho_squared
 
     lapse = xi**-0.5
     shift = jnp.zeros(shape + (3,), dtype=dtype)
@@ -104,16 +102,16 @@ def _kerr_schild_spherical_on_grid(grid, dynamic_parameters, mass=1.0, spin=0.0)
     gamma = gamma.at[..., 0, 0].set(xi)
     gamma = gamma.at[..., 1, 1].set(rho_squared)
     gamma = gamma.at[..., 2, 2].set(
-        safe_sin_theta**2 * (rho_squared + a**2 * xi * safe_sin_theta**2)
+        sin_theta**2 * (rho_squared + a**2 * xi * sin_theta**2)
     )
-    gamma = gamma.at[..., 0, 2].set(-a * xi * safe_sin_theta**2)
+    gamma = gamma.at[..., 0, 2].set(-a * xi * sin_theta**2)
     gamma = gamma.at[..., 2, 0].set(gamma[..., 0, 2])
 
     gamma_inv = jnp.zeros(shape + (3, 3), dtype=dtype)
-    gamma_inv = gamma_inv.at[..., 0, 0].set(1.0 / xi + a**2 * safe_sin_theta**2 / safe_rho_squared)
-    gamma_inv = gamma_inv.at[..., 1, 1].set(1.0 / safe_rho_squared)
-    gamma_inv = gamma_inv.at[..., 2, 2].set(1.0 / (safe_rho_squared * safe_sin_theta**2))
-    gamma_inv = gamma_inv.at[..., 0, 2].set(a / safe_rho_squared)
+    gamma_inv = gamma_inv.at[..., 0, 0].set(1.0 / xi + a**2 * sin_theta**2 / rho_squared)
+    gamma_inv = gamma_inv.at[..., 1, 1].set(1.0 / rho_squared)
+    gamma_inv = gamma_inv.at[..., 2, 2].set(1.0 / (rho_squared * sin_theta**2))
+    gamma_inv = gamma_inv.at[..., 0, 2].set(a / rho_squared)
     gamma_inv = gamma_inv.at[..., 2, 0].set(gamma_inv[..., 0, 2])
 
     sqrt_gamma = rho_squared * jnp.sqrt(xi) * sin_theta

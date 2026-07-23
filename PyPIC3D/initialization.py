@@ -460,6 +460,11 @@ def initialize_simulation(toml_file):
     static_parameters = build_static_parameters(static_config)
     dynamic_parameters = build_dynamic_parameters(dynamic_config)
     plotting_parameters = convert_to_jax_compatible(plotting_parameters)
+    metric = (
+        build_static_metric_state(static_parameters, dynamic_parameters)
+        if static_metric
+        else None
+    )
 
     particles, species_config, particle_species_names, particle_metadata = load_particles_from_toml(
         config,
@@ -531,10 +536,8 @@ def initialize_simulation(toml_file):
     external_B = update_tiled_vector_ghost_cells(external_B, static_parameters, num_guard_cells=guard_cells)
     external_fields = (external_E, external_B)
 
-    metric = None
     static_metric_state = None
     if static_metric:
-        metric = build_static_metric_state(static_parameters, dynamic_parameters)
         static_metric_state = E, B
         static_metric_state = load_previous_fields_from_toml(
             static_metric_state,
