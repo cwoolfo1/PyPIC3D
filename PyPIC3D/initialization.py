@@ -13,6 +13,7 @@ from PyPIC3D.utils import (
     convert_to_jax_compatible,
     courant_condition,
     load_external_fields_from_toml,
+    load_previous_fields_from_toml,
     make_dir,
     particle_sanity_check,
     print_stats,
@@ -406,9 +407,7 @@ def initialize_simulation(toml_file):
     raw_supergaussian = config.get("supergaussian", [])
     supergaussian_active = bool(raw_supergaussian)
     if supergaussian_active and electrostatic:
-        raise ValueError("supergaussian is only supported for the electrodynamic_yee solver")
-    if supergaussian_active and static_metric:
-        raise ValueError("supergaussian is not yet supported for the static_metric solver")
+        raise ValueError("supergaussian is not supported for the electrostatic solver")
 
     _validate_tiled_yee_configuration(static_config, dynamic_config)
 
@@ -537,6 +536,16 @@ def initialize_simulation(toml_file):
     if static_metric:
         metric = build_static_metric_state(static_parameters, dynamic_parameters)
         static_metric_state = E, B
+        static_metric_state = load_previous_fields_from_toml(
+            static_metric_state,
+            config,
+            static_parameters,
+            dynamic_parameters,
+        )
+        D_previous, B_previous = static_metric_state
+        D_previous = update_tiled_vector_ghost_cells(D_previous, static_parameters, num_guard_cells=guard_cells)
+        B_previous = update_tiled_vector_ghost_cells(B_previous, static_parameters, num_guard_cells=guard_cells)
+        static_metric_state = D_previous, B_previous
         print("Skipping flat-space energy diagnostics for static_metric fields and covariant particle u_i\n")
     else:
         total_E, total_B = add_external_fields(E, B, external_fields)

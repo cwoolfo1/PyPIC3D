@@ -1,6 +1,7 @@
 import jax.numpy as jnp
 
 from PyPIC3D.boundary_conditions import ghost_cells
+from PyPIC3D.boundary_conditions.supergaussian import apply_tiled_supergaussian_absorber
 from PyPIC3D.relativity.core import B_FIELD_LOCATIONS, D_FIELD_LOCATIONS
 
 
@@ -162,7 +163,16 @@ def update_D_relativity(D_tiles, H_tiles, J_tiles, metric, static_parameters, dy
         + dt * ((dHy_dx - dHx_dy) / sqrt_Dz - 4.0 * jnp.pi * Jz[:, :, :, current, current, current])
     )
 
-    return ghost_cells.update_tiled_vector_ghost_cells((Dx, Dy, Dz), static_parameters, g)
+    D_tiles = (Dx, Dy, Dz)
+    if static_parameters.supergaussian_active:
+        return apply_tiled_supergaussian_absorber(
+            D_tiles,
+            static_parameters,
+            dynamic_parameters,
+            dt,
+        )
+
+    return ghost_cells.update_tiled_vector_ghost_cells(D_tiles, static_parameters, g)
 
 
 def update_B_relativity(E_tiles, B_tiles, metric, static_parameters, dynamic_parameters, dt):
@@ -199,4 +209,13 @@ def update_B_relativity(E_tiles, B_tiles, metric, static_parameters, dynamic_par
         Bz[:, :, :, active, active, active] - dt * (dEy_dx - dEx_dy) / sqrt_Bz
     )
 
-    return ghost_cells.update_tiled_vector_ghost_cells((Bx, By, Bz), static_parameters, g)
+    B_tiles = (Bx, By, Bz)
+    if static_parameters.supergaussian_active:
+        return apply_tiled_supergaussian_absorber(
+            B_tiles,
+            static_parameters,
+            dynamic_parameters,
+            dt,
+        )
+
+    return ghost_cells.update_tiled_vector_ghost_cells(B_tiles, static_parameters, g)

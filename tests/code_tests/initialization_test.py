@@ -6,7 +6,7 @@ import toml
 import jax
 import jax.numpy as jnp
 from PyPIC3D.initialization import setup_write_dir, default_parameters, initialize_simulation, validate_field_solver, _encode_field_bc
-from PyPIC3D.evolve import time_loop_electrodynamic, time_loop_electrostatic
+from PyPIC3D.evolve import time_loop_electrodynamic, time_loop_electrostatic, time_loop_static_metric
 from PyPIC3D.boundary_conditions.grid_and_stencil import BC_CONSTANT
 from PyPIC3D.particles.particle_class import TiledParticles
 from PyPIC3D.utilities.grids import build_yee_grid
@@ -138,6 +138,64 @@ class TestInitializationFunctions(unittest.TestCase):
             self.assertFalse(bool(overflow))
             # dump a dummy config file to tmp directory and confirm it can be read
             # in correctly
+
+    def test_initialize_static_metric_loads_previous_fields_from_npy(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            current_dtheta_path = os.path.join(tmpdir, "current_dtheta.npy")
+            previous_dtheta_path = os.path.join(tmpdir, "previous_dtheta.npy")
+            current_bphi_path = os.path.join(tmpdir, "current_bphi.npy")
+            previous_bphi_path = os.path.join(tmpdir, "previous_bphi.npy")
+            np.save(current_dtheta_path, np.full((4, 4, 1), 2.0))
+            np.save(previous_dtheta_path, np.full((4, 4, 1), 3.0))
+            np.save(current_bphi_path, np.full((4, 4, 1), 5.0))
+            np.save(previous_bphi_path, np.full((4, 4, 1), 7.0))
+            config = {
+                "simulation_parameters": {
+                    "name": "static previous field load test",
+                    "output_dir": tmpdir,
+                    "solver": "static_metric",
+                    "metric": "flat_spherical",
+                    "particle_pusher": "hybrid_boris_geodesic",
+                    "current_calculation": "GR_direct_deposition",
+                    "Nx": 4,
+                    "Ny": 4,
+                    "Nz": 1,
+                    "x_min": 1.0,
+                    "x_max": 2.0,
+                    "y_min": 0.1,
+                    "y_max": 2 * np.pi + 0.1,
+                    "z_wind": 1.0,
+                    "Nt": 1,
+                    "dt": 1.0e-2,
+                    "particle_tile_nx": 4,
+                    "particle_tile_ny": 4,
+                    "particle_tile_nz": 1,
+                    "filter_j": "none",
+                    "x_bc": "constant",
+                    "y_bc": "periodic",
+                    "z_bc": "periodic",
+                    "C": 1.0,
+                    "eps": 1.0,
+                    "mu": 1.0,
+                },
+                "plotting": {"plotting": False},
+                "field1": {"name": "Dtheta", "type": 1, "path": current_dtheta_path},
+                "field2": {"name": "Bphi", "type": 5, "path": current_bphi_path},
+                "previous_field1": {"name": "Dtheta previous", "type": 1, "path": previous_dtheta_path},
+                "previous_field2": {"name": "Bphi previous", "type": 5, "path": previous_bphi_path},
+            }
+
+            loop, particles, fields, static_parameters, dynamic_parameters, *_rest = initialize_simulation(config)
+
+            self.assertIs(loop, time_loop_static_metric)
+            g = int(static_parameters.guard_cells)
+            D, B, _J, _rho, _phi, _external_fields, _metric, previous_fields, _overflow = fields
+            D_previous, B_previous = previous_fields
+            interior = (0, 0, 0, slice(g, -g), slice(g, -g), slice(g, -g))
+            self.assertTrue(jnp.allclose(D[1][interior], 2.0))
+            self.assertTrue(jnp.allclose(B[2][interior], 5.0))
+            self.assertTrue(jnp.allclose(D_previous[1][interior], 3.0))
+            self.assertTrue(jnp.allclose(B_previous[2][interior], 7.0))
 
     def test_initialize_simulation_computes_courant_dt_before_runtime_parameters_exist(self):
         with tempfile.TemporaryDirectory() as tmpdir:

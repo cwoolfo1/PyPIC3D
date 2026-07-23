@@ -549,6 +549,59 @@ def test_static_metric_time_loop_keeps_metric_state_tail():
     assert jnp.all(jnp.isfinite(particles.u))
 
 
+def test_static_metric_time_loop_accepts_empty_particle_storage():
+    static_parameters, dynamic_parameters = kernel_parameters(
+        Nx=4,
+        Ny=4,
+        Nz=1,
+        x_wind=4.0,
+        y_wind=4.0,
+        z_wind=1.0,
+        dt=0.05,
+        tile_shape=(4, 4, 1),
+        solver="static_metric",
+        current_deposition="GR_direct",
+        particle_pusher="hybrid_boris_geodesic",
+    )
+    metric = initialize_flat_cartesian_metric(static_parameters, dynamic_parameters)
+    particles = TiledParticles(
+        x=jnp.zeros((1, 1, 1, 0, 0, 3)),
+        u=jnp.zeros((1, 1, 1, 0, 0, 3)),
+        active=jnp.zeros((1, 1, 1, 0, 0), dtype=bool),
+    )
+    species = SpeciesConfig(
+        charge=jnp.zeros((0,)),
+        mass=jnp.zeros((0,)),
+        weight=jnp.zeros((0,)),
+        update_x=jnp.zeros((0, 3), dtype=bool),
+        update_u=jnp.zeros((0, 3), dtype=bool),
+    )
+    D = empty_tiled_vector(static_parameters, dynamic_parameters)
+    B = empty_tiled_vector(static_parameters, dynamic_parameters)
+    J = empty_tiled_vector(static_parameters, dynamic_parameters)
+    rho = jnp.zeros_like(J[0])
+    phi = jnp.zeros_like(J[0])
+    external_fields = (D, B)
+    static_metric_state = (D, B)
+    fields = (D, B, J, rho, phi, external_fields, metric, static_metric_state, jnp.asarray(False))
+
+    particles, fields = time_loop_static_metric(
+        particles,
+        species,
+        fields,
+        static_parameters,
+        dynamic_parameters,
+    )
+
+    D_next, B_next, J_next = fields[:3]
+    assert particles.x.shape == (1, 1, 1, 0, 0, 3)
+    assert len(fields) == 9
+    assert bool(jax.device_get(fields[-1])) is False
+    for vector in (D_next, B_next, J_next):
+        for component in vector:
+            assert jnp.all(jnp.isfinite(component))
+
+
 def test_static_metric_dispatch_contract_accepts_hybrid_gr_direct_path():
     static_parameters, dynamic_parameters = kernel_parameters(
         solver="static_metric",

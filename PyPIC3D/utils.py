@@ -511,6 +511,18 @@ def grab_field_keys(config):
             field_keys.append(key)
     return field_keys
 
+
+def grab_previous_field_keys(config):
+    """
+    Extract previous-field blocks used by time-centered field solvers.
+    """
+    field_keys = []
+    for key in config.keys():
+        if key[:14] == "previous_field":
+            field_keys.append(key)
+    return field_keys
+
+
 def _add_external_field_to_tiled_component(component, external_field, static_parameters, dynamic_parameters, field_name):
     """
     Add one physical field array into the active interiors of a tiled component.
@@ -541,6 +553,40 @@ def _add_external_field_to_tiled_component(component, external_field, static_par
                 ].add(block)
 
     return component
+
+
+def load_previous_fields_from_toml(previous_fields, config, static_parameters, dynamic_parameters):
+    """
+    Load previous D/B field components from TOML blocks named previous_fieldN.
+
+    The static-metric solver stores D at integer time and B at half-integer
+    time.  Optional previous_fieldN blocks let a run initialize the older
+    time levels from npy arrays instead of duplicating the current fields.
+    """
+
+    field_keys = grab_previous_field_keys(config)
+    field_components = [component for field in previous_fields for component in field]
+
+    for toml_key in field_keys:
+        field_name = config[toml_key]['name']
+        field_type = config[toml_key]['type']
+        field_path = config[toml_key]['path']
+        print(f"Loading previous field: {field_name} from {field_path}")
+
+        if field_type < 0 or field_type > 5:
+            raise ValueError("Previous static-metric fields must be D or B components with type 0 through 5")
+
+        external_field = jnp.load(field_path)
+        field_components[field_type] = _add_external_field_to_tiled_component(
+            jnp.zeros_like(field_components[field_type]),
+            external_field,
+            static_parameters,
+            dynamic_parameters,
+            field_name,
+        )
+        print(f"Previous field loaded successfully: {field_name}")
+
+    return tuple(field_components[:3]), tuple(field_components[3:6])
 
 
 def load_external_fields_from_toml(fields, external_fields, config, static_parameters, dynamic_parameters):

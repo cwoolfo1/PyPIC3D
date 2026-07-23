@@ -12,7 +12,7 @@ from PyPIC3D.boundary_conditions.supergaussian import (
     load_supergaussian_from_toml,
 )
 from PyPIC3D.boundary_conditions import ghost_cells
-from PyPIC3D.boundary_conditions.grid_and_stencil import BC_CONDUCTING, BC_PERIODIC
+from PyPIC3D.boundary_conditions.grid_and_stencil import BC_CONDUCTING, BC_CONSTANT, BC_PERIODIC
 from PyPIC3D.diagnostics.output_adapters import assemble_tiled_vector_field
 from PyPIC3D.initialization import initialize_simulation
 from PyPIC3D.particles.particle_class import SpeciesConfig, TiledParticles
@@ -198,7 +198,7 @@ class TestSupergaussianInitialization(unittest.TestCase):
         supergaussian = [{"wall": "+x", "width": 2, "sigma_max": 1.0}]
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            with self.assertRaisesRegex(ValueError, "supergaussian is only supported"):
+            with self.assertRaisesRegex(ValueError, "not supported for the electrostatic solver"):
                 initialize_simulation(_empty_config(tmpdir, solver="electrostatic", supergaussian=supergaussian))
 
     def test_initialize_simulation_stores_static_supergaussian_layers(self):
@@ -213,6 +213,34 @@ class TestSupergaussianInitialization(unittest.TestCase):
         self.assertTrue(static_parameters.supergaussian_active)
         self.assertEqual(len(static_parameters.supergaussian_layers), 1)
         self.assertEqual(static_parameters.boundary_conditions, (BC_CONDUCTING, BC_PERIODIC, BC_PERIODIC))
+
+    def test_initialize_simulation_allows_static_metric_supergaussian_with_constant_radial_bc(self):
+        supergaussian = [
+            {"wall": "-x", "width": 2, "sigma_max": 1.0},
+            {"wall": "+x", "width": 2, "sigma_max": 1.0},
+        ]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = _empty_config(tmpdir, solver="static_metric", supergaussian=supergaussian)
+            config["simulation_parameters"].update(
+                {
+                    "metric": "flat_spherical",
+                    "particle_pusher": "hybrid_boris_geodesic",
+                    "current_calculation": "GR_direct_deposition",
+                    "x_bc": "constant",
+                    "y_bc": "periodic",
+                    "z_bc": "periodic",
+                }
+            )
+
+            result = initialize_simulation(config)
+
+        fields = result[2]
+        static_parameters = result[3]
+        self.assertEqual(len(fields), 9)
+        self.assertTrue(static_parameters.supergaussian_active)
+        self.assertEqual(len(static_parameters.supergaussian_layers), 2)
+        self.assertEqual(static_parameters.boundary_conditions, (BC_CONSTANT, BC_PERIODIC, BC_PERIODIC))
 
 
 class TestSupergaussianFDTDBehavior(unittest.TestCase):
