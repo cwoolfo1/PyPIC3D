@@ -194,11 +194,14 @@ def time_loop_static_metric(
     B_n = update_B_relativity(E_n_minusonehalf, B_n_minusone, metric, static_parameters, dynamic_parameters, dynamic_parameters.dt)
     # update the contravariant magnetic field using the centered displacement field
 
+    push_D, push_B = add_external_fields(D_n, B_n, external_fields)
+    # particles see evolved fields plus prescribed external fields
+
     particles, centered_particles = hybrid_boris_geodesic_push(
         particles,
         species_config,
-        D_n,
-        B_n,
+        push_D,
+        push_B,
         metric,
         static_parameters,
         dynamic_parameters,
