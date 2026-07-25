@@ -1,7 +1,10 @@
 import jax
 import jax.numpy as jnp
 
-from PyPIC3D.boundary_conditions.ghost_cells import update_tiled_ghost_cells
+from PyPIC3D.boundary_conditions.ghost_cells import (
+    fold_tiled_ghost_cells,
+    update_tiled_ghost_cells,
+)
 from PyPIC3D.boundary_conditions.grid_and_stencil import (
     collapse_axis_stencil,
     prepare_particle_axis_stencil,
@@ -167,9 +170,33 @@ def fluid_velocity(
     velocity_numerator, velocity_weight = deposit_velocity(particles.x, particles.u, particles.active, tx, ty, tz)
     # deposit the velocity numerator and denominator for all tiles
 
-    velocity_numerator = update_tiled_ghost_cells(velocity_numerator, static_parameters, g)
-    velocity_weight = update_tiled_ghost_cells(velocity_weight, static_parameters, g)
-    # update ghost cells before forming the local average so halos use the same values as their source interiors
+    velocity_numerator = fold_tiled_ghost_cells(
+        velocity_numerator,
+        static_parameters,
+        g,
+        bc_type=1,
+    )
+    velocity_weight = fold_tiled_ghost_cells(
+        velocity_weight,
+        static_parameters,
+        g,
+        bc_type=1,
+    )
+    # transfer guard-cell deposits into the adjacent tile interiors that own them
+
+    velocity_numerator = update_tiled_ghost_cells(
+        velocity_numerator,
+        static_parameters,
+        g,
+        bc_type=1,
+    )
+    velocity_weight = update_tiled_ghost_cells(
+        velocity_weight,
+        static_parameters,
+        g,
+        bc_type=1,
+    )
+    # refresh halos from the completed interiors using the particle boundary conditions
 
     occupied = velocity_weight > 0.0
     field = jnp.where(occupied, velocity_numerator / jnp.where(occupied, velocity_weight, 1.0), 0.0)
