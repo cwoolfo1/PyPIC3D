@@ -15,6 +15,7 @@ from PyPIC3D.diagnostics.async_writer import (
     enqueue_openpmd_field_output,
     enqueue_openpmd_particle_output,
 )
+from PyPIC3D.diagnostics.output_adapters import build_field_output_map
 from PyPIC3D.utils import (
     add_external_fields,
     compute_energy,
@@ -145,7 +146,16 @@ def run_PyPIC3D(config_file):
                     )
 
                 if field_writer is not None:
-                    enqueue_openpmd_field_output(field_writer, fields, dynamic_parameters, plot_num, t)
+                    field_map = build_field_output_map(
+                        fields,
+                        particles,
+                        species_config,
+                        static_parameters,
+                        dynamic_parameters,
+                        include_fluid_velocity=bool(plotting_parameters["plotvelocities"]),
+                    )
+                    plotting_parameters["field_map"] = field_map
+                    enqueue_openpmd_field_output(field_writer, field_map, dynamic_parameters, plot_num, t)
 
             particles, fields = jit_loop(
                 particles,

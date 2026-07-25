@@ -59,6 +59,7 @@ Minimal Working Example
     plot_phasespace = false
     plot_openpmd_particles = false
     plot_openpmd_fields = false
+    plotvelocities = false
     openpmd_field_queue_size = 2
     openpmd_particle_queue_size = 2
     dump_particles = false
@@ -138,4 +139,6 @@ Depending on flags, it also writes matplotlib phase-space arrays and openPMD
 files plus ``data/output.toml`` metadata. Runtime openPMD field and particle
 output use bounded queues; ``openpmd_field_queue_size`` and
 ``openpmd_particle_queue_size`` cap pending batches so output cannot grow memory
-without bound.
+without bound. Field output contains ``E``, ``B``, and ``J`` by default.
+Set ``plotvelocities = true`` to also calculate and write the particle-weighted
+fluid velocity as the vector mesh ``fluid_velocity``.

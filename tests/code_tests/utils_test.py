@@ -388,6 +388,8 @@ class TestUtilsFunctions(unittest.TestCase):
                 {},
             )
             plotting_parameters = {
+                "plotvelocities": jnp.asarray(True),
+                "field_map": {"E": (jnp.zeros((1,)),) * 3},
                 "particle_species_names": ("electrons", "ions"),
                 "particle_species_metadata": (
                     {"name": "electrons", "charge": -1.0},
@@ -410,6 +412,8 @@ class TestUtilsFunctions(unittest.TestCase):
         self.assertNotIn("particle_species_metadata", config["static_parameters"])
         self.assertNotIn("particle_species_names", config.get("plotting", {}))
         self.assertNotIn("particle_species_metadata", config.get("plotting", {}))
+        self.assertNotIn("field_map", config.get("plotting", {}))
+        self.assertTrue(config["plotting"]["plotvelocities"])
         self.assertEqual(config["particles"][0]["name"], "electrons")
         self.assertEqual(config["particles"][0]["charge"], -1.0)
         self.assertEqual(config["particles"][0]["storage"], "tiled")

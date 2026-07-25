@@ -62,21 +62,6 @@ class TiledParticleSnapshot:
     species_weight: np.ndarray
 
 
-def _fields_to_tiled_output_map(fields):
-    """Return the tiled field components currently written by field diagnostics."""
-    E, B, J, rho, phi, external_fields, *rest = fields
-    external_E, external_B = external_fields
-    return {
-        "E": E,
-        "B": B,
-        "J": J,
-        "rho": rho,
-        "phi": phi,
-        "external_E": external_E,
-        "external_B": external_B,
-    }
-
-
 def _copy_array_to_host_shards(arr):
     """
     Copy a possibly-sharded JAX array to host-owned NumPy chunks.
@@ -456,8 +441,7 @@ def create_async_tiled_openpmd_particle_writer(
     return writer
 
 
-def enqueue_openpmd_field_output(field_writer, fields, dynamic_parameters, plot_t, t, *, block=True):
-    field_map = _fields_to_tiled_output_map(fields)
+def enqueue_openpmd_field_output(field_writer, field_map, dynamic_parameters, plot_t, t, *, block=True):
     prefetch_field_map_to_host(field_map)
     return field_writer.enqueue_fields(
         field_map,

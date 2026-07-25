@@ -235,10 +235,6 @@ class OpenPMDDiagnosticsTests(unittest.TestCase):
         E = _zero_field(shape_with_ghosts)
         B = _zero_field(shape_with_ghosts)
         J = _zero_field(shape_with_ghosts)
-        rho = jnp.zeros(shape_with_ghosts)
-        phi = jnp.zeros(shape_with_ghosts)
-        external_fields = _zero_field(shape_with_ghosts), _zero_field(shape_with_ghosts)
-        fields = (E, B, J, rho, phi, external_fields)
         static_parameters, dynamic_parameters = kernel_parameters(
             Nx=4,
             Ny=1,
@@ -254,11 +250,17 @@ class OpenPMDDiagnosticsTests(unittest.TestCase):
             guard_cells=1,
         )
         series = FakeSeries()
+        field_map = {
+            "E": E,
+            "B": B,
+            "J": J,
+        }
 
         with patch.object(openPMD, "_open_openpmd_series", return_value=series):
-            openPMD.write_openpmd_fields(fields, static_parameters, dynamic_parameters, "/tmp", plot_t=0, t=0)
+            openPMD.write_openpmd_fields(field_map, static_parameters, dynamic_parameters, "/tmp", plot_t=0, t=0)
 
         B_mesh = series.iterations[0].meshes["B"]
+        self.assertEqual(set(series.iterations[0].meshes), {"E", "B", "J"})
         self.assertEqual(B_mesh.axis_labels, ["x", "y", "z"])
         self.assertEqual(B_mesh.grid_spacing, [0.25, 0.5, 0.75])
         self.assertEqual(B_mesh.grid_global_offset, [-0.5, -1.0, -1.5])
@@ -301,9 +303,13 @@ class OpenPMDDiagnosticsTests(unittest.TestCase):
             None,
         )
         series = FakeSeries()
+        field_map = {
+            "E": tiled_fields[0],
+            "rho": tiled_fields[3],
+        }
 
         with patch.object(openPMD, "_open_openpmd_series", return_value=series):
-            openPMD.write_openpmd_fields(tiled_fields, static_parameters, dynamic_parameters, "/tmp", plot_t=0, t=0)
+            openPMD.write_openpmd_fields(field_map, static_parameters, dynamic_parameters, "/tmp", plot_t=0, t=0)
 
         E_mesh = series.iterations[0].meshes["E"]
         rho_mesh = series.iterations[0].meshes["rho"]
@@ -357,6 +363,38 @@ class OpenPMDDiagnosticsTests(unittest.TestCase):
         self.assertEqual(rho_record.chunks[0][1], tile_shape)
         self.assertEqual(len(E_record.chunks), 4)
         self.assertEqual(E_record.chunks[0][0], (0, 0, 0))
+
+    def test_enqueue_openpmd_field_output_preserves_selected_field_map(self):
+        class RecordingFieldWriter:
+            def enqueue_fields(self, field_map, *, step, time, block):
+                self.field_map = field_map
+                self.step = step
+                self.time = time
+                self.block = block
+                return True
+
+        _, dynamic_parameters = kernel_parameters_from_values(_parameter_values())
+        scalar_field = jnp.zeros((1, 1, 1, 4, 4, 4))
+        field_map = {
+            "E": (scalar_field, scalar_field, scalar_field),
+            "fluid_velocity": (scalar_field, scalar_field, scalar_field),
+        }
+        writer = RecordingFieldWriter()
+
+        accepted = async_writer.enqueue_openpmd_field_output(
+            writer,
+            field_map,
+            dynamic_parameters,
+            plot_t=3,
+            t=4,
+        )
+
+        self.assertTrue(accepted)
+        self.assertIs(writer.field_map, field_map)
+        self.assertEqual(tuple(writer.field_map), ("E", "fluid_velocity"))
+        self.assertEqual(writer.step, 3)
+        self.assertEqual(writer.time, 4 * float(dynamic_parameters.dt))
+        self.assertTrue(writer.block)
 
     def test_async_field_writer_queue_size_caps_pending_snapshots(self):
         static_parameters, dynamic_parameters = kernel_parameters_from_values(_parameter_values())

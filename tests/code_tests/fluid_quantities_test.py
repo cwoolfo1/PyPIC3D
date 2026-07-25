@@ -5,7 +5,10 @@ import jax.numpy as jnp
 
 from PyPIC3D.boundary_conditions.grid_and_stencil import BC_CONDUCTING, BC_PERIODIC
 from PyPIC3D.diagnostics.fluid_quantities import compute_velocity_field, fluid_velocity
-from PyPIC3D.diagnostics.output_adapters import assemble_tiled_scalar_field
+from PyPIC3D.diagnostics.output_adapters import (
+    assemble_tiled_scalar_field,
+    build_field_output_map,
+)
 from tests.kernel_fixtures import build_tiled_particles, field_tiles_from_global, kernel_parameters, particle_species
 
 
@@ -154,6 +157,62 @@ class TestTiledFluidQuantities(unittest.TestCase):
         occupied = jnp.abs(velocity_tiles) > 0.0
         self.assertTrue(jnp.any(occupied))
         self.assertTrue(jnp.allclose(velocity_tiles[occupied], 2.0, rtol=1.0e-12, atol=1.0e-12))
+
+    def test_field_output_map_defaults_to_E_B_J_and_optionally_adds_fluid_velocity(self):
+        static_parameters, dynamic_parameters = self._build_parameters(shape_factor=1)
+        particles = self._weighted_average_particles()
+        tiled_particles, species_config = build_tiled_particles(
+            particles,
+            static_parameters,
+            dynamic_parameters,
+        )
+
+        scalar_field = self._scalar_tiles(static_parameters, dynamic_parameters)
+        vector_field = (scalar_field, scalar_field, scalar_field)
+        fields = (
+            vector_field,
+            vector_field,
+            vector_field,
+            scalar_field,
+            scalar_field,
+            (vector_field, vector_field),
+            None,
+            jnp.asarray(False),
+        )
+
+        field_map = build_field_output_map(
+            fields,
+            tiled_particles,
+            species_config,
+            static_parameters,
+            dynamic_parameters,
+        )
+        self.assertEqual(tuple(field_map), ("E", "B", "J"))
+
+        field_map = build_field_output_map(
+            fields,
+            tiled_particles,
+            species_config,
+            static_parameters,
+            dynamic_parameters,
+            include_fluid_velocity=True,
+        )
+        self.assertEqual(tuple(field_map), ("E", "B", "J", "fluid_velocity"))
+
+        for velocity_component, expected_velocity in zip(
+            field_map["fluid_velocity"],
+            (8.0, 2.0, -1.0),
+        ):
+            occupied = jnp.abs(velocity_component) > 0.0
+            self.assertTrue(jnp.any(occupied))
+            self.assertTrue(
+                jnp.allclose(
+                    velocity_component[occupied],
+                    expected_velocity,
+                    rtol=1.0e-12,
+                    atol=1.0e-12,
+                )
+            )
 
     def test_inactive_slots_do_not_contribute_to_fluid_velocity(self):
         static_parameters, dynamic_parameters = self._build_parameters(shape_factor=1)
