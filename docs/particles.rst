@@ -39,8 +39,9 @@ Initialization Options
 - Initial arrays or scalar offsets: ``initial_x``, ``initial_y``,
   ``initial_z``, ``initial_vx``, ``initial_vy``, and ``initial_vz``. String
   values are loaded from ``.npy`` files.
-- Update controls: ``update_pos`` and ``update_v`` plus component switches
-  ``update_x/y/z`` and ``update_vx/vy/vz``.
+- Update controls: ``update_x``, ``update_y``, and ``update_z``. A false flag
+  freezes both the position and velocity component and suppresses that
+  species' current contribution in the same direction.
 
 Without external arrays, positions are sampled uniformly within the species
 bounds and velocities are sampled from the configured thermal distributions.

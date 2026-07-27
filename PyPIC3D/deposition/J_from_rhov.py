@@ -95,6 +95,10 @@ def J_from_rhov(
         vy = u_tile[..., 1].reshape(-1)
         vz = u_tile[..., 2].reshape(-1)
         # reshape the particle velocities into 1D arrays for processing
+        update_x1 = jnp.broadcast_to(species_config.update_x[:, 0, jnp.newaxis], active_tile.shape).reshape(-1)
+        update_x2 = jnp.broadcast_to(species_config.update_x[:, 1, jnp.newaxis], active_tile.shape).reshape(-1)
+        update_x3 = jnp.broadcast_to(species_config.update_x[:, 2, jnp.newaxis], active_tile.shape).reshape(-1)
+        # broadcast the directional species masks to particle slots
         active = active_tile.reshape(-1).astype(x.dtype)
         # reshape the active particle mask into a 1D array for processing
         q = jnp.broadcast_to(species_weighted_charge[:, jnp.newaxis], active_tile.shape).reshape(-1)
@@ -185,15 +189,15 @@ def J_from_rhov(
                     iy = ypts[j]
                     iz = zpts[k]
                     tile_Jx = tile_Jx.at[ix, iy, iz].add(
-                        active * dq * vx * x_weights_face[i] * y_weights_node[j] * z_weights_node[k],
+                        active * update_x1 * dq * vx * x_weights_face[i] * y_weights_node[j] * z_weights_node[k],
                         mode="drop",
                     )
                     tile_Jy = tile_Jy.at[ix, iy, iz].add(
-                        active * dq * vy * x_weights_node[i] * y_weights_face[j] * z_weights_node[k],
+                        active * update_x2 * dq * vy * x_weights_node[i] * y_weights_face[j] * z_weights_node[k],
                         mode="drop",
                     )
                     tile_Jz = tile_Jz.at[ix, iy, iz].add(
-                        active * dq * vz * x_weights_node[i] * y_weights_node[j] * z_weights_face[k],
+                        active * update_x3 * dq * vz * x_weights_node[i] * y_weights_node[j] * z_weights_face[k],
                         mode="drop",
                     )
 

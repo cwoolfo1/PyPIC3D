@@ -55,7 +55,6 @@ class TestTiledParticleInitialization(unittest.TestCase):
             v2=jnp.array([0.0, 0.0, 0.0]),
             v3=jnp.array([1.0, 2.0, 3.0]),
             update_y=False,
-            update_vx=False,
             active_mask=jnp.array([True, False, True]),
         )
 
@@ -79,7 +78,6 @@ class TestTiledParticleInitialization(unittest.TestCase):
         self.assertEqual(species_config.mass.shape, (1,))
         self.assertEqual(species_config.weight.shape, (1,))
         self.assertEqual(species_config.update_x.shape, (1, 3))
-        self.assertEqual(species_config.update_u.shape, (1, 3))
         self.assertTrue(jnp.allclose(species_config.charge, jnp.array([2.0])))
         self.assertTrue(jnp.allclose(species_config.mass, jnp.array([3.0])))
         self.assertTrue(jnp.allclose(species_config.weight, jnp.array([4.0])))
@@ -87,9 +85,6 @@ class TestTiledParticleInitialization(unittest.TestCase):
         self.assertTrue(bool(species_config.update_x[0, 0]))
         self.assertFalse(bool(species_config.update_x[0, 1]))
         self.assertTrue(bool(species_config.update_x[0, 2]))
-        self.assertFalse(bool(species_config.update_u[0, 0]))
-        self.assertTrue(bool(species_config.update_u[0, 1]))
-        self.assertTrue(bool(species_config.update_u[0, 2]))
 
     def test_species_metadata_is_not_slot_shaped(self):
         parameter_set = {
@@ -144,7 +139,6 @@ class TestTiledParticleInitialization(unittest.TestCase):
         self.assertEqual(species_config.mass.shape, (2,))
         self.assertEqual(species_config.weight.shape, (2,))
         self.assertEqual(species_config.update_x.shape, (2, 3))
-        self.assertEqual(species_config.update_u.shape, (2, 3))
 
     def test_direct_tiled_particles_can_allocate_inactive_capacity_headroom(self):
         parameter_set = {
@@ -394,14 +388,9 @@ class TestTiledParticleInitialization(unittest.TestCase):
                     "initial_vx": 0.0,
                     "initial_vy": 0.0,
                     "initial_vz": 0.0,
-                    "update_pos": True,
                     "update_x": True,
                     "update_y": False,
                     "update_z": True,
-                    "update_v": True,
-                    "update_vx": False,
-                    "update_vy": True,
-                    "update_vz": False,
                 }
             }
 
@@ -415,9 +404,8 @@ class TestTiledParticleInitialization(unittest.TestCase):
             self.assertTrue(bool(species_config.update_x[0, 0]))
             self.assertFalse(bool(species_config.update_x[0, 1]))
             self.assertTrue(bool(species_config.update_x[0, 2]))
-            self.assertFalse(bool(species_config.update_u[0, 0]))
-            self.assertTrue(bool(species_config.update_u[0, 1]))
-            self.assertFalse(bool(species_config.update_u[0, 2]))
+            self.assertEqual(metadata[0]["update_x"], (True, False, True))
+            self.assertNotIn("update_u", metadata[0])
 
 
 if __name__ == "__main__":

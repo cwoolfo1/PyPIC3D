@@ -11,7 +11,6 @@ class SpeciesConfig(NamedTuple):
     mass: jax.Array # (species,)
     weight: jax.Array # (species,)
     update_x: jax.Array # (species, 3)
-    update_u: jax.Array # (species, 3)
 
 
 class TiledParticles(NamedTuple):

@@ -342,15 +342,10 @@ def load_particles_from_toml(config, static_parameters, dynamic_parameters):
             weight = (n / N_per_cell) * (dx * dy * dz)
             # convert number density to weight based on the number of particles per cell and cell volume
 
-        update_pos = read_value("update_pos", toml_key, config, True)
-        update_v = read_value("update_v", toml_key, config, True)
-        update_vx = read_value("update_vx", toml_key, config, True)
-        update_vy = read_value("update_vy", toml_key, config, True)
-        update_vz = read_value("update_vz", toml_key, config, True)
         update_x = read_value("update_x", toml_key, config, True)
         update_y = read_value("update_y", toml_key, config, True)
         update_z = read_value("update_z", toml_key, config, True)
-        # determine whether to update the position and velocity components of the particle species based on the configuration, defaulting to True if not specified
+        # use one directional mask for both position and velocity updates
 
         x_array = jnp.stack((x, y, z), axis=-1)
         u_array = jnp.stack((vx, vy, vz), axis=-1)
@@ -368,8 +363,7 @@ def load_particles_from_toml(config, static_parameters, dynamic_parameters):
             "x_bc": x_bc,
             "y_bc": y_bc,
             "z_bc": z_bc,
-            "update_x": (update_pos and update_x, update_pos and update_y, update_pos and update_z),
-            "update_u": (update_v and update_vx, update_v and update_vy, update_v and update_vz),
+            "update_x": (update_x, update_y, update_z),
         }
         species_arrays.append((x_array, u_array, active_mask))
         species_metadata.append(metadata)
@@ -409,13 +403,11 @@ def load_particles_from_toml(config, static_parameters, dynamic_parameters):
     )
 
     update_x = jnp.asarray([metadata["update_x"] for metadata in species_metadata], dtype=bool).reshape((-1, 3))
-    update_u = jnp.asarray([metadata["update_u"] for metadata in species_metadata], dtype=bool).reshape((-1, 3))
     species_config = SpeciesConfig(
         charge=jnp.asarray([metadata["charge"] for metadata in species_metadata]),
         mass=jnp.asarray([metadata["mass"] for metadata in species_metadata]),
         weight=jnp.asarray([metadata["weight"] for metadata in species_metadata]),
         update_x=update_x,
-        update_u=update_u,
     )
     particles = TiledParticles(
         x=jnp.asarray(x_tiles),

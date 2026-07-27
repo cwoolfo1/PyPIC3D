@@ -52,4 +52,3 @@ initial_z = 'ion_z.npy'
 initial_vx = 'ion_vx.npy'
 initial_vy = 'ion_vy.npy'
 initial_vz = 'ion_vz.npy'
-update_pos = true

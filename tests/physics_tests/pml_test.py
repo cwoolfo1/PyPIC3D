@@ -568,7 +568,6 @@ class TestPMLFDTDBehavior(unittest.TestCase):
             mass=jnp.zeros((0,)),
             weight=jnp.zeros((0,)),
             update_x=jnp.zeros((0, 3), dtype=bool),
-            update_u=jnp.zeros((0, 3), dtype=bool),
         )
 
         initial_energy = sum(

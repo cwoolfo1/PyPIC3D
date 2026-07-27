@@ -223,21 +223,18 @@ class TestDirectDeposition(unittest.TestCase):
         }
     # create simulation parameters for a single tile that covers the entire parameter_set grid
 
-    def _species_config(self, charges, masses, weights, update_x=None, update_u=None):
+    def _species_config(self, charges, masses, weights, update_x=None):
         n_species = len(charges)
         if update_x is None:
             update_x = [(True, True, True)] * n_species
-        if update_u is None:
-            update_u = [(True, True, True)] * n_species
 
         return SpeciesConfig(
             charge=jnp.asarray(charges, dtype=float),
             mass=jnp.asarray(masses, dtype=float),
             weight=jnp.asarray(weights, dtype=float),
             update_x=jnp.asarray(update_x, dtype=bool),
-            update_u=jnp.asarray(update_u, dtype=bool),
         )
-    # create a SpeciesConfig object with the given charges, masses, weights, and optional update flags for position and velocity
+    # create a SpeciesConfig object with the given charges, masses, weights, and directional update flags
 
     def _empty_tiled_particles(self, parameter_set, simulation_parameters, n_species, n_slots):
         tile_nx, tile_ny, tile_nz = self._tile_shape(simulation_parameters)
@@ -741,6 +738,74 @@ class TestDirectDeposition(unittest.TestCase):
 
         self._compare_tiled_to_one_tile(particles, species_config, parameter_set, simulation_parameters)
         # test that the direct deposition from tiled particles with multiple species (including a dummy species) matches the deposition from a single-tile representation, ensuring consistency across species
+
+    def test_tiled_direct_deposition_masks_current_per_species_direction(self):
+        parameter_set = self._build_parameter_values(Nx=4, Ny=4, Nz=4)
+        parameter_set["guard_cells"] = 2
+        simulation_parameters = {
+            "particle_tile_nx": 4,
+            "particle_tile_ny": 4,
+            "particle_tile_nz": 4,
+        }
+        parameter_set = self._parameters_with_tiled_grids(
+            parameter_set,
+            self._tile_shape(simulation_parameters),
+        )
+        particles = self._particles_from_slots(
+            parameter_set,
+            simulation_parameters,
+            n_species=2,
+            n_slots=1,
+            slots=[
+                ((0, 0, 0), 0, 0, (-0.75, -0.25, 0.25), (0.2, 0.3, 0.4), True),
+                ((0, 0, 0), 1, 0, (0.75, 0.25, -0.25), (-0.5, -0.6, -0.7), True),
+            ],
+        )
+        species_config = self._species_config(
+            charges=[1.0, 2.0],
+            masses=[1.0, 1.0],
+            weights=[1.0, 1.0],
+            update_x=[
+                (False, True, False),
+                (True, False, True),
+            ],
+        )
+        static_parameters, dynamic_parameters = kernel_parameters_from_values(parameter_set)
+        static_parameters = static_parameters._replace(current_filter="none")
+
+        masked_current = J_from_rhov(
+            particles,
+            species_config,
+            self._empty_J_tiles(parameter_set),
+            static_parameters,
+            dynamic_parameters,
+        )
+
+        slot_mask = species_config.update_x.reshape((1, 1, 1, 2, 1, 3))
+        reference_particles = particles._replace(u=jnp.where(slot_mask, particles.u, 0.0))
+        reference_config = species_config._replace(update_x=jnp.ones_like(species_config.update_x))
+        reference_current = J_from_rhov(
+            reference_particles,
+            reference_config,
+            self._empty_J_tiles(parameter_set),
+            static_parameters,
+            dynamic_parameters,
+        )
+
+        for masked_component, reference_component in zip(masked_current, reference_current):
+            self.assertTrue(jnp.allclose(masked_component, reference_component))
+            self.assertGreater(float(jnp.max(jnp.abs(masked_component))), 0.0)
+
+        disabled_config = species_config._replace(update_x=jnp.zeros_like(species_config.update_x))
+        disabled_current = J_from_rhov(
+            particles,
+            disabled_config,
+            self._empty_J_tiles(parameter_set),
+            static_parameters,
+            dynamic_parameters,
+        )
+        for component in disabled_current:
+            self.assertTrue(jnp.allclose(component, 0.0))
 
     def test_public_J_from_rhov_dispatches_tiled_particles_to_tile_local_current(self):
         parameter_set = self._build_parameter_values()
