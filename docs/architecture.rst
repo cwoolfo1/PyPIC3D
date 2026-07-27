@@ -1,88 +1,78 @@
 Architecture
 ============
 
-This page summarizes how PyPIC3D is organized and how data flows through a run.
+.. PyPIC3D separates compile-time numerical choices from dynamic scalar and array
+.. state. The production timestep operates on tile-major fields and particles;
+.. global arrays are constructed only at explicit diagnostic or electrostatic
+.. solver boundaries.
+
+PyPIC3D contains a single run loop that advances the simulation timestep,
+the intermittently copies tile-local snapshots to asynchronous openPMD 
+writers and computes energy and momentum diagnostics. The timestep is JIT-
+compiled with static parameters and the JAX device mesh, while dynamic
+parameters and particle state are passed as JAX array objects.
+
+``dynamic_parameters`` contains the timestep, grid spacing and size, 
+physical constants, and global/tiled coordinate arrays. These values 
+are JAX array leaves and can pass through compiled kernels.
+
+``static_parameters`` contains choices that control compiled branches 
+or array layout, including the solver, pusher, deposition method, 
+shape factor, tile shape, guard depth, boundary codes, and JAX device 
+mesh.
+
+``TiledParticles`` contains dynamic tile/species/slot arrays for particle
+positions, momenta, and active flags. ``SpeciesConfig`` contains metadata
+stored once per species, including charge, mass, weight, and flags for
+whether to update positions and momenta.
+
+Both field solvers use the same field-state tuple:
+
+.. code-block:: text
+
+   (E, B, J, rho, phi, external_fields, pml_state, overflow)
+
+``E``, ``B``, and ``J`` are three-component tiled fields. ``rho`` and ``phi``
+are tiled scalar fields. ``external_fields`` contains prescribed electric and
+magnetic fields used by the particle push and energy diagnostics but excluded
+from Maxwell evolution. ``pml_state`` is ``None`` unless PML is active, and
+``overflow`` reports a failed fixed-capacity particle retile.
+
+
+See :doc:`tiling` for the array shapes, guard ownership, and sharding structure.
 
 Execution Flow
 --------------
 
-1. ``PyPIC3D.__main__.main`` parses ``--config`` and enables JAX settings.
-2. ``initialization.initialize_simulation`` builds defaults, loads TOML,
-   computes derived world parameters, builds grids, initializes particles and
-   fields, and selects loop functions.
-3. ``run_PyPIC3D`` executes the timestep loop, writes diagnostics/outputs, and
-   dumps run metadata.
+1. ``PyPIC3D.__main__.main`` parses ``--config`` and enables 64-bit JAX on the
+   CPU backend.
+2. ``initialization.initialize_simulation`` merges TOML values with defaults,
+   builds global and tiled grids, creates the JAX device mesh, initializes
+   particles and fields, and selects the timestep function.
+3. ``run_PyPIC3D`` closes over the static parameters, JIT-compiles the selected
+   timestep, advances the simulation, checks particle-retile overflow, and
+   schedules diagnostics.
+4. Asynchronous openPMD writers consume tile-local snapshots without changing
+   the live solver state.
 
 Core Module Map
 ---------------
 
-- ``PyPIC3D/__main__.py``: CLI and top-level run loop.
-- ``PyPIC3D/initialization.py``: parameter defaults, config merge, world/grid
-  setup, and mode selection.
-- ``PyPIC3D/evolve.py``: JIT-compiled per-step loops.
-- ``PyPIC3D/particle.py``: particle species model, initialization loaders,
-  particle boundary handling.
-- ``PyPIC3D/J.py``: current deposition kernels.
-- ``PyPIC3D/rho.py``: charge deposition.
-- ``PyPIC3D/solvers/``: field update operators and electrostatic Poisson
-  helpers.
-- ``PyPIC3D/diagnostics/``: phase-space plots and openPMD output.
-- ``PyPIC3D/utils.py``: config handling, filters, energy calculations,
-  serialization helpers.
-
-State Model
------------
-
-Main runtime objects:
-
-- ``particles``: list of particle species objects.
-- ``fields``:
-
-  - electrostatic: ``(E, B, J, rho, phi, external_fields)``
-  - electrodynamic: ``(E, B, J, rho, phi, external_fields, pml_state)``
-
-- ``world``: spatial/temporal metadata, grid spacing, grid arrays, encoded field
-  boundary conditions.
-- ``constants``: physical constants and filter coefficients.
-
-Tiled State Contract
---------------------
-
-The ``electrodynamic_yee`` path uses one shared tile shape for fields and particles.
-The existing tile-size configuration is interpreted as this common
-``tile_shape = (tile_nx, tile_ny, tile_nz)``; there are not separate field-tile
-and particle-tile dimensions in the current contract.  Each tile width must
-divide the corresponding physical grid size exactly, so the leading tile axes
-are ``(ntx, nty, ntz)`` with ``ntx * tile_nx = Nx`` and similarly for ``y`` and
-``z``.
-
-Tiled fields store each vector component as compact per-tile arrays with
-leading tile axes followed by a one-cell halo around the tile-local physical
-interior:
-``(ntx, nty, ntz, tile_nx + 2, tile_ny + 2, tile_nz + 2)``.  The halo cells
-carry neighbor-tile values or exterior field boundary conditions so tiled Yee
-curls can be evaluated on the physical interior without assembling a global
-field.
-
-Tiled particles use the same leading tile axes, followed by species and fixed
-slot axes.  Positions and velocities have shape
-``(ntx, nty, ntz, species, max_particles_per_tile, 3)``; the active mask has
-shape ``(ntx, nty, ntz, species, max_particles_per_tile)``.  Species-level
-metadata such as charge, mass, weight, and position/velocity update masks is
-stored once in ``SpeciesConfig`` and broadcast over tile slots inside the tiled
-kernels.  The slot capacity is set when tiled particles are initialized.  Empty
-slots remain inactive so the array shape stays static during JAX updates.
-
-Retiling preserves this fixed-capacity layout.  If later particle motion would
-place more active particles in a tile/species block than its slot capacity can
-hold, the tiled refresh reports overflow and the Python driver treats that as a
-hard error.  This avoids silently dropping active particles.
-
-Data and Output Flow
---------------------
-
-- Diagnostics and metadata are written under ``<output_dir>/data``.
-- Text outputs include energy and momentum traces.
-- Optional outputs include matplotlib phase-space arrays and openPMD files.
-- ``output.toml`` captures simulation stats, resolved runtime parameters,
-  particle summaries, and package versions.
+- ``PyPIC3D/__main__.py``: CLI, run loop, writer scheduling, and diagnostics.
+- ``PyPIC3D/initialization.py``: configuration defaults, grid/device setup,
+  particle and field initialization, and solver selection.
+- ``PyPIC3D/parameters.py``: ``StaticParameters``, ``DynamicParameters``, and
+  grid parameter tuples.
+- ``PyPIC3D/evolve.py``: main evolution logic.
+- ``PyPIC3D/particles/``: fixed-capacity particle state, initialization, and
+  cross-tile communication.
+- ``PyPIC3D/pusher/``: field interpolation and particle pushers.
+- ``PyPIC3D/deposition/``: direct current, Esirkepov current, charge density,
+  and particle shape functions.
+- ``PyPIC3D/solvers/``: Yee updates and the electrostatic Poisson
+  solve.
+- ``PyPIC3D/boundary_conditions/``: field/current ghost cell communications,
+  conducting PEC walls, grid stencils, and PML.
+- ``PyPIC3D/diagnostics/``: field maps, fluid velocity, energy/momentum, and
+  openPMD output.
+- ``PyPIC3D/utilities/``: grid construction and numerical filters.

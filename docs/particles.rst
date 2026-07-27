@@ -1,79 +1,90 @@
 Particle Species
 ================
 
-Each ``[particleX]`` TOML section defines one particle species. PyPIC3D supports
-multi-species plasmas. Particle boundary behavior is a global simulation
-setting stored on ``world``.
+Each ``[particleX]`` TOML section defines one species. Multiple species share
+the same tiled mesh and global particle boundary conditions.
 
 Required Fields
 ---------------
 
-Each species must define:
+Each species defines:
 
 - ``name``
 - ``charge``
 - ``mass``
-- ``N_particles`` or ``N_per_cell``
+- either ``N_particles`` or ``N_per_cell``
 
 Example
 -------
 
 .. code-block:: toml
 
-    [simulation_parameters]
-    shape_factor = 1
+   [particle1]
+   name = "electrons"
+   N_particles = 30000
+   charge = -1.602e-19
+   mass = 9.1093837e-31
+   temperature = 293000
+   number_density = 1.0e15
 
-    [particle1]
-    name = "electrons"
-    N_particles = 30000
-    charge = -1.602e-19
-    mass = 9.1093837e-31
-    temperature = 293000
-
-Common Optional Fields
+Initialization Options
 ----------------------
 
-- Thermal setup: ``temperature`` or ``vth`` (optionally ``Tx``, ``Ty``, ``Tz``)
-- Weighting: ``weight`` or ``ds_per_debye``
-- Spatial bounds: ``xmin/xmax``, ``ymin/ymax``, ``zmin/zmax``
-- External initial state: ``initial_x/y/z``, ``initial_vx/vy/vz`` (``.npy``)
-- Update controls: ``update_pos``, ``update_v``, component-level flags
+- Thermal state: ``temperature`` or ``vth``, with optional directional
+  temperatures ``Tx``, ``Ty``, and ``Tz``.
+- Statistical weight: ``weight`` directly, or ``number_density`` to derive the
+  weight from particles per cell and cell volume.
+- Sampling bounds: ``xmin/xmax``, ``ymin/ymax``, and ``zmin/zmax``. Defaults
+  are the complete centered simulation domain.
+- Initial arrays or scalar offsets: ``initial_x``, ``initial_y``,
+  ``initial_z``, ``initial_vx``, ``initial_vy``, and ``initial_vz``. String
+  values are loaded from ``.npy`` files.
+- Update controls: ``update_pos`` and ``update_v`` plus component switches
+  ``update_x/y/z`` and ``update_vx/vy/vz``.
 
-Initialization Behavior
------------------------
-
-If external arrays are not provided:
-
-- positions are sampled uniformly inside species bounds
-- velocities are sampled from thermal distributions derived from
-  ``temperature``/``vth``
-
-If scalar ``initial_x/y/z`` values are used, PyPIC3D places particles near that
-location with sub-cell variation when applicable.
+Without external arrays, positions are sampled uniformly within the species
+bounds and velocities are sampled from the configured thermal distributions.
+A scalar initial position places particles within a sub-cell interval around
+that coordinate when the axis contains more than one cell. A scalar initial
+velocity is added to the sampled thermal velocity.
 
 Particle Boundary Conditions
 ----------------------------
 
-Global boundary options are set with
-``simulation_parameters.particle_x_bc``,
-``simulation_parameters.particle_y_bc``, and
-``simulation_parameters.particle_z_bc``:
+The runtime particle boundaries are global simulation parameters:
 
-- ``periodic``
-- ``reflecting``
-- ``absorbing``
+- ``particle_x_bc``
+- ``particle_y_bc``
+- ``particle_z_bc``
 
-Absorbing particle boundaries keep the JAX particle arrays fixed-size and mark
-particles inactive with the particle active mask after they leave the domain.  The
-inactive particles remain allocated for JIT shape stability, but they no longer
-move, push, deposit charge/current, or contribute to particle energy moments.
+Supported values are:
 
-These are independent from field boundary conditions.
+- ``periodic``: wrap positions across the domain.
+- ``reflecting``: reflect position and the normal velocity.
+- ``absorbing``: mark particles inactive after they leave the domain.
+
+Inactive particles retain allocated slots for static JAX shapes but no longer
+move, push, deposit, or contribute to particle diagnostics.
+
+Tiled Particle State
+--------------------
+
+``TiledParticles`` contains position ``x``, velocity ``u``, and active-mask
+arrays with leading tile and species axes. ``SpeciesConfig`` separately stores
+charge, mass, weight, and update masks once per species. This avoids repeating
+constant metadata in every particle slot.
+
+Particle slots have fixed capacity after initialization. Retiling moves active
+particles between adjacent tile owners; insufficient destination capacity is a
+hard runtime error. See :doc:`tiling` for exact shapes and capacity selection.
 
 Shape Factors
 -------------
 
-``simulation_parameters.shape_factor`` controls interpolation/deposition order:
+``simulation_parameters.shape_factor`` controls interpolation and deposition:
 
-- ``1``: first-order
-- ``2``: second-order
+- ``1``: first-order particle shapes.
+- ``2``: second-order particle shapes.
+
+Use the same shape factor when comparing runs because it changes the particle
+stencil, numerical smoothing, and guard-cell reach.

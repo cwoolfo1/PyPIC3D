@@ -1,6 +1,8 @@
 import unittest
 import tempfile
 import os
+from unittest.mock import patch
+
 import numpy as np
 import toml
 import jax
@@ -66,7 +68,10 @@ class TestInitializationFunctions(unittest.TestCase):
                     "particle_tile_nz": 1,
                     "filter_j": "none",
                 },
-                "plotting": {"plotting": False},
+                "plotting": {
+                    "plotting": False,
+                    "dump_fields": True,
+                },
                 "particle1": {
                     "name": "electrons",
                     "N_particles": 4,
@@ -86,7 +91,16 @@ class TestInitializationFunctions(unittest.TestCase):
             with open(config_path, "w") as f:
                 toml.dump(config, f)
 
-            loop, particles, fields, parameter_set, dynamic_parameters, plotting_parameters, *_rest = initialize_simulation(toml.load(config_path))
+            with patch("PyPIC3D.initialization.write_openpmd_initial_fields") as write_initial_fields:
+                (
+                    loop,
+                    particles,
+                    fields,
+                    parameter_set,
+                    dynamic_parameters,
+                    plotting_parameters,
+                    *_rest,
+                ) = initialize_simulation(toml.load(config_path))
 
             self.assertIs(loop, time_loop_electrodynamic)
             self.assertIsInstance(particles, TiledParticles)
@@ -99,6 +113,8 @@ class TestInitializationFunctions(unittest.TestCase):
             self.assertNotIn("particle_species_metadata", parameter_set)
             self.assertEqual(plotting_parameters["particle_species_names"], ("electrons",))
             self.assertEqual(plotting_parameters["particle_species_metadata"][0]["name"], "electrons")
+            self.assertEqual(tuple(plotting_parameters["field_map"]), ("E", "B", "J"))
+            self.assertEqual(tuple(write_initial_fields.call_args.args[0]), ("E", "B", "J"))
             self.assertIn("tiled_center_grid", dynamic_parameters.grids._asdict())
             self.assertIn("tiled_vertex_grid", dynamic_parameters.grids._asdict())
             expected_center_grid, expected_vertex_grid = build_yee_grid(dynamic_parameters)
@@ -157,7 +173,10 @@ class TestInitializationFunctions(unittest.TestCase):
                     "particle_tile_nz": 1,
                     "filter_j": "none",
                 },
-                "plotting": {"plotting": False},
+                "plotting": {
+                    "plotting": False,
+                    "plotvelocities": True,
+                },
                 "particle1": {
                     "name": "electrons",
                     "N_particles": 4,
@@ -179,8 +198,15 @@ class TestInitializationFunctions(unittest.TestCase):
 
             result = initialize_simulation(toml.load(config_path))
             dynamic_parameters = result[4]
+            plotting_parameters = result[5]
 
             self.assertGreater(float(dynamic_parameters.dt), 0.0)
+            self.assertEqual(
+                tuple(plotting_parameters["field_map"]),
+                ("E", "B", "J", "fluid_velocity"),
+            )
+            for velocity_component in plotting_parameters["field_map"]["fluid_velocity"]:
+                self.assertTrue(jnp.allclose(velocity_component, 0.0))
 
     def test_initialize_simulation_encodes_global_particle_boundary_conditions(self):
         with tempfile.TemporaryDirectory() as tmpdir:
