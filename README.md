@@ -4,8 +4,9 @@
 
 ## PyPIC3D
 
-PyPIC3D is a 3D particle-in-cell (PIC) plasma simulation code written in Python with JAX.
-It is built around a config-driven CLI workflow:
+PyPIC3D is a three-dimensional particle-in-cell plasma simulation code written
+in Python with JAX. The production runtime keeps fields and particles in a
+shared tile layout and is configured through TOML:
 
 ```bash
 PyPIC3D --config path/to/config.toml
@@ -13,10 +14,14 @@ PyPIC3D --config path/to/config.toml
 
 ## What It Does
 
-- Advances charged particle species with a Boris particle pusher.
-- Deposits current with either `j_from_rhov` or `esirkepov`.
-- Evolves fields with a first-order Yee electrodynamic update or an electrostatic Poisson solve.
-- Writes diagnostics, matplotlib phase-space outputs, and optional openPMD files.
+- Pushes tile-local particle species with Boris or Higuera-Cary methods.
+- Deposits current with direct `j_from_rhov` or charge-conserving Esirkepov
+  deposition.
+- Evolves electromagnetic fields with a staggered Yee update or solves the
+  electrostatic Poisson problem.
+- Exchanges field halos and moving particles across a JAX device mesh.
+- Writes energy and momentum traces plus optional asynchronous openPMD field
+  and particle output.
 
 ## Installation
 
@@ -42,59 +47,80 @@ pip install -e .
 
 ## Quick Start
 
-Run a packaged demo from the repository root:
+Run the single-tile two-stream demo from the repository root:
 
 ```bash
 PyPIC3D --config demos/two_stream/two_stream.toml
 ```
 
-Simulation outputs are written to `<output_dir>/data` (default: current working directory).
+Simulation outputs are written under `<output_dir>/data`. See the
+[usage guide](docs/usage.rst) for the active TOML options and the
+[tiling guide](docs/tiling.rst) before selecting a multi-tile layout.
 
 ## Documentation Map
 
-Primary docs live in `docs/` (Sphinx + reStructuredText):
+The Sphinx documentation lives in `docs/`:
 
-- `docs/index.rst`: doc entry point and navigation.
-- `docs/usage.rst`: runtime configuration and CLI behavior.
-- `docs/solvers.rst`: electrodynamic/electrostatic update paths.
-- `docs/chargeconservation.rst`: current deposition methods.
-- `docs/grid.rst`: grid layouts and boundary model.
-- `docs/particles.rst`: species model and initialization.
-- `docs/demos.rst`: demo catalog and run commands.
-- `docs/architecture.rst`: module-level architecture and data flow.
-- `docs/development.rst`: setup, tests, docs build, debugging notes.
-- `docs/contributing.rst`: contribution workflow.
+- `usage.rst`: CLI configuration, external fields, PML, and outputs.
+- `tiling.rst`: tile geometry, device topology, guard cells, and particle
+  capacity.
+- `solvers.rst`: electrodynamic and electrostatic update paths.
+- `chargeconservation.rst`: current deposition and filtering.
+- `grid.rst`: coordinate grids, Yee staggering, and boundaries.
+- `particles.rst`: species initialization and tiled particle state.
+- `demos.rst`: runnable examples.
+- `architecture.rst`: runtime objects, modules, and data flow.
+- `development.rst`: setup, tests, documentation builds, and debugging.
 
 ## Repository Layout
 
 ```text
 PyPIC3D/
-  __main__.py              # CLI entrypoint
-  initialization.py        # config/defaults + world/fields/particles setup
-  evolve.py                # per-step simulation loops
-  particle.py              # particle species model + initialization
-  J.py                     # current deposition methods
-  rho.py                   # charge deposition
-  solvers/                 # field solvers and operators
-  diagnostics/             # plotting and openPMD writers
-  utils.py                 # config, IO, helper math/utilities
+  __main__.py                 # CLI and simulation driver
+  initialization.py           # TOML defaults and runtime construction
+  parameters.py               # static and dynamic NamedTuple parameters
+  evolve.py                   # electrodynamic/electrostatic time steps
+  particles/                  # particle state, initialization, and retile communication
+  pusher/                     # Boris and Higuera-Cary pushers
+  deposition/                 # current, charge, and particle shape functions
+  solvers/                    # Yee and electrostatic field updates
+  boundary_conditions/        # ghost cells, conducting walls, and PML
+  diagnostics/                # energy, fluid moments, plotting, and openPMD
+  utilities/                  # grid construction and numerical filters
 
-demos/                     # runnable example configurations
-tests/                     # pytest suite
+demos/                        # runnable configurations and initial conditions
+tests/code_tests/             # focused implementation tests
+tests/physics_tests/          # numerical and convergence tests
 ```
 
 ## Testing
 
+A suite of lightweight API call and implementation tests can be run with:
+
 ```bash
-pytest
+pytest tests/code_tests
+```
+
+A suite of lightweight physics based tests to verify the correctness of the implementation can be run with:
+
+```bash
+pytest tests/physics_tests
 ```
 
 ## Build Docs
 
 ```bash
 pip install -r docs/requirements.in
-sphinx-build -b html docs docs/_build/html
+python -m sphinx -b html -W --keep-going docs docs/_build/html
 ```
+
+## Next Stages ##
+- [ ] 3+1 Curvilinear PIC with static metrics.
+- [ ] 3+1 Curvilinear PIC with dynamic metrics using BSSN/Z4C.
+- [ ] Harris Current Sheet Demonstration.
+- [ ] Orszag-Tang Vortex Demonstration.
+
+
 
 ## License
 
