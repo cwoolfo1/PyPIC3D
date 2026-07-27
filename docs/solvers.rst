@@ -1,97 +1,112 @@
 Field Solvers
 =============
 
-PyPIC3D supports two production runtime modes selected from
-``simulation_parameters``.
+PyPIC3D has two production solver names:
 
-Runtime Modes
--------------
+- ``electrodynamic_yee``
+- ``electrostatic``
 
-Electrostatic mode
-^^^^^^^^^^^^^^^^^^
+Electrodynamic Yee Step
+-----------------------
 
-Set:
+The electrodynamic timestep keeps both particles and fields tiled. Its order is:
 
-.. code-block:: toml
+1. Interpolate total electric and magnetic fields to particles and push
+   velocity.
+2. Deposit current:
 
-    solver = "electrostatic"
+   - Direct deposition advances position by ``dt/2``, deposits at the
+     centered position, then completes the second ``dt/2``.
+   - Esirkepov deposition uses the old and predicted new positions, advances by
+     ``dt``.
 
-Per step, PyPIC3D:
+3. Update ``B`` by a half timestep from the old ``E``.
+4. Update ``E`` by a full timestep from the half-step ``B`` and deposited
+   ``J``.
+5. Update ``B`` by a second half timestep from the new ``E``.
 
-1. Pushes particles.
-2. Deposits ``rho``.
-3. Solves Poisson's equation for ``phi``.
-4. Computes ``E = -grad(phi)``.
-
-The electrostatic path uses the finite-difference Yee method:
-
-- conjugate-gradient Poisson solve for ``phi``
-- centered finite-difference gradient for ``E = -grad(phi)``
-
-Electrodynamic mode
-^^^^^^^^^^^^^^^^^^^
-
-Set:
-
-.. code-block:: toml
-
-    solver = "electrodynamic_yee"
-
-Per step, PyPIC3D:
-
-1. Pushes particles.
-2. Deposits current ``J``.
-3. Updates ``E``.
-4. Updates ``B``.
-
-The electrodynamic update uses first-order Yee-style kernels in
-``PyPIC3D.solvers.first_order_yee``.
-
-Electrodynamic Update Equations
--------------------------------
+The field equations are:
 
 .. math::
 
-    \mathbf{E}^{n+1} = \mathbf{E}^{n} + \Delta t
-    \left(c^2 \nabla \times \mathbf{B}^{n} - \frac{\mathbf{J}^{n}}{\epsilon_0}\right)
+   \mathbf{B}^{n+1/2} =
+   \mathbf{B}^{n} - \frac{\Delta t}{2}\nabla\times\mathbf{E}^{n},
 
 .. math::
 
-    \mathbf{B}^{n+1} = \mathbf{B}^{n} - \Delta t \left(\nabla \times \mathbf{E}^{n+1}\right)
+   \mathbf{E}^{n+1} =
+   \mathbf{E}^{n} + \Delta t\left(
+   c^2\nabla\times\mathbf{B}^{n+1/2}
+   - \frac{\mathbf{J}^{n+1/2}}{\epsilon_0}\right),
 
-PyPIC3D additionally applies a digital filter controlled by
-``constants.alpha`` to field components each update.
+.. math::
 
-Boundary Conditions
--------------------
+   \mathbf{B}^{n+1} =
+   \mathbf{B}^{n+1/2}
+   - \frac{\Delta t}{2}\nabla\times\mathbf{E}^{n+1}.
 
-Field boundary conditions are defined by:
+``E`` is digitally filtered after its update, and ``B`` is 
+filtered only after the second half-step, preserving the 
+current field time-centering. The filter coefficient is ``alpha``.
 
-- ``simulation_parameters.x_bc``
-- ``simulation_parameters.y_bc``
-- ``simulation_parameters.z_bc``
+Electrostatic Step
+------------------
 
-Supported values:
+The electrostatic timestep:
+
+1. Pushes particle velocity from fields.
+2. Advances position by ``dt``.
+3. Deposits charge density ``rho``.
+4. Assembles global ``rho`` for the finite-difference conjugate-gradient
+   Poisson solve.
+5. Computes ``E = -grad(phi)``.
+
+The electrostatic runtime therefore uses tiled particles, ``rho``, ``phi``,
+and ``E``, but the Poisson solve remains a deliberate global bridge. Thus,
+initialization forces one tile covering the complete domain until a domain 
+decomposition can be implemented for the Poisson solver.
+
+Particle Pushers
+----------------
+
+``particle_pusher = "boris"`` selects Boris. With ``relativistic = true`` it
+uses the relativistic Boris update; otherwise it uses the non-relativistic
+form. ``particle_pusher = "higuera_cary"`` selects the Higuera-Cary relativistic
+update.
+
+Particles interpolate the sum of evolved and prescribed external fields.
+Maxwell updates use only evolved fields.
+
+Boundary Conditions and PML
+---------------------------
+
+Field boundaries are set with ``x_bc``, ``y_bc``, and ``z_bc``:
 
 - ``periodic``
 - ``conducting``
 
-For conducting boundaries, tangential electric-field components are zeroed on
-boundary faces during the ``E`` update.
+Conducting boundaries zero tangential electric components at the global wall.
+The electrostatic solver extends potential constantly through conducting
+exterior guards before taking its gradient.
 
-Current Deposition Selection
-----------------------------
+Coordinate-stretched PML modifies the tile-local spatial derivatives before
+the Ampere and Faraday curls are assembled. PML is supported only by
+``electrodynamic_yee``. See :doc:`usage` for the TOML form.
 
-Current deposition is selected by:
+Current Deposition
+------------------
+
+Select deposition with:
 
 .. code-block:: toml
 
-    current_calculation = "j_from_rhov"
+   current_calculation = "j_from_rhov"
 
-or
+or:
 
 .. code-block:: toml
 
-    current_calculation = "esirkepov"
+   current_calculation = "esirkepov"
+   filter_j = "none"
 
-See :doc:`chargeconservation` for behavior and tradeoffs.
+See :doc:`chargeconservation` for deposition timing and filter behavior.
