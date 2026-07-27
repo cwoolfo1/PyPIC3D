@@ -1,132 +1,187 @@
 Usage
 =====
 
-This page documents the current PyPIC3D runtime workflow and TOML configuration
-schema used by the CLI entrypoint in ``PyPIC3D.__main__``.
+PyPIC3D uses TOML configuration files to define the simulation 
+parameters.
 
 Run Command
 -----------
 
 .. code-block:: bash
 
-    PyPIC3D --config path/to/config.toml
+   PyPIC3D --config path/to/config.toml
 
-The command loads the config, initializes the simulation state, and writes data
-under ``simulation_parameters.output_dir`` (default: current working directory)
-in the ``data`` subdirectory.
+The output directory is ``simulation_parameters.output_dir`` (the current
+working directory by default). PyPIC3D creates a ``data`` subdirectory there.
 
-Required Top-Level Sections
----------------------------
+Configuration Sections
+----------------------
 
-PyPIC3D expects these config sections:
+``[simulation_parameters]`` is the input section for solver,
+geometry, runtime, and physical-constant values.
 
-- ``[simulation_parameters]``: required
-- ``[plotting]``: required
-- At least one ``[particleX]`` section: required
-- ``[constants]``: optional
-- ``[fieldX]`` sections: optional external field loading
+``[plotting]`` contains write parameters used during simulations 
+to write output data. Particle and external-field entries use numbered 
+sections such as ``[particle1]`` and ``[field1]``.
 
-Minimal Working Example
------------------------
+All sections contain built-in defaults. A particle section is needed for a PIC
+run, but field-only electrodynamic configurations are also supported.
+
+Minimal PIC Example
+-------------------
+
+This example uses one tile covering the complete grid and therefore needs only
+one JAX device:
 
 .. code-block:: toml
 
-    [simulation_parameters]
-    name = "minimal"
-    solver = "electrodynamic_yee"
-    relativistic = true
-    current_calculation = "j_from_rhov"   # j_from_rhov or esirkepov
-    filter_j = "bilinear"                 # bilinear, digital, none
-    Nx = 64
-    Ny = 1
-    Nz = 1
-    x_wind = 1.0
-    y_wind = 1.0
-    z_wind = 1.0
-    t_wind = 1e-8
-    cfl = 0.9
-    shape_factor = 1                       # 1 or 2
-    x_bc = "periodic"                     # periodic or conducting
-    y_bc = "periodic"
-    z_bc = "periodic"
-    particle_x_bc = "periodic"            # periodic, reflecting, or absorbing
-    particle_y_bc = "periodic"
-    particle_z_bc = "periodic"
-    output_dir = "./outputs"
+   [simulation_parameters]
+   name = "minimal"
+   output_dir = "./outputs"
+   solver = "electrodynamic_yee"
+   particle_pusher = "boris"
+   relativistic = true
 
-    [plotting]
-    plotting_interval = 10
-    plot_phasespace = false
-    plot_openpmd_particles = false
-    plot_openpmd_fields = false
-    plotvelocities = false
-    openpmd_field_queue_size = 2
-    openpmd_particle_queue_size = 2
-    dump_particles = false
-    dump_fields = false
+   Nx = 64
+   Ny = 1
+   Nz = 1
+   x_wind = 1.0
+   y_wind = 1.0
+   z_wind = 1.0
+   t_wind = 1.0e-8
+   cfl = 0.9
 
-    [constants]
-    eps = 8.85418782e-12
-    mu = 1.25663706e-6
-    C = 2.99792458e8
-    kb = 1.380649e-23
-    alpha = 1.0
+   particle_tile_nx = 64
+   particle_tile_ny = 1
+   particle_tile_nz = 1
+   guard_cells = 2
+   particle_tile_capacity_factor = 1.25
 
-    [particle1]
-    name = "electrons"
-    N_particles = 5000
-    charge = -1.602e-19
-    mass = 9.1093837e-31
-    temperature = 1.0
+   shape_factor = 1
+   current_calculation = "j_from_rhov"
+   filter_j = "bilinear"
+   alpha = 1.0
 
-Key Notes
----------
+   x_bc = "periodic"
+   y_bc = "periodic"
+   z_bc = "periodic"
+   particle_x_bc = "periodic"
+   particle_y_bc = "periodic"
+   particle_z_bc = "periodic"
 
-- ``[plotting]`` is required even when most flags are ``false``.
-- ``dt`` and ``Nt`` are optional:
+   eps = 8.85418782e-12
+   mu = 1.25663706e-6
+   C = 2.99792458e8
+   kb = 1.380649e-23
 
-  - If ``dt`` is omitted, it is computed from CFL and grid spacing.
-  - If ``Nt`` is omitted, it is derived from ``t_wind / dt``.
-  - If both are provided, ``t_wind`` is updated to ``dt * Nt``.
+   [plotting]
+   plotting_interval = 10
+   plot_openpmd_particles = false
+   plot_openpmd_fields = false
+   plotvelocities = false
+   openpmd_field_queue_size = 2
+   openpmd_particle_queue_size = 2
+   dump_particles = false
+   dump_fields = false
 
-- Field boundary conditions use ``simulation_parameters.x_bc/y_bc/z_bc`` with
-  values ``periodic`` or ``conducting``.
-- Particle boundary conditions are global simulation parameters:
-  ``particle_x_bc/particle_y_bc/particle_z_bc`` with values ``periodic``,
-  ``reflecting``, or ``absorbing``.
-- The smoothing coefficient is ``constants.alpha`` (not
-  ``simulation_parameters.alpha``).
+   [particle1]
+   name = "electrons"
+   N_particles = 5000
+   charge = -1.602e-19
+   mass = 9.1093837e-31
+   temperature = 1.0
 
-External Field Injection
+Time and Grid Parameters
 ------------------------
 
-Use ``[fieldX]`` entries to add arrays to initial field components:
+- ``Nx``, ``Ny``, and ``Nz`` are the physical cell counts.
+- ``x_wind``, ``y_wind``, and ``z_wind`` are the physical domain widths. The
+  domain is centered on zero.
+- If ``dt`` is omitted, it is computed from ``cfl`` and the active grid
+  spacing.
+- If ``Nt`` is omitted, it is computed as ``int(t_wind / dt)``.
+- If ``Nt`` is provided, it controls the number of iterations directly.
+- Tile widths default to the full physical grid, giving one tile. Multi-tile
+  configuration and device requirements are described in :doc:`tiling`.
+
+Numerical Choices
+-----------------
+
+- ``solver`` is ``electrodynamic_yee`` or ``electrostatic``.
+- ``particle_pusher`` is ``boris`` or ``higuera_cary``. The ``relativistic``
+  switch selects relativistic or non-relativistic Boris; Higuera-Cary uses its
+  relativistic update.
+- ``shape_factor`` is ``1`` or ``2``.
+- ``current_calculation`` is ``j_from_rhov`` or ``esirkepov``.
+- ``filter_j`` is ``none``, ``digital``, or ``bilinear`` for direct current.
+  Esirkepov requires ``filter_j = "none"``.
+- ``alpha`` is the digital-filter coefficient and belongs in a recognized
+  simulation or dynamic parameter section.
+
+Boundary Conditions and PML
+---------------------------
+
+Field boundaries use ``x_bc``, ``y_bc``, and ``z_bc`` with values ``periodic``
+or ``conducting``. Particle boundaries are global settings shared by all
+species:
+
+- ``particle_x_bc``
+- ``particle_y_bc``
+- ``particle_z_bc``
+
+Their supported values are ``periodic``, ``reflecting``, and ``absorbing``.
+
+Coordinate-stretched PML is available only with ``electrodynamic_yee``. Add one
+entry for each absorbing wall:
 
 .. code-block:: toml
 
-    [field1]
-    name = "initial_bias"
-    type = 0
-    path = "inputs/initial_Ex.npy"
+   [[pml]]
+   wall = "-x"
+   thickness = 8
+   order = 3.0
+   target_reflection = 1.0e-8
 
-``type`` mapping:
+   [[pml]]
+   wall = "+x"
+   thickness = 8
+   order = 3.0
+   sigma_max = 60.0
 
-- ``0``: Ex
-- ``1``: Ey
-- ``2``: Ez
-- ``3``: Bx
-- ``4``: By
-- ``5``: Bz
-- ``6``: Jx
-- ``7``: Jy
-- ``8``: Jz
+``wall`` is one of ``-x``, ``+x``, ``-y``, ``+y``, ``-z``, or ``+z``.
+``sigma_max`` can be supplied directly; otherwise it is derived from
+``target_reflection``. A periodic field boundary on a PML-active axis is
+changed to a non-wrapping conducting halo contract during initialization.
 
-Arrays must match the simulation grid shape ``(Nx, Ny, Nz)``.
+External Fields
+---------------
+
+Use ``[fieldX]`` entries to load ``.npy`` arrays into field components:
+
+.. code-block:: toml
+
+   [field1]
+   name = "prescribed_Bz"
+   type = 5
+   path = "inputs/Bz.npy"
+   evolve = false
+
+The component mapping is:
+
+- ``0``, ``1``, ``2``: ``Ex``, ``Ey``, ``Ez``
+- ``3``, ``4``, ``5``: ``Bx``, ``By``, ``Bz``
+- ``6``, ``7``, ``8``: ``Jx``, ``Jy``, ``Jz``
+
+Arrays must have physical-interior shape ``(Nx, Ny, Nz)``. ``evolve = true``
+is the default and adds the array to the self-consistent field state.
+``evolve = false`` is available for electric and magnetic components only; it
+keeps the prescribed field outside Maxwell evolution while including it in
+particle pushes and energy diagnostics.
 
 Outputs
 -------
 
-At ``plotting_interval`` cadence, PyPIC3D writes diagnostics like:
+At ``plotting_interval`` cadence, the driver appends:
 
 - ``total_energy.txt``
 - ``energy_error.txt``
@@ -135,10 +190,17 @@ At ``plotting_interval`` cadence, PyPIC3D writes diagnostics like:
 - ``kinetic_energy.txt``
 - ``total_momentum.txt``
 
-Depending on flags, it also writes matplotlib phase-space arrays and openPMD
-files plus ``data/output.toml`` metadata. Runtime openPMD field and particle
-output use bounded queues; ``openpmd_field_queue_size`` and
-``openpmd_particle_queue_size`` cap pending batches so output cannot grow memory
-without bound. Field output contains ``E``, ``B``, and ``J`` by default.
-Set ``plotvelocities = true`` to also calculate and write the particle-weighted
-fluid velocity as the vector mesh ``fluid_velocity``.
+Set ``plot_openpmd_fields = true`` or
+``plot_openpmd_particles = true`` for asynchronous runtime output. The 
+number of openPMD files is limited by ``openpmd_field_queue_size`` and
+``openpmd_particle_queue_size``. The queue sizes determine how many 
+snapshots are retained in memory before being written to disk. If the queue
+sizes are too small, the simulation may stall while waiting for disk writes to
+complete. If the queue sizes are too large, the simulation may run out of memory.
+
+
+Field output contains ``E``, ``B``, and ``J``; ``plotvelocities = true`` adds the
+particle-weighted vector mesh ``fluid_velocity``. ``dump_fields`` and 
+``dump_particles`` write initial-state openPMD files during initialization. 
+Final run parameters, species metadata, and timing statistics are written to
+``data/output.toml``.

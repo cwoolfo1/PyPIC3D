@@ -1,40 +1,55 @@
 Current Deposition
 ==================
 
-PyPIC3D selects current deposition via
-``simulation_parameters.current_calculation``.
+PyPIC3D deposits current directly into tile-local Yee arrays. Contributions
+that land in tile ghost cells are merged into neighboring tiles, followed by 
+a ghost cell update.
 
-Available Methods
------------------
+Direct ``j_from_rhov``
+----------------------
 
-``j_from_rhov``
-^^^^^^^^^^^^^^^
+The direct method pushes particles to the centered position
+``x + u*dt/2``, updates which tile they belong to, and deposits 
+weighted charge times velocity on the staggered current component
+grids. It then completes the second half of the position update.
 
-Computes current directly from particle velocities and deposited charge using a
-stencil deposition workflow.
-
-Optional filtering is controlled by:
+Configure it with:
 
 .. code-block:: toml
 
-    filter_j = "bilinear"   # bilinear, digital, none
+   current_calculation = "j_from_rhov"
+   filter_j = "bilinear"
 
-- ``bilinear`` applies a tri-linear smoothing filter.
-- ``digital`` applies a digital filter using ``constants.alpha``.
-- ``none`` leaves deposited current unfiltered.
+Supported filters are:
 
-``esirkepov``
-^^^^^^^^^^^^^
+- ``none``: no current smoothing.
+- ``bilinear``: tri-linear smoothing.
+- ``digital``: nearest-neighbor digital filtering with coefficient ``alpha``.
 
-Uses an Esirkepov-style charge-conserving deposition path and supports shape
-factors 1 and 2.
+The filter runs after ghost cell updates. Current ghosts are refreshed before and
+after smoothing so each tile reads completed neighboring values. Charge
+density uses the same digital filter when ``filter_j = "digital"``.
 
-Practical Guidance
-------------------
+Esirkepov
+---------
 
-- Start with ``j_from_rhov`` for quick exploratory runs.
-- Use ``esirkepov`` when tighter discrete charge conservation is needed.
-- Keep ``shape_factor`` and filtering choices fixed when comparing runs.
+The Esirkepov path predicts the new position ``x + u*dt`` from the old
+particle position, builds aligned old/new particle-shape stencils, and deposits
+the charge-conserving current difference before particle ownership is
+refreshed.
+
+It supports shape factors 1 and 2 and reduced 1D/2D axes. Current filtering is
+disabled for Esirkepov because the discrete continuity equation is satisfied
+exactly. Configure it with:
+
+.. code-block:: toml
+
+   current_calculation = "esirkepov"
+   filter_j = "none"
+
+Initialization rejects Esirkepov combined with ``digital`` or ``bilinear``
+current filtering so the discrete continuity construction is not silently
+altered.
 
 Reference
 ---------
