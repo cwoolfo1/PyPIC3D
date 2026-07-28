@@ -7,6 +7,7 @@ import jax.numpy as jnp
 
 from PyPIC3D.boundary_conditions.PML import (
     PML_WALLS,
+    apply_tiled_pml_to_b_curl,
     build_pml,
     initialize_pml_state,
     initialize_tiled_pml_state,
@@ -397,6 +398,42 @@ class TestPMLInitialization(unittest.TestCase):
 
 
 class TestPMLFDTDBehavior(unittest.TestCase):
+    def test_magnetic_pml_memory_uses_b_half_timestep(self):
+        parameter_set = _base_parameter_values(nx=4, ny=1, nz=1)
+        dynamic_values = {"C": 1.0, "eps": 1.0, "mu": 1.0, "alpha": 1.0}
+        parameter_set["pml"] = _load_pml(
+            [{"wall": "+x", "thickness": 2, "sigma_max": 4.0}],
+            parameter_set,
+            dynamic_values,
+        )
+        tile_shape = (4, 1, 1)
+        parameter_set["tile_shape"] = tile_shape
+        parameter_set["field_mesh"] = ghost_cells.make_field_mesh((1, 1, 1))
+        static_parameters, dynamic_parameters = kernel_parameters_from_values(parameter_set, dynamic_values)
+        pml_state = initialize_tiled_pml_state(
+            static_parameters,
+            dynamic_parameters,
+            parameter_set["pml"][-1],
+            tile_shape,
+        )
+
+        _, b_memory, tiled_profiles = pml_state
+        derivatives = tuple(jnp.ones_like(memory) for memory in b_memory)
+        _, pml_state = apply_tiled_pml_to_b_curl(
+            derivatives,
+            static_parameters,
+            dynamic_parameters,
+            pml_state,
+        )
+
+        g = int(static_parameters.guard_cells)
+        sigma_x = tiled_profiles[0][:, :, :, g:-g, g:-g, g:-g]
+        expected_x_memory = jnp.exp(-sigma_x * dynamic_parameters.dt / 2) - 1.0
+        b_memory = pml_state[1]
+
+        self.assertTrue(jnp.allclose(b_memory[3], expected_x_memory))
+        self.assertTrue(jnp.allclose(b_memory[4], expected_x_memory))
+
     def test_no_pml_state_returns_field_and_none_state(self):
         parameter_set = _base_parameter_values(nx=4, ny=4, nz=4)
         dynamic_values = {"C": 2.0, "eps": 1.0, "mu": 1.0, "alpha": 1.0}
@@ -581,6 +618,14 @@ class TestPMLFDTDBehavior(unittest.TestCase):
             )[:2]
         )
         def step(E_tiles, B_tiles, tiled_pml_state):
+            B_tiles, tiled_pml_state = update_B(
+                E_tiles,
+                B_tiles,
+                static_parameters,
+                dynamic_parameters,
+                tiled_pml_state,
+                do_filter=False,
+            )
             E_tiles, tiled_pml_state = update_E(
                 E_tiles,
                 B_tiles,
@@ -595,6 +640,7 @@ class TestPMLFDTDBehavior(unittest.TestCase):
                 static_parameters,
                 dynamic_parameters,
                 tiled_pml_state,
+                do_filter=True,
             )
             return E_tiles, B_tiles, tiled_pml_state
 
