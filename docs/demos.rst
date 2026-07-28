@@ -39,12 +39,12 @@ Weibel Instability
 Orszag-Tang Vortex
 ------------------
 
-.. figure:: images/magnetic_field_mag_ot.png
-   :alt: Normalized magnetic field magnitude from the Orszag-Tang vortex demo
+.. figure:: images/Ez_ot_shot.png
+   :alt: Out-of-plane electric field from the Orszag-Tang vortex demo
    :align: center
    :width: 80%
 
-   Orszag-Tang vortex normalized magnetic field magnitude.
+   Orszag-Tang vortex out-of-plane electric field.
 
 .. code-block:: bash
 

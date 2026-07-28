@@ -1,7 +1,7 @@
 # This is a configuration file for PyPIC3D
 [simulation_parameters]
-name = "Orszag Tang Vortex"
-t_wind = 0.3e-8
+name = "Orszag-Tang Vortex"
+t_wind =  1.6457396126418987e-09
 bc = 'periodic'
 solver = 'electrodynamic_yee'
 Nx = 200
@@ -9,7 +9,7 @@ Ny = 200
 Nz = 1
 x_wind = 1
 y_wind = 1
-z_wind = 0.20202487946382702
+z_wind = 0.23555306590186725
 verbose = false
 cfl = 0.99
 shape_factor = 2
@@ -18,7 +18,7 @@ particle_tile_ny = 200
 particle_tile_nz = 1
 
 [plotting]
-plotting_interval = 2
+plotting_interval = 1
 plot_openpmd_fields = true
 plotchargedensity = true
 openpmd_field_queue_size =  5
@@ -36,8 +36,8 @@ path = "By.npy"
 
 [particle1]
 name = "electrons"
-N_particles = 3200000
-weight = 6312913.098918532
+N_particles = 8000000
+weight = 2944479.279091469
 charge = -1.602e-19
 mass   = 9.1093837e-31
 initial_x = 'electron_x.npy'
@@ -49,9 +49,8 @@ initial_vz = 'electron_vz.npy'
 
 
 [particle2]
-# neutralizing ion background
 name = "ions"
-N_particles = 3200000
+N_particles = 8000000
 charge = 1.602e-19
 mass = 1.67e-27
 initial_x = 'ion_x.npy'

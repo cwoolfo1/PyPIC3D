@@ -1,10 +1,25 @@
 import numpy as np
 from PyPIC3D.utilities.grids import build_collocated_axis, build_staggered_axis
 
-x_wind = 1
-y_wind = 1
+mu0 = 1.25663706212e-6
+q_e = 1.602176634e-19
+me    = 9.10938356e-31
+ep0   = 8.854187817e-12
+C  = np.sqrt(1 / (mu0 * ep0))
+# fundamental constants
+
+add_out_of_plane_velocity = True
+PPC = 200
 nx = 200
 ny = 200
+B0 = 0.0005
+# magnetic field strength
+V0 = 1.0 * C
+# velocity magnitude
+
+
+x_wind = 1
+y_wind = 1
 dx = x_wind / nx
 dy = y_wind / ny
 # spatial resolution
@@ -34,19 +49,16 @@ Bx_X, Bx_Y = np.meshgrid(center_x, vertex_y, indexing='ij')
 By_X, By_Y = np.meshgrid(vertex_x, center_y, indexing='ij')
 # define the grids for the magnetic field components
 
-B0 = 0.01  #1 / np.sqrt(4 * np.pi)
-# magnetic field strength
 
-C  = 2.9e8
-V0 = 1.0 * C
-# velocity magnitude
-
+eddy_turnover_time = x_wind / (2*np.pi*V0)
+# compute the eddy turnover time to estimate simulation length
+print(f"Single eddy turnover time: {eddy_turnover_time}")
+print(f"3.1 eddy turnover times: {3.1 * eddy_turnover_time } " )
 Bx = -B0 * np.sin(2 * np.pi * Bx_Y / y_wind)
 By = B0 * np.sin(4 * np.pi * By_X / x_wind)
 # components of the magnetic field
 
 number_density = 1e14
-PPC = 80
 N_particles = int(PPC * nx * ny)
 # number of particles
 
@@ -74,6 +86,10 @@ Bx = np.expand_dims(Bx, axis=-1)
 By = np.expand_dims(By, axis=-1)
 # Expand dimensions to match fields shape
 
+if add_out_of_plane_velocity:
+    V_e = -2 * np.pi * B0 / (mu0 * number_density * q_e) * (2/x_wind * np.cos(4 * np.pi * electron_x / x_wind) + 1/y_wind * np.cos(2 * np.pi * electron_y / y_wind))
+    electron_vz = V_e
+    # add a velocity component to the electrons in the z-direction to ensure that the current density is consistent with the magnetic field
 
 electron_u = np.sqrt(electron_vx**2 + electron_vy**2 + electron_vz**2)
 ion_u = np.sqrt(ion_vx**2 + ion_vy**2 + ion_vz**2)
@@ -84,9 +100,12 @@ gamma_i = np.sqrt(1 + (ion_u / C)**2)
 
 electron_vx = electron_vx / gamma_e
 electron_vy = electron_vy / gamma_e
+electron_vz = electron_vz / gamma_e
 ion_vx = ion_vx / gamma_i
 ion_vy = ion_vy / gamma_i
 # correct the velocities of electrons and ions for relativistic effects
+
+
 
 electron_v = np.sqrt(electron_vx**2 + electron_vy**2 + electron_vz**2)
 ion_v = np.sqrt(ion_vx**2 + ion_vy**2 + ion_vz**2)
@@ -101,12 +120,6 @@ print(f"average ion velocity: {mean_ion_v / C} C")
 
 vth_e = np.sqrt( np.mean(electron_v**2) )
 # compute the thermal velocity of electrons
-
-mu0 = 1.25663706212e-6
-q_e = 1.602176634e-19
-me    = 9.10938356e-31
-ep0   = 8.854187817e-12
-# fundamental constants
 
 kbT = 1/3 * me * vth_e**2
 # compute the thermal energy of electrons in Joules
