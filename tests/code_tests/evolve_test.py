@@ -48,7 +48,6 @@ def one_slot_tiled_particles(
     weight=1.0,
     active=True,
     update_x=(True, True, True),
-    update_u=(True, True, True),
 ):
     particles = TiledParticles(
         x=jnp.asarray(x, dtype=float).reshape((1, 1, 1, 1, 1, 3)),
@@ -61,7 +60,6 @@ def one_slot_tiled_particles(
         mass=jnp.asarray([mass], dtype=float),
         weight=jnp.asarray([weight], dtype=float),
         update_x=jnp.asarray([update_x], dtype=bool),
-        update_u=jnp.asarray([update_u], dtype=bool),
     )
     return particles, species_config
 

@@ -214,6 +214,11 @@ def Esirkepov_current(
         )
         # compute the local current contributions for each axis based on whether the axis is active or not, using the Esirkepov formula for charge-conserving current deposition.
 
+        dJx = jnp.where(update_x1, dJx, 0.0)
+        dJy = jnp.where(update_x2, dJy, 0.0)
+        dJz = jnp.where(update_x3, dJz, 0.0)
+        # suppress current in every direction where that species is fixed
+
         tile_Jx = Jx_template
         tile_Jy = Jy_template
         tile_Jz = Jz_template

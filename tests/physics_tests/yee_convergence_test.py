@@ -67,6 +67,8 @@ class TestYeeConvergence(unittest.TestCase):
         Ez = Ez.at[:, :, :, active, active, active].set(Ez_values)
 
         _Bx, By, _Bz = update_B((Ex, Ey, Ez), B, static_parameters, dynamic_parameters)[0]
+        _Bx, By, _Bz = update_B((Ex, Ey, Ez), (_Bx, By, _Bz), static_parameters, dynamic_parameters)[0]
+        # perform two updates to ensure that the B field is updated with the correct Ez values
 
         x_vertex = parameter_set["grids"]["tiled_vertex_grid"][0][:, :, :, active]
         exact_By = parameter_set["dt"] * jnp.cos(x_vertex)

@@ -4,6 +4,7 @@ import jax
 import jax.numpy as jnp
 
 from PyPIC3D.boundary_conditions.grid_and_stencil import BC_CONDUCTING, BC_PERIODIC
+from PyPIC3D.deposition.rho import compute_rho
 from PyPIC3D.diagnostics.fluid_quantities import compute_velocity_field, fluid_velocity
 from PyPIC3D.diagnostics.output_adapters import (
     assemble_tiled_scalar_field,
@@ -158,7 +159,7 @@ class TestTiledFluidQuantities(unittest.TestCase):
         self.assertTrue(jnp.any(occupied))
         self.assertTrue(jnp.allclose(velocity_tiles[occupied], 2.0, rtol=1.0e-12, atol=1.0e-12))
 
-    def test_field_output_map_defaults_to_E_B_J_and_optionally_adds_fluid_velocity(self):
+    def test_field_output_map_adds_requested_particle_diagnostics(self):
         static_parameters, dynamic_parameters = self._build_parameters(shape_factor=1)
         particles = self._weighted_average_particles()
         tiled_particles, species_config = build_tiled_particles(
@@ -189,6 +190,14 @@ class TestTiledFluidQuantities(unittest.TestCase):
         )
         self.assertEqual(tuple(field_map), ("E", "B", "J"))
 
+        expected_rho = compute_rho(
+            tiled_particles,
+            species_config,
+            scalar_field,
+            static_parameters,
+            dynamic_parameters,
+        )
+
         field_map = build_field_output_map(
             fields,
             tiled_particles,
@@ -196,8 +205,11 @@ class TestTiledFluidQuantities(unittest.TestCase):
             static_parameters,
             dynamic_parameters,
             include_fluid_velocity=True,
+            include_charge_density=True,
         )
-        self.assertEqual(tuple(field_map), ("E", "B", "J", "fluid_velocity"))
+        self.assertEqual(tuple(field_map), ("E", "B", "J", "rho", "fluid_velocity"))
+        self.assertTrue(jnp.allclose(field_map["rho"], expected_rho))
+        self.assertTrue(jnp.any(field_map["rho"] != 0.0))
 
         for velocity_component, expected_velocity in zip(
             field_map["fluid_velocity"],

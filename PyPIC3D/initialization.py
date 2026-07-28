@@ -140,18 +140,8 @@ def default_parameters():
     Return plotting, static, and dynamic parameter dictionaries.
     """
     plotting_parameters = {
-        "plotting": True,
-        "save_data": False,
-        "plotfields": False,
-        "plotpositions": False,
         "plotvelocities": False,
-        "plotenergy": True,
-        "plotcurrent": False,
-        "plasmaFreq": False,
-        "plot_phasespace": False,
-        "plot_errors": False,
-        "plot_dispersion": False,
-        "plot_chargeconservation": False,
+        "plotchargedensity": False,
         "plot_openpmd_particles": False,
         "plot_openpmd_fields": False,
         "plotting_interval": 10,
@@ -474,6 +464,7 @@ def initialize_simulation(toml_file):
         static_parameters,
         dynamic_parameters,
         include_fluid_velocity=bool(plotting_parameters["plotvelocities"]),
+        include_charge_density=bool(plotting_parameters["plotchargedensity"]),
     )
     plotting_parameters = {
         **plotting_parameters,

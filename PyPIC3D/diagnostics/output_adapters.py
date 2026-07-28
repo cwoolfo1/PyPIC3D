@@ -3,6 +3,7 @@ from typing import NamedTuple
 import jax
 import jax.numpy as jnp
 
+from PyPIC3D.deposition.rho import compute_rho
 from PyPIC3D.diagnostics.fluid_quantities import compute_velocity_field
 from PyPIC3D.particles.particle_class import TiledParticles
 
@@ -120,20 +121,31 @@ def build_field_output_map(
         static_parameters,
         dynamic_parameters,
         include_fluid_velocity=False,
+        include_charge_density=False,
 ):
     """
     Select the tiled mesh quantities written by field diagnostics.
 
-    E, B, and J are the default output contract. Fluid velocity is an optional
-    particle diagnostic and is only calculated when explicitly requested.
+    E, B, and J are the default output contract. Charge density and fluid
+    velocity are particle diagnostics and are only calculated when explicitly
+    requested.
     """
 
-    E, B, J, *_rest = fields
+    E, B, J, rho, *_rest = fields
     field_map = {
         "E": E,
         "B": B,
         "J": J,
     }
+
+    if include_charge_density:
+        field_map["rho"] = compute_rho(
+            particles,
+            species_config,
+            rho,
+            static_parameters,
+            dynamic_parameters,
+        )
 
     if include_fluid_velocity:
         velocity_template = J[0]

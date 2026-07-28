@@ -18,7 +18,6 @@ class TestInitializationFunctions(unittest.TestCase):
     def setUp(self):
         self.plotting_parameters, self.simulation_parameters, self.dynamic_values = default_parameters()
         self.simulation_parameters['output_dir'] = 'test_output'
-        self.plotting_parameters['plotfields'] = False
         # check the  default parameters are set correctly
 
     def test_setup_write_dir(self):
@@ -41,8 +40,23 @@ class TestInitializationFunctions(unittest.TestCase):
         self.assertNotIn("plot_vtk_particles", plotting)
         self.assertNotIn("plot_vtk_scalars", plotting)
         self.assertNotIn("plot_vtk_vectors", plotting)
+        deprecated_plotting_flags = (
+            "plotting",
+            "save_data",
+            "plotfields",
+            "plotpositions",
+            "plotenergy",
+            "plotcurrent",
+            "plasmaFreq",
+            "plot_phasespace",
+            "plot_errors",
+            "plot_dispersion",
+            "plot_chargeconservation",
+        )
+        for flag in deprecated_plotting_flags:
+            self.assertNotIn(flag, plotting)
+        self.assertFalse(plotting["plotchargedensity"])
         self.assertIn('eps', dynamic)
-        self.assertIn('plotfields', plotting)
         # check that the default parameters contain expected keys
 
     def test_initialize_simulation_returns_tiled_runtime_for_ordinary_electrodynamic_config(self):
@@ -69,8 +83,8 @@ class TestInitializationFunctions(unittest.TestCase):
                     "filter_j": "none",
                 },
                 "plotting": {
-                    "plotting": False,
                     "dump_fields": True,
+                    "plotchargedensity": True,
                 },
                 "particle1": {
                     "name": "electrons",
@@ -113,8 +127,9 @@ class TestInitializationFunctions(unittest.TestCase):
             self.assertNotIn("particle_species_metadata", parameter_set)
             self.assertEqual(plotting_parameters["particle_species_names"], ("electrons",))
             self.assertEqual(plotting_parameters["particle_species_metadata"][0]["name"], "electrons")
-            self.assertEqual(tuple(plotting_parameters["field_map"]), ("E", "B", "J"))
-            self.assertEqual(tuple(write_initial_fields.call_args.args[0]), ("E", "B", "J"))
+            self.assertEqual(tuple(plotting_parameters["field_map"]), ("E", "B", "J", "rho"))
+            self.assertEqual(tuple(write_initial_fields.call_args.args[0]), ("E", "B", "J", "rho"))
+            self.assertTrue(jnp.any(plotting_parameters["field_map"]["rho"] != 0.0))
             self.assertIn("tiled_center_grid", dynamic_parameters.grids._asdict())
             self.assertIn("tiled_vertex_grid", dynamic_parameters.grids._asdict())
             expected_center_grid, expected_vertex_grid = build_yee_grid(dynamic_parameters)
@@ -174,7 +189,6 @@ class TestInitializationFunctions(unittest.TestCase):
                     "filter_j": "none",
                 },
                 "plotting": {
-                    "plotting": False,
                     "plotvelocities": True,
                 },
                 "particle1": {
@@ -229,7 +243,6 @@ class TestInitializationFunctions(unittest.TestCase):
                     "particle_y_bc": "absorbing",
                     "particle_z_bc": "periodic",
                 },
-                "plotting": {"plotting": False},
                 "particle1": {
                     "name": "electrons",
                     "N_particles": 1,
@@ -274,7 +287,6 @@ class TestInitializationFunctions(unittest.TestCase):
                     "Nt": 1,
                     "dt": 1.0e-10,
                 },
-                "plotting": {"plotting": False},
                 "particle1": {
                     "name": "electrons",
                     "N_particles": 1,
@@ -315,7 +327,6 @@ class TestInitializationFunctions(unittest.TestCase):
                     "Nt": 1,
                     "dt": 1.0e-10,
                 },
-                "plotting": {"plotting": False},
             }
 
             with self.assertRaisesRegex(ValueError, "Unsupported solver"):

@@ -657,8 +657,11 @@ class OpenPMDDiagnosticsTests(unittest.TestCase):
         self.assertEqual(ion_group["position"]["x"].shape, (1,))
         self.assertTrue(jnp.allclose(electron_group["weighting"].data, jnp.array([3.0, 3.0])))
         self.assertTrue(jnp.allclose(ion_group["charge"].data, jnp.array([1.0])))
+        expected_electron_mass = jnp.array([2.0, 2.0])
+        self.assertTrue(jnp.allclose(electron_group["mass"].data, expected_electron_mass))
         expected_gamma = 1.0 / jnp.sqrt(1.0 - 0.1**2 / 10.0**2)
-        self.assertTrue(jnp.allclose(electron_group["momentum"]["x"].data, jnp.ones(2) * 0.1 * 6.0 * expected_gamma))
+        expected_momentum_x = expected_electron_mass * 0.1 * expected_gamma
+        self.assertTrue(jnp.allclose(electron_group["momentum"]["x"].data, expected_momentum_x))
 
 
 if __name__ == "__main__":

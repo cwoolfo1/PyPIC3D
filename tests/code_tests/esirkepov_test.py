@@ -157,7 +157,6 @@ class TestTiledEsirkepovCurrent(unittest.TestCase):
             mass=jnp.asarray([mass], dtype=float),
             weight=jnp.asarray([weight], dtype=float),
             update_x=jnp.ones((1, 3), dtype=bool),
-            update_u=jnp.ones((1, 3), dtype=bool),
         )
 
     def _tile_index_for_position(self, position, parameter_set, tile_shape):
@@ -560,6 +559,95 @@ class TestTiledEsirkepovCurrent(unittest.TestCase):
                 jnp.allclose(tiled_component, reference_component, rtol=1.0e-12, atol=1.0e-12),
                 f"max diff {jnp.max(jnp.abs(tiled_component - reference_component))}",
             )
+
+    def test_tiled_esirkepov_masks_current_per_species_direction(self):
+        parameter_set = self._build_parameter_values(Nx=4, Ny=4, Nz=4, dt=0.05)
+        parameter_set["guard_cells"] = 2
+        tile_shape = (4, 4, 4)
+        parameter_set = self._parameters_with_tiled_grids(parameter_set, tile_shape)
+        x = jnp.asarray(
+            [[[[[[-0.75, -0.25, 0.25]], [[0.75, 0.25, -0.25]]]]]]
+        )
+        u = jnp.asarray(
+            [[[[[[0.2, 0.3, 0.4]], [[-0.5, -0.6, -0.7]]]]]]
+        )
+        particles = TiledParticles(
+            x=x,
+            u=u,
+            active=jnp.ones(x.shape[:-1], dtype=bool),
+        )
+        species_config = SpeciesConfig(
+            charge=jnp.asarray([1.0, 2.0]),
+            mass=jnp.asarray([1.0, 1.0]),
+            weight=jnp.asarray([1.0, 1.0]),
+            update_x=jnp.asarray([
+                (False, True, False),
+                (True, False, True),
+            ]),
+        )
+        dynamic_values = {"C": 1.0, "eps": 1.0, "alpha": 1.0}
+        _, _, J_template, _, _ = self._initialize_fields(parameter_set, dynamic_values)
+        static_parameters, dynamic_parameters = kernel_parameters_from_values(
+            parameter_set,
+            dynamic_values,
+        )
+
+        masked_current = Esirkepov_current(
+            particles,
+            species_config,
+            J_template,
+            static_parameters,
+            dynamic_parameters,
+        )
+
+        slot_mask = species_config.update_x.reshape((1, 1, 1, 2, 1, 3))
+        reference_particles = particles._replace(u=jnp.where(slot_mask, particles.u, 0.0))
+        reference_config = species_config._replace(update_x=jnp.ones_like(species_config.update_x))
+        reference_current = Esirkepov_current(
+            reference_particles,
+            reference_config,
+            J_template,
+            static_parameters,
+            dynamic_parameters,
+        )
+
+        for masked_component, reference_component in zip(masked_current, reference_current):
+            self.assertTrue(jnp.allclose(masked_component, reference_component))
+            self.assertGreater(float(jnp.max(jnp.abs(masked_component))), 0.0)
+
+    def test_tiled_esirkepov_zeroes_disabled_current_in_reduced_dimensions(self):
+        parameter_set = self._build_parameter_values(Nx=8, Ny=1, Nz=1, dt=0.05)
+        parameter_set["guard_cells"] = 2
+        tile_shape = (8, 1, 1)
+        parameter_set = self._parameters_with_tiled_grids(parameter_set, tile_shape)
+        particles = TiledParticles(
+            x=jnp.asarray([[[[[[0.0, 0.0, 0.0]]]]]]),
+            u=jnp.asarray([[[[[[0.3, 0.4, 0.5]]]]]]),
+            active=jnp.asarray([[[[[True]]]]]),
+        )
+        species_config = SpeciesConfig(
+            charge=jnp.asarray([1.0]),
+            mass=jnp.asarray([1.0]),
+            weight=jnp.asarray([1.0]),
+            update_x=jnp.zeros((1, 3), dtype=bool),
+        )
+        dynamic_values = {"C": 1.0, "eps": 1.0, "alpha": 1.0}
+        _, _, J_template, _, _ = self._initialize_fields(parameter_set, dynamic_values)
+        static_parameters, dynamic_parameters = kernel_parameters_from_values(
+            parameter_set,
+            dynamic_values,
+        )
+
+        current = Esirkepov_current(
+            particles,
+            species_config,
+            J_template,
+            static_parameters,
+            dynamic_parameters,
+        )
+
+        for component in current:
+            self.assertTrue(jnp.allclose(component, 0.0))
 
     def test_public_Esirkepov_current_dispatches_tiled_particles_to_tile_local_current(self):
         parameter_set = self._build_parameter_values(Nx=8, Ny=1, Nz=1, dt=0.05, shape_factor=1)

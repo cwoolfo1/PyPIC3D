@@ -42,7 +42,7 @@ def particle_push(particles, species_config, E_tiles, B_tiles, static_parameters
     )
     inactive_axis_indices = (g, g, g)
 
-    def push_one_tile(tx, ty, tz, x_tile, u_tile, active_tile, charge_species, mass_species, update_u_species,
+    def push_one_tile(tx, ty, tz, x_tile, u_tile, active_tile, charge_species, mass_species, update_x_species,
                       Ex_tile, Ey_tile, Ez_tile, Bx_tile, By_tile, Bz_tile):
         x = x_tile[..., 0].reshape(-1)
         y = x_tile[..., 1].reshape(-1)
@@ -132,14 +132,14 @@ def particle_push(particles, species_config, E_tiles, B_tiles, static_parameters
             raise ValueError(f"Unknown particle_pusher: {particle_pusher}")
 
         active = active_tile.reshape(-1)
-        update_u1 = jnp.broadcast_to(update_u_species[:, 0, jnp.newaxis], active_tile.shape).reshape(-1)
-        update_u2 = jnp.broadcast_to(update_u_species[:, 1, jnp.newaxis], active_tile.shape).reshape(-1)
-        update_u3 = jnp.broadcast_to(update_u_species[:, 2, jnp.newaxis], active_tile.shape).reshape(-1)
+        update_x1 = jnp.broadcast_to(update_x_species[:, 0, jnp.newaxis], active_tile.shape).reshape(-1)
+        update_x2 = jnp.broadcast_to(update_x_species[:, 1, jnp.newaxis], active_tile.shape).reshape(-1)
+        update_x3 = jnp.broadcast_to(update_x_species[:, 2, jnp.newaxis], active_tile.shape).reshape(-1)
 
         new_u = u_tile.reshape(-1, 3)
-        new_u = new_u.at[:, 0].set(jnp.where(active & update_u1, new_vx, vx))
-        new_u = new_u.at[:, 1].set(jnp.where(active & update_u2, new_vy, vy))
-        new_u = new_u.at[:, 2].set(jnp.where(active & update_u3, new_vz, vz))
+        new_u = new_u.at[:, 0].set(jnp.where(active & update_x1, new_vx, vx))
+        new_u = new_u.at[:, 1].set(jnp.where(active & update_x2, new_vy, vy))
+        new_u = new_u.at[:, 2].set(jnp.where(active & update_x3, new_vz, vz))
 
         return new_u.reshape(u_tile.shape)
 
@@ -159,7 +159,7 @@ def particle_push(particles, species_config, E_tiles, B_tiles, static_parameters
         particles.active,
         species_config.charge,
         species_config.mass,
-        species_config.update_u,
+        species_config.update_x,
         Ex_tiles,
         Ey_tiles,
         Ez_tiles,
