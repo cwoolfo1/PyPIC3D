@@ -153,6 +153,7 @@ def run_PyPIC3D(config_file):
                         static_parameters,
                         dynamic_parameters,
                         include_fluid_velocity=bool(plotting_parameters["plotvelocities"]),
+                        include_charge_density=bool(plotting_parameters["plotchargedensity"]),
                     )
                     plotting_parameters["field_map"] = field_map
                     enqueue_openpmd_field_output(field_writer, field_map, dynamic_parameters, plot_num, t)

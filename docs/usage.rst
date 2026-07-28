@@ -79,6 +79,7 @@ one JAX device:
    plot_openpmd_particles = false
    plot_openpmd_fields = false
    plotvelocities = false
+   plotchargedensity = false
    openpmd_field_queue_size = 2
    openpmd_particle_queue_size = 2
    dump_particles = false
@@ -199,8 +200,9 @@ sizes are too small, the simulation may stall while waiting for disk writes to
 complete. If the queue sizes are too large, the simulation may run out of memory.
 
 
-Field output contains ``E``, ``B``, and ``J``; ``plotvelocities = true`` adds the
-particle-weighted vector mesh ``fluid_velocity``. ``dump_fields`` and 
-``dump_particles`` write initial-state openPMD files during initialization. 
-Final run parameters, species metadata, and timing statistics are written to
-``data/output.toml``.
+Field output contains ``E``, ``B``, and ``J``. ``plotchargedensity = true``
+deposits the scalar charge-density mesh ``rho`` from the current particle
+positions, and ``plotvelocities = true`` adds the particle-weighted vector mesh
+``fluid_velocity``. ``dump_fields`` and ``dump_particles`` write initial-state
+openPMD files during initialization. Final run parameters, species metadata,
+and timing statistics are written to ``data/output.toml``.
