@@ -6,39 +6,47 @@ Local Setup
 
 .. code-block:: bash
 
-    python -m venv .venv
-    source .venv/bin/activate
-    pip install -e .
+   python -m venv .venv
+   source .venv/bin/activate
+   pip install -e .
 
 Run Tests
 ---------
 
+Run the focused implementation tests:
+
 .. code-block:: bash
 
-    pytest
+   python -m unittest tests/code_tests/*.py
+
+Run numerical and convergence tests separately:
+
+.. code-block:: bash
+
+   python -m unittest tests/physics_tests/*.py
+
+Distributed tile tests need enough JAX devices for their mesh. For example:
+
+.. code-block:: bash
+
+   XLA_FLAGS=--xla_force_host_platform_device_count=8 \
+     python -m unittest tests/code_tests/distributed_ghost_cells_test.py
 
 Build Docs
 ----------
 
 .. code-block:: bash
 
-    pip install -r docs/requirements.in
-    sphinx-build -b html docs docs/_build/html
+   sphinx-autobuild docs _build/html --port 8008
 
-Configuration and Runtime Notes
--------------------------------
-
-- CLI entrypoint: ``PyPIC3D.__main__:main``.
-- ``__main__.py`` currently forces CPU backend via ``jax_platform_name = cpu``.
-- Defaults are defined in ``initialization.default_parameters`` and merged with
-  TOML using ``utils.update_parameters_from_toml``.
-- Unknown keys in ``simulation_parameters``/``plotting``/``constants`` are
-  ignored by the merge helper.
+This command watches for changes in the source files and rebuilds 
+the docs automatically. Open a browser to http://localhost:8008 
+to view the docs.
 
 Debugging Tips
 --------------
 
-- Start with a small grid (for example ``Nx=Ny=Nz=16`` where applicable).
-- Increase ``plotting_interval`` for faster benchmarking runs.
-- Verify boundary-condition choices explicitly for both fields and particles.
-- Compare ``energy_error.txt`` across branches when validating changes.
+- Start with one tile covering the complete domain to separate numerical
+  behavior from cross-device communication.
+- For a multi-tile failure, verify tile divisibility, exposed device count, 
+  number of ghost cells, and particle capacity.

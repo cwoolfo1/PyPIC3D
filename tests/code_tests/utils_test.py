@@ -307,7 +307,6 @@ class TestUtilsFunctions(unittest.TestCase):
             mass=jnp.asarray([1.0]),
             weight=jnp.asarray([1.0]),
             update_x=jnp.ones((1, 3), dtype=bool),
-            update_u=jnp.ones((1, 3), dtype=bool),
         )
         e_energy, b_energy, kinetic_energy = compute_energy(particles, total_E, total_B, static_parameters, dynamic_parameters, species_config=species_config)
 
@@ -337,7 +336,6 @@ class TestUtilsFunctions(unittest.TestCase):
             mass=jnp.asarray([1.0]),
             weight=jnp.asarray([1.0]),
             update_x=jnp.ones((1, 3), dtype=bool),
-            update_u=jnp.ones((1, 3), dtype=bool),
         )
         # Keep a nonzero inactive velocity so this checks the kinetic-energy mask.
 
@@ -388,6 +386,9 @@ class TestUtilsFunctions(unittest.TestCase):
                 {},
             )
             plotting_parameters = {
+                "plotvelocities": jnp.asarray(True),
+                "plotchargedensity": jnp.asarray(True),
+                "field_map": {"E": (jnp.zeros((1,)),) * 3},
                 "particle_species_names": ("electrons", "ions"),
                 "particle_species_metadata": (
                     {"name": "electrons", "charge": -1.0},
@@ -410,6 +411,9 @@ class TestUtilsFunctions(unittest.TestCase):
         self.assertNotIn("particle_species_metadata", config["static_parameters"])
         self.assertNotIn("particle_species_names", config.get("plotting", {}))
         self.assertNotIn("particle_species_metadata", config.get("plotting", {}))
+        self.assertNotIn("field_map", config.get("plotting", {}))
+        self.assertTrue(config["plotting"]["plotvelocities"])
+        self.assertTrue(config["plotting"]["plotchargedensity"])
         self.assertEqual(config["particles"][0]["name"], "electrons")
         self.assertEqual(config["particles"][0]["charge"], -1.0)
         self.assertEqual(config["particles"][0]["storage"], "tiled")

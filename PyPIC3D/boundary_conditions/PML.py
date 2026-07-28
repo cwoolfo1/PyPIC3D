@@ -334,7 +334,9 @@ def apply_tiled_pml_to_b_curl(derivatives, static_parameters, dynamic_parameters
     sigma_x = sigma_x[:, :, :, g:-g, g:-g, g:-g]
     sigma_y = sigma_y[:, :, :, g:-g, g:-g, g:-g]
     sigma_z = sigma_z[:, :, :, g:-g, g:-g, g:-g]
-    dt = dynamic_parameters.dt
+    dt = dynamic_parameters.dt / 2
+    # Faraday's law is applied in two half-steps around the full E update.
+    # Advance its PML memory over the same half-step as the magnetic field.
 
     dEz_dy, memory_dEz_dy = stretch_spatial_derivative(dEz_dy, memory_dEz_dy, sigma_y, dt)
     dEy_dz, memory_dEy_dz = stretch_spatial_derivative(dEy_dz, memory_dEy_dz, sigma_z, dt)

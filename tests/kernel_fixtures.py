@@ -505,15 +505,9 @@ def particle_species(
     v2=None,
     v3=None,
     active_mask=None,
-    update_pos=True,
-    update_v=True,
     update_x=True,
     update_y=True,
     update_z=True,
-    update_u=None,
-    update_vx=True,
-    update_vy=True,
-    update_vz=True,
 ):
     x1 = jnp.asarray(x1, dtype=float)
     n_particles = int(x1.shape[0])
@@ -542,21 +536,10 @@ def particle_species(
         update_x_components = tuple(update_x)
     else:
         update_x_components = (
-            bool(update_pos and update_x),
-            bool(update_pos and update_y),
-            bool(update_pos and update_z),
+            bool(update_x),
+            bool(update_y),
+            bool(update_z),
         )
-
-    if update_u is None:
-        update_u_components = (
-            bool(update_v and update_vx),
-            bool(update_v and update_vy),
-            bool(update_v and update_vz),
-        )
-    elif isinstance(update_u, (tuple, list)):
-        update_u_components = tuple(update_u)
-    else:
-        update_u_components = (bool(update_u), bool(update_u), bool(update_u))
 
     return {
         "name": name,
@@ -581,7 +564,6 @@ def particle_species(
         ),
         "active": jnp.asarray(active_mask, dtype=bool),
         "update_x": update_x_components,
-        "update_u": update_u_components,
     }
 
 
@@ -662,7 +644,6 @@ def build_tiled_particles(
         mass=jnp.asarray([species_data["mass"] for species_data in species], dtype=float),
         weight=jnp.asarray([species_data["weight"] for species_data in species], dtype=float),
         update_x=jnp.asarray([species_data["update_x"] for species_data in species], dtype=bool),
-        update_u=jnp.asarray([species_data["update_u"] for species_data in species], dtype=bool),
     )
 
     return particles, species_config

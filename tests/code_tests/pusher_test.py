@@ -8,6 +8,7 @@ import numpy as np
 from PyPIC3D.boundary_conditions import ghost_cells
 from tests.kernel_fixtures import build_tiled_particles, particle_parameters_from_tile_values, particle_species
 from tests.kernel_fixtures import kernel_parameters_from_values
+from PyPIC3D.particles.particle_tile_communication import update_tiled_particle_positions
 from PyPIC3D.pusher.particle_push import particle_push
 from PyPIC3D.utilities.grids import build_tiled_yee_grids, build_yee_grid
 
@@ -168,7 +169,7 @@ class TestTiledParticlePusher(unittest.TestCase):
         Fz = jnp.zeros(shape).at[1:-1, 1:-1, 1:-1].set(scale * (0.3 - 0.04 * ii + 0.02 * jj + 0.01 * kk))
         return Fx, Fy, Fz
 
-    def _species(self, parameter_set, active_mask=None, update_vx=True, update_vy=True, update_vz=True):
+    def _species(self, parameter_set, active_mask=None, update_x=True, update_y=True, update_z=True):
         if active_mask is None:
             active_mask = jnp.array([True, True, True, True])
 
@@ -184,9 +185,9 @@ class TestTiledParticlePusher(unittest.TestCase):
             v2=jnp.array([0.0, 0.15, -0.2, 0.1]),
             v3=jnp.array([-0.05, 0.25, 0.1, -0.15]),
             active_mask=active_mask,
-            update_vx=update_vx,
-            update_vy=update_vy,
-            update_vz=update_vz,
+            update_x=update_x,
+            update_y=update_y,
+            update_z=update_z,
         )
 
     def _flatten_active_by_position(self, tiled_particles):
@@ -305,9 +306,9 @@ class TestTiledParticlePusher(unittest.TestCase):
         species = self._species(
             parameter_set,
             active_mask=jnp.array([True, False, True, True]),
-            update_vx=False,
-            update_vy=True,
-            update_vz=False,
+            update_x=False,
+            update_y=True,
+            update_z=False,
         )
         particle_static, particle_dynamic = particle_parameters_from_tile_values(
             parameter_set,
@@ -330,6 +331,16 @@ class TestTiledParticlePusher(unittest.TestCase):
         self.assertTrue(jnp.allclose(pushed.u[..., 0], tiled_particles.u[..., 0]))
         self.assertTrue(jnp.allclose(pushed.u[..., 2], tiled_particles.u[..., 2]))
         self.assertTrue(jnp.allclose(pushed.u[..., 1][~tiled_particles.active], tiled_particles.u[..., 1][~tiled_particles.active]))
+        self.assertFalse(jnp.allclose(pushed.u[..., 1][tiled_particles.active], tiled_particles.u[..., 1][tiled_particles.active]))
+
+        moved = update_tiled_particle_positions(
+            pushed,
+            species_config,
+            dynamic_parameters.dt,
+        )
+        self.assertTrue(jnp.allclose(moved.x[..., 0], pushed.x[..., 0]))
+        self.assertTrue(jnp.allclose(moved.x[..., 2], pushed.x[..., 2]))
+        self.assertFalse(jnp.allclose(moved.x[..., 1][pushed.active], pushed.x[..., 1][pushed.active]))
 
     def test_particle_push_matches_relativistic_one_tile_boris_on_reduced_axes(self):
         parameter_set = self._build_parameter_values(Nx=8, Ny=1, Nz=1)

@@ -356,14 +356,18 @@ def _empty_electrodynamic_fields(static_parameters, dynamic_parameters):
     return E, B, J, rho, phi, external_fields, None, jnp.asarray(False)
 
 
-def _expected_B_from_Ey(Ey, dynamic_parameters):
-    expected = jnp.zeros_like(Ey)
+def _expected_Bz_after_split_update(Ey_before, Ey_after, dynamic_parameters):
+    expected = jnp.zeros_like(Ey_after)
     active = (slice(1, -1), slice(1, -1), slice(1, -1))
     forward_x = (slice(2, None), slice(1, -1), slice(1, -1))
     # Ey is centered in x, while Bz is staggered in x under the legacy
     # center=collocated, vertex=staggered contract.
-    dEy_dx = (Ey[forward_x] - Ey[active]) / dynamic_parameters.dx
-    return expected.at[active].set(-dynamic_parameters.dt * dEy_dx)
+    dEy_before_dx = (Ey_before[forward_x] - Ey_before[active]) / dynamic_parameters.dx
+    dEy_after_dx = (Ey_after[forward_x] - Ey_after[active]) / dynamic_parameters.dx
+
+    half_dt = dynamic_parameters.dt / 2
+    # The field loop advances B by half a timestep on each side of the E update.
+    return expected.at[active].set(-half_dt * (dEy_before_dx + dEy_after_dx))
 
 
 class TestSingleParticleStencils(unittest.TestCase):
@@ -498,6 +502,7 @@ class TestSingleParticleElectrodynamicPipeline(unittest.TestCase):
             (0.0, 0.2, 0.0),
         )
         fields = _empty_electrodynamic_fields(static_parameters, dynamic_parameters)
+        E_before_global = _assemble_vector(fields[0], static_parameters)
 
         particles_after, fields_after = time_loop_electrodynamic(
             particles,
@@ -527,7 +532,11 @@ class TestSingleParticleElectrodynamicPipeline(unittest.TestCase):
             )
 
         B_global = _assemble_vector(B_after, static_parameters)
-        expected_Bz = _expected_B_from_Ey(E_global[1], dynamic_parameters)
+        expected_Bz = _expected_Bz_after_split_update(
+            E_before_global[1],
+            E_global[1],
+            dynamic_parameters,
+        )
         self.assertTrue(jnp.allclose(B_global[0][1:-1, 1:-1, 1:-1], 0.0, rtol=1.0e-12, atol=1.0e-12))
         self.assertTrue(jnp.allclose(B_global[1][1:-1, 1:-1, 1:-1], 0.0, rtol=1.0e-12, atol=1.0e-12))
         self.assertTrue(
@@ -550,6 +559,7 @@ class TestSingleParticleElectrodynamicPipeline(unittest.TestCase):
         initial_u = (0.08, 0.2, 0.0)
         particles, species_config = _one_particle(static_parameters, dynamic_parameters, initial_x, initial_u)
         fields = _empty_electrodynamic_fields(static_parameters, dynamic_parameters)
+        E_before_global = _assemble_vector(fields[0], static_parameters)
 
         particles_after, fields_after = time_loop_electrodynamic(
             particles,
@@ -586,7 +596,11 @@ class TestSingleParticleElectrodynamicPipeline(unittest.TestCase):
             )
 
         B_global = _assemble_vector(B_after, static_parameters)
-        expected_Bz = _expected_B_from_Ey(E_global[1], dynamic_parameters)
+        expected_Bz = _expected_Bz_after_split_update(
+            E_before_global[1],
+            E_global[1],
+            dynamic_parameters,
+        )
         self.assertTrue(jnp.allclose(B_global[0][1:-1, 1:-1, 1:-1], 0.0, rtol=1.0e-12, atol=1.0e-12))
         self.assertTrue(jnp.allclose(B_global[1][1:-1, 1:-1, 1:-1], 0.0, rtol=1.0e-12, atol=1.0e-12))
         self.assertTrue(

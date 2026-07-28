@@ -1,53 +1,71 @@
-PyPIC3D Documentation
+PyPIC3D
 =====================
 
 .. container:: hero
 
-   PyPIC3D is a JAX-based particle-in-cell code for electrodynamic and
-   electrostatic plasma simulation. Runs are composed with TOML, launched
-   from the CLI, and instrumented for diagnostics in matplotlib and openPMD.
+   PyPIC3D is a JAX-based particle-in-cell code for
+   electrodynamic and electrostatic plasma simulations. PyPIC3D 
+   features domain decomposition and is parallelized using the
+   JAX XLA compiler across tiles and devices. Simulations can be
+   configured using either TOML configuration files or within 
+   Python scripts. The code is designed to be lightweight and 
+   easy to modify for rapid development of new numerical methods.
 
    .. container:: hero-actions
 
-      `Launch a demo <demos.html>`__
-      `See usage requirements <usage.html>`__
+      :doc:`Launch a demo <demos>`
+      :doc:`Configure a run <usage>`
 
 .. container:: hero-callout
 
    **Focused for researchers**
 
-   PyPIC3D bundles easy to read algorithms, autodifferentiation, and easily modifiable code 
-   to enable researchers to rapidly prototype new numerical algorithms and experiments for 
-   3D3V plasma simulations.
-
-   `Browse feature demos <demos.html>`__
+   PyPIC3D keeps the particle push, deposition, Yee staggering, ghost cells,
+   and boundary operations visible so new numerical methods can be evaluated
+   and prototyped without a large framework layer.
 
 Quick navigation
 ----------------
 
-.. cards::
-   :columns: 3
-   :gutter: 1.25rem
-   :class: features
+.. grid:: 1 2 3 3
+   :gutter: 2
 
-   * **Minimal CLI onboarding**  
-     Install the package, configure :doc:`usage`, then execute a demo while
-     capturing diagnostics.
+   .. grid-item-card:: Configure a simulation
+      :link: usage
+      :link-type: doc
 
-   * **Solver pipeline**  
-     Understand Yee, PSTD, and conservation steps in :doc:`solvers`.
+      Start from the active TOML schema and CLI workflow.
 
-   * **Simulation grid design**  
-     Built-in helpers for species, grids, particles, and boundaries live in :doc:`grid`.
+   .. grid-item-card:: Domain decomposition
+      :link: tiling
+      :link-type: doc
 
-   * **Particle diagnostics**  
-     Visualize scaling, charges, and diagnostics in :doc:`particles`.
+      Choose tile sizes, guard depth, and understand 
+      the parallelization strategy.
+      
+   .. grid-item-card:: Field solvers
+      :link: solvers
+      :link-type: doc
 
-   * **Development workflow**  
-     Tests, docs builds, and local helpers are described in :doc:`development`.
+      Overview of the field solver algorithms.
 
-   * **Join in**  
-     Contribution instructions, dev workflow, and community notes are in :doc:`contributing`.
+   .. grid-item-card:: Inspect the grids
+      :link: grid
+      :link-type: doc
+
+      Review coordinate arrays, staggering, and physical boundaries.
+
+   .. grid-item-card:: Initialize particles
+      :link: particles
+      :link-type: doc
+
+      Define species and understand fixed-capacity tiled storage.
+
+   .. grid-item-card:: Develop PyPIC3D
+      :link: development
+      :link-type: doc
+
+      Set up the repository, run tests, and build these docs.
 
 Contents
 --------
@@ -57,6 +75,7 @@ Contents
    :caption: Dive deeper
 
    usage
+   tiling
    solvers
    chargeconservation
    grid

@@ -1,32 +1,41 @@
 Simulation Grids
 ================
 
-PyPIC3D builds structured 3D grids during initialization and stores them in
-``world['grids']``.
+PyPIC3D builds global coordinate lines and tile-local coordinate lines during
+initialization. They are stored in ``DynamicParameters.grids``.
 
 Grid Construction
 -----------------
 
-By default, initialization builds a Yee-style pair of grids:
+The physical domain is centered on zero, with widths ``x_wind``, ``y_wind``,
+and ``z_wind``. The global coordinate tuples are:
 
-- ``world['grids']['center']``: collocated/base index grid with one ghost cell
-  on each side
-- ``world['grids']['vertex']``: staggered half-cell grid with one ghost cell
-  on each side
+- ``grids.center``: collocated/base coordinate lines with one exterior point
+  on each side.
+- ``grids.vertex``: half-cell-staggered coordinate lines with one exterior
+  point on each side.
 
-These are generated from ``Nx, Ny, Nz`` and the resolved coordinate bounds.
-Old configs can continue to give centered widths with
-``x_wind, y_wind, z_wind``. New configs can instead give explicit
-``x_min/x_max``, ``y_min/y_max``, and ``z_min/z_max`` pairs. Once the grid is
-constructed, the grid arrays are the source of truth for the physical domain.
+Electrostatic runs use collocated lines for both entries. Electrodynamic runs
+also build ``grids.tiled_center_grid`` and ``grids.tiled_vertex_grid`` with the
+configured tile shape and guard depth. See :doc:`tiling`.
 
-The field components follow the legacy PyPIC3D Yee placement. Electric current
-and electric field components use the vertex grid along their component axis
-and the center grid along transverse axes. Magnetic field components use the
-center grid along their component axis and the vertex grid along transverse
-axes. For example, ``Ex`` and ``Jx`` live on
-``(vertex_x, center_y, center_z)``, while ``Bx`` lives on
-``(center_x, vertex_y, vertex_z)``.
+Yee Staggering
+--------------
+
+Electric field and current components use the staggered grid along their
+component axis and the collocated grid along transverse axes. Magnetic
+components use the collocated grid along their component axis and staggered
+grids along transverse axes:
+
+.. code-block:: text
+
+   Ex, Jx : (vertex_x, center_y, center_z)
+   Ey, Jy : (center_x, vertex_y, center_z)
+   Ez, Jz : (center_x, center_y, vertex_z)
+
+   Bx     : (center_x, vertex_y, vertex_z)
+   By     : (vertex_x, center_y, vertex_z)
+   Bz     : (vertex_x, vertex_y, center_z)
 
 .. image:: images/yeegrid.png
    :alt: Yee grid staggering
@@ -35,15 +44,21 @@ axes. For example, ``Ex`` and ``Jx`` live on
 Boundary Encoding
 -----------------
 
-Field boundary conditions are stored in
-``world['boundary_conditions']`` as integer codes for JAX-safe usage:
+Field boundaries are converted during initialization to integer codes stored
+in ``StaticParameters.boundary_conditions``:
 
 - ``0``: periodic
 - ``1``: conducting
 
-Dimensionality Handling
------------------------
+Periodic ghost cells wrap across the global domain. Conducting ghost cells do 
+not wrap, and the Yee update zeros tangential electric components on the 
+physical wall. Charge, current, and fluid-moment folding use the particle 
+boundary conditions.
 
-PyPIC3D supports effectively 1D/2D/3D runs by setting inactive dimensions to a
-single cell (for example ``Ny = 1``). Deposition and solver routines infer
-active dimensions from array shapes.
+Reduced Dimensions
+------------------
+
+Set an inactive dimension to one physical cell, for example ``Ny = 1`` for an
+x-z simulation. PyPIC3D keeps the axis in every array and collapses its
+deposition/interpolation stencil onto the physical cell. This preserves a
+consistent 3D array contract for 1D, 2D, and 3D runs.

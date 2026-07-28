@@ -200,7 +200,6 @@ class TestElectrostaticYeeMethods(unittest.TestCase):
             mass=jnp.asarray([1.0], dtype=float),
             weight=jnp.asarray([1.0], dtype=float),
             update_x=jnp.asarray([[True, True, True]]),
-            update_u=jnp.asarray([[True, True, True]]),
         )
         rho_tiles = empty_tiled_scalar(static_parameters, dynamic_parameters)
         phi_tiles = empty_tiled_scalar(static_parameters, dynamic_parameters)

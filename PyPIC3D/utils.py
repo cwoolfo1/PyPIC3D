@@ -721,7 +721,7 @@ def dump_parameters_to_toml(simulation_stats, static_parameters, dynamic_paramet
     plotting_parameters_for_output = {
         key: value
         for key, value in plotting_parameters.items()
-        if key not in ("particle_species_names", "particle_species_metadata")
+        if key not in ("field_map", "particle_species_names", "particle_species_metadata")
     }
 
     config = {

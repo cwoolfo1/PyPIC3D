@@ -3,6 +3,8 @@ from typing import NamedTuple
 import jax
 import jax.numpy as jnp
 
+from PyPIC3D.deposition.rho import compute_rho
+from PyPIC3D.diagnostics.fluid_quantities import compute_velocity_field
 from PyPIC3D.particles.particle_class import TiledParticles
 from PyPIC3D.utilities.grids import grid_domain_bounds
 
@@ -111,6 +113,73 @@ def vector_field_for_output(field, static_parameters):
     tile_shape = _tile_shape_from_static_parameters(static_parameters)
     g = _guard_depth_from_static_parameters(static_parameters)
     return assemble_tiled_vector_field(field, static_parameters, tile_shape, num_guard_cells=g)
+
+
+def build_field_output_map(
+        fields,
+        particles,
+        species_config,
+        static_parameters,
+        dynamic_parameters,
+        include_fluid_velocity=False,
+        include_charge_density=False,
+):
+    """
+    Select the tiled mesh quantities written by field diagnostics.
+
+    E, B, and J are the default output contract. Charge density and fluid
+    velocity are particle diagnostics and are only calculated when explicitly
+    requested.
+    """
+
+    E, B, J, rho, *_rest = fields
+    field_map = {
+        "E": E,
+        "B": B,
+        "J": J,
+    }
+
+    if include_charge_density:
+        field_map["rho"] = compute_rho(
+            particles,
+            species_config,
+            rho,
+            static_parameters,
+            dynamic_parameters,
+        )
+
+    if include_fluid_velocity:
+        velocity_template = J[0]
+        field_map["fluid_velocity"] = tuple(
+            compute_velocity_field(
+                particles,
+                velocity_template,
+                direction,
+                static_parameters,
+                dynamic_parameters,
+                species_config=species_config,
+            )
+            for direction in range(3)
+        )
+
+    return field_map
+
+
+def field_map_for_output(field_map, static_parameters):
+    """
+    Assemble only the selected tile-major fields at the synchronous I/O boundary.
+    """
+
+    output_map = {}
+
+    for name, field in field_map.items():
+        is_vector = isinstance(field, (list, tuple)) and len(field) == 3
+        if is_vector:
+            output_map[name] = vector_field_for_output(field, static_parameters)
+        else:
+            output_map[name] = scalar_field_for_output(field, static_parameters)
+
+    return output_map
 
 
 def fields_for_output(fields, static_parameters):

@@ -24,7 +24,7 @@ from PyPIC3D.utilities.grids import (
     build_tiled_yee_grids,
     build_yee_grid,
 )
-from PyPIC3D.diagnostics.output_adapters import particles_for_output
+from PyPIC3D.diagnostics.output_adapters import build_field_output_map, particles_for_output
 from PyPIC3D.diagnostics.openPMD import (
     write_openpmd_initial_fields,
     write_openpmd_initial_particles,
@@ -198,18 +198,8 @@ def default_parameters():
     Return plotting, static, and dynamic parameter dictionaries.
     """
     plotting_parameters = {
-        "plotting": True,
-        "save_data": False,
-        "plotfields": False,
-        "plotpositions": False,
         "plotvelocities": False,
-        "plotenergy": True,
-        "plotcurrent": False,
-        "plasmaFreq": False,
-        "plot_phasespace": False,
-        "plot_errors": False,
-        "plot_dispersion": False,
-        "plot_chargeconservation": False,
+        "plotchargedensity": False,
         "plot_openpmd_particles": False,
         "plot_openpmd_fields": False,
         "plotting_interval": 10,
@@ -607,9 +597,23 @@ def initialize_simulation(toml_file):
             )
         fields = (E, B, J, rho, phi, external_fields, pml_state, overflow)
 
+    field_map = build_field_output_map(
+        fields,
+        particles,
+        species_config,
+        static_parameters,
+        dynamic_parameters,
+        include_fluid_velocity=bool(plotting_parameters["plotvelocities"]),
+        include_charge_density=bool(plotting_parameters["plotchargedensity"]),
+    )
+    plotting_parameters = {
+        **plotting_parameters,
+        "field_map": field_map,
+    }
+
     if plotting_parameters["dump_fields"]:
         write_openpmd_initial_fields(
-            fields,
+            field_map,
             static_parameters,
             dynamic_parameters,
             static_parameters.output_dir,

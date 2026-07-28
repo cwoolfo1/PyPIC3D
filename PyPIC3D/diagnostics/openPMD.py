@@ -10,8 +10,7 @@ import os
 import numpy as np
 import importlib.metadata
 
-from PyPIC3D.diagnostics.output_adapters import fields_for_output, particles_for_output
-from PyPIC3D.utilities.grids import grid_domain_bounds
+from PyPIC3D.diagnostics.output_adapters import field_map_for_output, particles_for_output
 
 
 @dataclass(frozen=True)
@@ -110,36 +109,19 @@ def _write_openpmd_vector_mesh(iteration, name, components, dynamic_parameters, 
         record.unit_SI = 1.0
 
 
-def _fields_to_interior_map(fields):
-    """Extract physical interior (strip ghost cells) from a fields tuple and return a field_map dict."""
-    E, B, J, rho, phi, external_fields, *rest = fields
+def _field_map_to_interior(field_map):
+    """Strip ghost cells from the selected global fields before openPMD output."""
     interior = (slice(1, -1), slice(1, -1), slice(1, -1))
-    external_E, external_B = external_fields
-    field_map = {
-        "E": tuple(comp[interior] for comp in E),
-        "B": tuple(comp[interior] for comp in B),
-        "J": tuple(comp[interior] for comp in J),
-        "rho": rho[interior],
-        "phi": phi[interior],
-        "external_E": tuple(comp[interior] for comp in external_E),
-        "external_B": tuple(comp[interior] for comp in external_B),
-    }
-    if rest:
-        for idx, extra in enumerate(rest, start=1):
-            if extra is None:
-                continue
-            if (
-                isinstance(extra, (list, tuple))
-                and len(extra) == 2
-                and all(isinstance(memory, (list, tuple)) and len(memory) == 6 for memory in extra)
-            ):
-                # PML memory is solver state, not a physical diagnostic field.
-                continue
-            if isinstance(extra, (list, tuple)):
-                field_map[f"field_{idx}"] = tuple(comp[interior] for comp in extra)
-            else:
-                field_map[f"field_{idx}"] = extra[interior]
-    return field_map
+    interior_map = {}
+
+    for name, field in field_map.items():
+        is_vector = isinstance(field, (list, tuple)) and len(field) == 3
+        if is_vector:
+            interior_map[name] = tuple(component[interior] for component in field)
+        else:
+            interior_map[name] = field[interior]
+
+    return interior_map
 
 
 def _as_3tuple(value):
@@ -631,12 +613,12 @@ def write_tiled_particle_snapshot_openpmd(
         series.close()
 
 
-def write_openpmd_fields(fields, static_parameters, dynamic_parameters=None, output_dir=None, plot_t=0, t=0, filename="fields", file_extension=".bp"):
+def write_openpmd_fields(field_map, static_parameters, dynamic_parameters=None, output_dir=None, plot_t=0, t=0, filename="fields", file_extension=".bp"):
     """
-    Write all field data to an openPMD file for visualization in ParaView/VisIt.
+    Write the selected field data to an openPMD file for visualization in ParaView/VisIt.
 
     Args:
-        fields (tuple): Field tuple from the solver (E, B, J, rho, ...).
+        field_map (dict): Selected scalar and vector mesh quantities.
         static_parameters (dict): Compile-time/run parameters.
         dynamic_parameters (dict): Scalar/grid parameters.
         output_dir (str): Base output directory for the simulation.
@@ -650,8 +632,8 @@ def write_openpmd_fields(fields, static_parameters, dynamic_parameters=None, out
         dynamic_parameters = static_parameters
     static_parameters, dynamic_parameters = _split_output_parameters(static_parameters, dynamic_parameters)
 
-    fields = fields_for_output(fields, static_parameters)
-    field_map = _fields_to_interior_map(fields)
+    field_map = field_map_for_output(field_map, static_parameters)
+    field_map = _field_map_to_interior(field_map)
     # extract physical interior (strip ghost cells)
 
     active_dims = (1, 1, 1)
@@ -860,12 +842,12 @@ def write_openpmd_initial_particles(
         series.flush()
         series.close()
 
-def write_openpmd_initial_fields(fields, static_parameters, dynamic_parameters=None, output_dir=None, filename="initial_fields.h5"):
+def write_openpmd_initial_fields(field_map, static_parameters, dynamic_parameters=None, output_dir=None, filename="initial_fields.h5"):
     """
     Write the initial field states to an openPMD file.
 
     Args:
-        fields (tuple): Field tuple from the solver (E, B, J, rho, ...).
+        field_map (dict): Selected scalar and vector mesh quantities.
         static_parameters (dict): Compile-time/run parameters.
         dynamic_parameters (dict): Scalar/grid parameters.
         output_dir (str): Base output directory for the simulation.
@@ -876,8 +858,8 @@ def write_openpmd_initial_fields(fields, static_parameters, dynamic_parameters=N
         dynamic_parameters = static_parameters
     static_parameters, dynamic_parameters = _split_output_parameters(static_parameters, dynamic_parameters)
 
-    fields = fields_for_output(fields, static_parameters)
-    field_map = _fields_to_interior_map(fields)
+    field_map = field_map_for_output(field_map, static_parameters)
+    field_map = _field_map_to_interior(field_map)
     # extract physical interior (strip ghost cells)
 
     active_dims = (1, 1, 1)
