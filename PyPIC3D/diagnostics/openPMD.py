@@ -11,6 +11,7 @@ import numpy as np
 import importlib.metadata
 
 from PyPIC3D.diagnostics.output_adapters import field_map_for_output, particles_for_output
+from PyPIC3D.utilities.grids import grid_domain_bounds
 
 
 @dataclass(frozen=True)

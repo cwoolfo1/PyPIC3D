@@ -269,12 +269,7 @@ class OpenPMDDiagnosticsTests(unittest.TestCase):
     def test_write_openpmd_fields_uses_shifted_grid_lower_bounds_for_offsets(self):
         shape_with_ghosts = (6, 3, 3)
         E = _zero_field(shape_with_ghosts)
-        B = _zero_field(shape_with_ghosts)
-        J = _zero_field(shape_with_ghosts)
-        rho = jnp.zeros(shape_with_ghosts)
-        phi = jnp.zeros(shape_with_ghosts)
-        external_fields = _zero_field(shape_with_ghosts), _zero_field(shape_with_ghosts)
-        fields = (E, B, J, rho, phi, external_fields)
+        field_map = {"E": E}
         static_parameters, dynamic_parameters = kernel_parameters(
             Nx=4,
             Ny=1,
@@ -295,7 +290,7 @@ class OpenPMDDiagnosticsTests(unittest.TestCase):
         series = FakeSeries()
 
         with patch.object(openPMD, "_open_openpmd_series", return_value=series):
-            openPMD.write_openpmd_fields(fields, static_parameters, dynamic_parameters, "/tmp", plot_t=0, t=0)
+            openPMD.write_openpmd_fields(field_map, static_parameters, dynamic_parameters, "/tmp", plot_t=0, t=0)
 
         E_mesh = series.iterations[0].meshes["E"]
         self.assertEqual(E_mesh.grid_spacing, [0.5, 1.0, 1.0])
