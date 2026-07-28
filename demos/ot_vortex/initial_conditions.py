@@ -46,7 +46,7 @@ By = B0 * np.sin(4 * np.pi * By_X / x_wind)
 # components of the magnetic field
 
 number_density = 1e14
-PPC = 15
+PPC = 80
 N_particles = int(PPC * nx * ny)
 # number of particles
 
@@ -65,9 +65,9 @@ electron_vy =  V0  * np.sin(2* np.pi * electron_x / x_wind)
 electron_vz = np.zeros(N_particles)
 # initial velocities of electrons
 
-ion_vx = electron_vx.copy()
-ion_vy = electron_vy.copy()
-ion_vz = electron_vz.copy()
+ion_vx = np.zeros_like(electron_vx)
+ion_vy = np.zeros_like(electron_vy)
+ion_vz = np.zeros_like(electron_vz)
 # initial velocities of electrons and ions
 
 Bx = np.expand_dims(Bx, axis=-1)
