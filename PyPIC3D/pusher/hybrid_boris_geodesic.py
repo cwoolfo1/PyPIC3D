@@ -230,7 +230,6 @@ def hybrid_boris_geodesic_push(
     q_over_m = species_config.charge / species_config.mass
     q_over_m = q_over_m.reshape((species_config.charge.shape[0], 1))
     update_x = species_config.update_x.reshape((species_config.update_x.shape[0], 1, 3))
-    update_u = species_config.update_u.reshape((species_config.update_u.shape[0], 1, 3))
 
     def push_one_tile(x_tile, u_tile, active_tile, tx, ty, tz):
         active = active_tile[..., jnp.newaxis]
@@ -259,14 +258,14 @@ def hybrid_boris_geodesic_push(
             tz,
             dt / 2.0,
         )
-        u_after_first_em = jnp.where(active & update_u, u_after_first_em, u_tile)
-        # first half of the electromagnetic Boris step, updating only active particles that have update_u=True
+        u_after_first_em = jnp.where(active & update_x, u_after_first_em, u_tile)
+        # a disabled direction freezes both its covariant velocity and coordinate
 
         du_dt_n = geodesic_velocity(x_tile, u_after_first_em, metric_n)
         u_geo_mid = u_after_first_em + 0.5 * dt * du_dt_n
         du_dt_mid = geodesic_velocity(x_tile, u_geo_mid, metric_n)
         u_after_geodesic = u_after_first_em + dt * du_dt_mid
-        u_after_geodesic = jnp.where(active & update_u, u_after_geodesic, u_tile)
+        u_after_geodesic = jnp.where(active & update_x, u_after_geodesic, u_tile)
         # midpoint geodesic velocity source at x^n; positions remain staggered until the velocity update is complete.
 
         u_new = _electromagnetic_boris_step(
@@ -283,7 +282,7 @@ def hybrid_boris_geodesic_push(
             tz,
             dt / 2.0,
         )
-        u_new = jnp.where(active & update_u, u_new, u_tile)
+        u_new = jnp.where(active & update_x, u_new, u_tile)
         # second half of the electromagnetic Boris step, reinterpolated at the same x^n position.
 
         dx_dt_n = GR_position_update(

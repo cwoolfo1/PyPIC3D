@@ -135,6 +135,9 @@ def GR_direct_deposition(
         u_cov = u_tile.reshape(-1, 3)
         active = active_tile.reshape(-1).astype(x.dtype)
         q = jnp.broadcast_to(species_weighted_charge[:, jnp.newaxis], active_tile.shape).reshape(-1)
+        update_x1 = jnp.broadcast_to(species_config.update_x[:, 0, jnp.newaxis], active_tile.shape).reshape(-1)
+        update_x2 = jnp.broadcast_to(species_config.update_x[:, 1, jnp.newaxis], active_tile.shape).reshape(-1)
+        update_x3 = jnp.broadcast_to(species_config.update_x[:, 2, jnp.newaxis], active_tile.shape).reshape(-1)
         dq = q / (dx * dy * dz)
 
         x_grid = tiled_grid[0][tx, ty, tz]
@@ -229,15 +232,15 @@ def GR_direct_deposition(
                     iy = ypts[j]
                     iz = zpts[k]
                     tile_Jx = tile_Jx.at[ix, iy, iz].add(
-                        active * dq * vx * x_weights_face[i] * y_weights_node[j] * z_weights_node[k],
+                        active * update_x1 * dq * vx * x_weights_face[i] * y_weights_node[j] * z_weights_node[k],
                         mode="drop",
                     )
                     tile_Jy = tile_Jy.at[ix, iy, iz].add(
-                        active * dq * vy * x_weights_node[i] * y_weights_face[j] * z_weights_node[k],
+                        active * update_x2 * dq * vy * x_weights_node[i] * y_weights_face[j] * z_weights_node[k],
                         mode="drop",
                     )
                     tile_Jz = tile_Jz.at[ix, iy, iz].add(
-                        active * dq * vz * x_weights_node[i] * y_weights_node[j] * z_weights_face[k],
+                        active * update_x3 * dq * vz * x_weights_node[i] * y_weights_node[j] * z_weights_face[k],
                         mode="drop",
                     )
 

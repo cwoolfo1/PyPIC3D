@@ -1,3 +1,5 @@
+import unittest
+
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -51,7 +53,6 @@ def _single_particle_state(static_parameters, dynamic_parameters, u):
         mass=jnp.asarray([1.0]),
         weight=jnp.asarray([1.0]),
         update_x=jnp.asarray([[True, True, True]]),
-        update_u=jnp.asarray([[True, True, True]]),
     )
     return particles, species
 
@@ -373,7 +374,6 @@ def test_hybrid_boris_geodesic_push_uses_current_position_for_both_electric_half
         mass=jnp.asarray([1.0]),
         weight=jnp.asarray([1.0]),
         update_x=jnp.asarray([[True, True, True]]),
-        update_u=jnp.asarray([[True, True, True]]),
     )
 
     pushed, centered = hybrid_boris_geodesic_push(
@@ -458,7 +458,6 @@ def test_hybrid_boris_geodesic_push_accepts_multiple_species_in_one_tile():
         mass=jnp.asarray([1.0, 2.0]),
         weight=jnp.asarray([1.0, 1.0]),
         update_x=jnp.asarray([[True, True, True], [True, True, True]]),
-        update_u=jnp.asarray([[True, True, True], [True, True, True]]),
     )
 
     pushed, centered = hybrid_boris_geodesic_push(
@@ -474,6 +473,55 @@ def test_hybrid_boris_geodesic_push_accepts_multiple_species_in_one_tile():
     assert pushed.x.shape == x.shape
     assert centered.x.shape == x.shape
     assert jnp.all(jnp.isfinite(pushed.x))
+
+
+def test_hybrid_boris_geodesic_push_masks_position_and_velocity_by_species_direction():
+    static_parameters, dynamic_parameters = kernel_parameters(
+        Nx=4,
+        Ny=4,
+        Nz=4,
+        x_wind=4.0,
+        y_wind=4.0,
+        z_wind=4.0,
+        dt=0.2,
+    )
+    metric = initialize_flat_cartesian_metric(static_parameters, dynamic_parameters)
+    D = _constant_tiled_vector(static_parameters, dynamic_parameters, (0.2, 0.2, 0.2))
+    B = empty_tiled_vector(static_parameters, dynamic_parameters)
+    particles = TiledParticles(
+        x=jnp.zeros((1, 1, 1, 2, 1, 3)),
+        u=jnp.zeros((1, 1, 1, 2, 1, 3)),
+        active=jnp.ones((1, 1, 1, 2, 1), dtype=bool),
+    )
+    species = SpeciesConfig(
+        charge=jnp.asarray([1.0, 1.0]),
+        mass=jnp.asarray([1.0, 1.0]),
+        weight=jnp.asarray([1.0, 1.0]),
+        update_x=jnp.asarray(
+            (
+                (False, True, False),
+                (True, False, True),
+            )
+        ),
+    )
+
+    pushed, centered = hybrid_boris_geodesic_push(
+        particles,
+        species,
+        D,
+        B,
+        metric,
+        static_parameters,
+        dynamic_parameters,
+    )
+
+    update_mask = species.update_x.reshape((1, 1, 1, 2, 1, 3))
+    assert jnp.allclose(jnp.where(update_mask, 0.0, pushed.u), 0.0)
+    assert jnp.allclose(jnp.where(update_mask, 0.0, pushed.x), 0.0)
+    assert jnp.allclose(jnp.where(update_mask, 0.0, centered.x), 0.0)
+    assert jnp.all(jnp.abs(pushed.u[update_mask]) > 0.0)
+    assert jnp.all(jnp.abs(pushed.x[update_mask]) > 0.0)
+    assert jnp.all(jnp.abs(centered.x[update_mask]) > 0.0)
 
 
 def test_GR_direct_deposition_uses_lapse_scaled_contravariant_three_velocity():
@@ -548,6 +596,56 @@ def test_GR_direct_deposition_returns_fpic_shifted_source_current():
     assert jnp.allclose(J[2][interior], expected[2])
 
 
+def test_GR_direct_deposition_masks_complete_shifted_current_by_direction():
+    static_parameters, dynamic_parameters = kernel_parameters(
+        Nx=1,
+        Ny=1,
+        Nz=1,
+        x_wind=1.0,
+        y_wind=1.0,
+        z_wind=1.0,
+        dt=0.1,
+        tile_shape=(1, 1, 1),
+        shape_factor=1,
+        current_filter="none",
+    )
+    metric = initialize_flat_cartesian_metric(static_parameters, dynamic_parameters)
+    metric = _replace_lapse_shift(metric, lapse=0.7, shift=(0.2, -0.1, 0.15))
+    particles, species = _single_particle_state(static_parameters, dynamic_parameters, (0.5, 0.25, -0.125))
+    J_template = empty_tiled_vector(static_parameters, dynamic_parameters)
+
+    full_current = GR_direct_deposition(
+        particles,
+        species,
+        J_template,
+        metric,
+        static_parameters,
+        dynamic_parameters,
+    )
+    masked_current = GR_direct_deposition(
+        particles,
+        species._replace(update_x=jnp.asarray([[False, True, False]])),
+        J_template,
+        metric,
+        static_parameters,
+        dynamic_parameters,
+    )
+    disabled_current = GR_direct_deposition(
+        particles,
+        species._replace(update_x=jnp.zeros((1, 3), dtype=bool)),
+        J_template,
+        metric,
+        static_parameters,
+        dynamic_parameters,
+    )
+
+    assert jnp.allclose(masked_current[0], 0.0)
+    assert jnp.allclose(masked_current[1], full_current[1])
+    assert jnp.allclose(masked_current[2], 0.0)
+    for component in disabled_current:
+        assert jnp.allclose(component, 0.0)
+
+
 def test_GR_direct_deposition_returns_physical_spherical_current():
     static_parameters, dynamic_parameters = kernel_parameters(
         Nx=8,
@@ -575,7 +673,6 @@ def test_GR_direct_deposition_returns_physical_spherical_current():
         mass=jnp.asarray([1.0]),
         weight=jnp.asarray([1.0]),
         update_x=jnp.asarray([[True, True, True]]),
-        update_u=jnp.asarray([[True, True, True]]),
     )
 
     def deposit_radial_particle(radius):
@@ -699,7 +796,6 @@ def test_static_metric_time_loop_retiles_midpoint_and_fullstep_particles():
         mass=jnp.asarray([1.0]),
         weight=jnp.asarray([1.0]),
         update_x=jnp.asarray([[True, True, True]]),
-        update_u=jnp.asarray([[True, True, True]]),
     )
     D = empty_tiled_vector(static_parameters, dynamic_parameters)
     B = empty_tiled_vector(static_parameters, dynamic_parameters)
@@ -753,7 +849,6 @@ def test_static_metric_time_loop_reports_particle_refresh_overflow():
         mass=jnp.asarray([1.0]),
         weight=jnp.asarray([1.0]),
         update_x=jnp.asarray([[True, True, True]]),
-        update_u=jnp.asarray([[True, True, True]]),
     )
     D = empty_tiled_vector(static_parameters, dynamic_parameters)
     B = empty_tiled_vector(static_parameters, dynamic_parameters)
@@ -922,7 +1017,6 @@ def test_static_metric_time_loop_accepts_empty_particle_storage():
         mass=jnp.zeros((0,)),
         weight=jnp.zeros((0,)),
         update_x=jnp.zeros((0, 3), dtype=bool),
-        update_u=jnp.zeros((0, 3), dtype=bool),
     )
     D = empty_tiled_vector(static_parameters, dynamic_parameters)
     B = empty_tiled_vector(static_parameters, dynamic_parameters)

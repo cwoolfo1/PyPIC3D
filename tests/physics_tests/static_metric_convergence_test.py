@@ -41,7 +41,6 @@ def _single_particle_species(charge):
         mass=jnp.asarray([1.0]),
         weight=jnp.asarray([1.0]),
         update_x=jnp.asarray([[True, True, True]]),
-        update_u=jnp.asarray([[True, True, True]]),
     )
 
 
@@ -70,18 +69,17 @@ def _velocity_update_with_production_pusher(
     dt,
 ):
     particles = _single_particle(position, u_cov)
-    velocity_only_species = SpeciesConfig(
+    velocity_update_species = SpeciesConfig(
         charge=jnp.asarray([charge]),
         mass=jnp.asarray([1.0]),
         weight=jnp.asarray([1.0]),
-        update_x=jnp.asarray([[False, False, False]]),
-        update_u=jnp.asarray([[True, True, True]]),
+        update_x=jnp.asarray([[True, True, True]]),
     )
     velocity_only_dynamic_parameters = dynamic_parameters._replace(dt=jnp.asarray(dt))
 
     particles, _centered = hybrid_boris_geodesic_push(
         particles,
-        velocity_only_species,
+        velocity_update_species,
         D,
         B,
         metric,
