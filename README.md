@@ -107,6 +107,19 @@ A suite of lightweight physics based tests to verify the correctness of the impl
 pytest tests/physics_tests
 ```
 
+## Performance benchmarks
+
+The reproducible CPU benchmark scans particle count, cell count, and JAX CPU
+device count; records synchronized steady-state step and component timings; and
+generates problem-size, strong-scaling, and weak-scaling plots:
+
+```bash
+python benchmarks/scaling_benchmark.py --output benchmarks/results
+```
+
+See [`benchmarks/README.md`](benchmarks/README.md) for methodology, output
+interpretation, larger-run examples, and bottleneck-analysis guidance.
+
 ## Build Docs
 
 ```bash
