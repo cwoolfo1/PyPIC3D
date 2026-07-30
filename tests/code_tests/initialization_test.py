@@ -7,9 +7,21 @@ import numpy as np
 import toml
 import jax
 import jax.numpy as jnp
-from PyPIC3D.initialization import setup_write_dir, default_parameters, initialize_simulation, validate_field_solver, _encode_field_bc
+from PyPIC3D.initialization import (
+    _encode_field_bc,
+    _encode_particle_bc,
+    default_parameters,
+    initialize_simulation,
+    setup_write_dir,
+    validate_field_solver,
+)
 from PyPIC3D.evolve import time_loop_electrodynamic, time_loop_electrostatic, time_loop_static_metric
-from PyPIC3D.boundary_conditions.grid_and_stencil import BC_CONSTANT
+from PyPIC3D.boundary_conditions.grid_and_stencil import (
+    BC_ABSORBING,
+    BC_CONDUCTING,
+    BC_CONSTANT,
+    BC_PERIODIC,
+)
 from PyPIC3D.particles.particle_class import TiledParticles
 from PyPIC3D.utilities.grids import build_yee_grid
 
@@ -62,6 +74,19 @@ class TestInitializationFunctions(unittest.TestCase):
 
     def test_encode_field_bc_accepts_constant_boundary(self):
         self.assertEqual(_encode_field_bc("constant"), BC_CONSTANT)
+
+    def test_field_and_particle_boundaries_use_one_code_map(self):
+        self.assertEqual(BC_PERIODIC, 0)
+        self.assertEqual(BC_CONDUCTING, 1)
+        self.assertEqual(BC_ABSORBING, 2)
+        self.assertEqual(BC_CONSTANT, 3)
+
+        self.assertEqual(_encode_field_bc("periodic"), BC_PERIODIC)
+        self.assertEqual(_encode_field_bc("conducting"), BC_CONDUCTING)
+        self.assertEqual(_encode_field_bc("constant"), BC_CONSTANT)
+        self.assertEqual(_encode_particle_bc("periodic"), BC_PERIODIC)
+        self.assertEqual(_encode_particle_bc("reflecting"), BC_CONDUCTING)
+        self.assertEqual(_encode_particle_bc("absorbing"), BC_ABSORBING)
 
     def test_initialize_simulation_returns_tiled_runtime_for_ordinary_electrodynamic_config(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -408,7 +433,10 @@ class TestInitializationFunctions(unittest.TestCase):
 
             _, particles, _, parameter_set, *_ = initialize_simulation(toml.load(config_path))
 
-            self.assertEqual(parameter_set.particle_boundary_conditions, (1, 2, 0))
+            self.assertEqual(
+                parameter_set.particle_boundary_conditions,
+                (BC_CONDUCTING, BC_ABSORBING, BC_PERIODIC),
+            )
             self.assertIsInstance(particles, TiledParticles)
             # check that the global particle boundary conditions are encoded correctly in the parameter_set dictionary
 

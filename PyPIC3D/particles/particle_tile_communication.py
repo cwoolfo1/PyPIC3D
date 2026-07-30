@@ -2,7 +2,12 @@ import jax
 import jax.numpy as jnp
 from jax.sharding import NamedSharding, PartitionSpec as P
 
-from PyPIC3D.boundary_conditions.grid_and_stencil import wrap_periodic_position
+from PyPIC3D.boundary_conditions.grid_and_stencil import (
+    BC_ABSORBING,
+    BC_CONDUCTING,
+    BC_PERIODIC,
+    wrap_periodic_position,
+)
 from PyPIC3D.boundary_conditions.ghost_cells import MESH_AXES
 from PyPIC3D.particles.particle_class import TiledParticles
 from PyPIC3D.utilities.grids import grid_domain_bounds
@@ -42,9 +47,9 @@ def shard_tiled_particles(tiled_particles, static_parameters):
 def _apply_tiled_axis_boundary(x, u, active, axis_min, axis_max, bc):
     wind = axis_max - axis_min
     center = 0.5 * (axis_min + axis_max)
-    periodic = bc == 0
-    reflecting = bc == 1
-    absorbing = bc == 2
+    periodic = bc == BC_PERIODIC
+    reflecting = bc == BC_CONDUCTING
+    absorbing = bc == BC_ABSORBING
 
     periodic_x = wrap_periodic_position(x - center, wind) + center
     reflected_x = jnp.where(

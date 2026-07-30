@@ -129,7 +129,7 @@ def _collapse(points, weights, local_n, reduced_axis, g):
     return collapse_axis_stencil(points, weights, local_n, ghost_cells=True)
 
 
-def _node_stencils(tile, x, static_parameters, dynamic_parameters):
+def _direct_deposition_stencils(tile, x, static_parameters, dynamic_parameters):
     tx, ty, tz = tile
     g = int(static_parameters.guard_cells)
     tile_nx, tile_ny, tile_nz = [int(width) for width in static_parameters.tile_shape]
@@ -140,35 +140,60 @@ def _node_stencils(tile, x, static_parameters, dynamic_parameters):
         tile_ny == 1 and int(nty) == 1,
         tile_nz == 1 and int(ntz) == 1,
     )
-    x_grid = dynamic_parameters.grids.tiled_center_grid[0][tx, ty, tz]
-    y_grid = dynamic_parameters.grids.tiled_center_grid[1][tx, ty, tz]
-    z_grid = dynamic_parameters.grids.tiled_center_grid[2][tx, ty, tz]
+    x_grid, y_grid, z_grid = dynamic_parameters.grids.center
 
     x_pos = jnp.asarray([x[0]])
     y_pos = jnp.asarray([x[1]])
     z_pos = jnp.asarray([x[2]])
-    _, x0, deltax_node, xpts = prepare_particle_axis_stencil(
+    x_pos, _, deltax_node, xpts_node = prepare_particle_axis_stencil(
         x_pos,
         x_grid,
-        local_shape[0],
+        x_grid.shape[0],
         static_parameters.shape_factor,
         2,
         wind=tile_nx * dynamic_parameters.dx,
         ghost_cells=True,
     )
-    _, _y0, deltay_node, ypts = prepare_particle_axis_stencil(
+    _, _, deltax_face, xpts_face = prepare_particle_axis_stencil(
+        x_pos,
+        x_grid + 0.5 * dynamic_parameters.dx,
+        x_grid.shape[0],
+        static_parameters.shape_factor,
+        2,
+        wind=tile_nx * dynamic_parameters.dx,
+        ghost_cells=True,
+    )
+    y_pos, _, deltay_node, ypts_node = prepare_particle_axis_stencil(
         y_pos,
         y_grid,
-        local_shape[1],
+        y_grid.shape[0],
         static_parameters.shape_factor,
         2,
         wind=tile_ny * dynamic_parameters.dy,
         ghost_cells=True,
     )
-    _, _z0, deltaz_node, zpts = prepare_particle_axis_stencil(
+    _, _, deltay_face, ypts_face = prepare_particle_axis_stencil(
+        y_pos,
+        y_grid + 0.5 * dynamic_parameters.dy,
+        y_grid.shape[0],
+        static_parameters.shape_factor,
+        2,
+        wind=tile_ny * dynamic_parameters.dy,
+        ghost_cells=True,
+    )
+    z_pos, _, deltaz_node, zpts_node = prepare_particle_axis_stencil(
         z_pos,
         z_grid,
-        local_shape[2],
+        z_grid.shape[0],
+        static_parameters.shape_factor,
+        2,
+        wind=tile_nz * dynamic_parameters.dz,
+        ghost_cells=True,
+    )
+    _, _, deltaz_face, zpts_face = prepare_particle_axis_stencil(
+        z_pos,
+        z_grid + 0.5 * dynamic_parameters.dz,
+        z_grid.shape[0],
         static_parameters.shape_factor,
         2,
         wind=tile_nz * dynamic_parameters.dz,
@@ -176,39 +201,55 @@ def _node_stencils(tile, x, static_parameters, dynamic_parameters):
     )
 
     node_weights = _weights(deltax_node, deltay_node, deltaz_node, dynamic_parameters, static_parameters.shape_factor)
-    xpts, wx_node = _collapse(jnp.asarray(xpts), node_weights[0], local_shape[0], reduced[0], g)
-    ypts, wy_node = _collapse(jnp.asarray(ypts), node_weights[1], local_shape[1], reduced[1], g)
-    zpts, wz_node = _collapse(jnp.asarray(zpts), node_weights[2], local_shape[2], reduced[2], g)
+    face_weights = _weights(deltax_face, deltay_face, deltaz_face, dynamic_parameters, static_parameters.shape_factor)
 
-    deltax_face = (x_pos - x_grid[0]) - (x0 + 0.5) * dynamic_parameters.dx
-    deltay_face = (y_pos - y_grid[0]) - (_y0 + 0.5) * dynamic_parameters.dy
-    deltaz_face = (z_pos - z_grid[0]) - (_z0 + 0.5) * dynamic_parameters.dz
-    x_face_weights, _, _ = _weights(
-        deltax_face,
-        deltay_node,
-        deltaz_node,
-        dynamic_parameters,
-        static_parameters.shape_factor,
+    offsets = (
+        tx * tile_nx - (g - 1),
+        ty * tile_ny - (g - 1),
+        tz * tile_nz - (g - 1),
     )
-    _, y_face_weights, _ = _weights(
-        deltax_node,
-        deltay_face,
-        deltaz_node,
-        dynamic_parameters,
-        static_parameters.shape_factor,
+    node_points = (
+        jnp.asarray(xpts_node) - offsets[0],
+        jnp.asarray(ypts_node) - offsets[1],
+        jnp.asarray(zpts_node) - offsets[2],
     )
-    _, _, z_face_weights = _weights(
-        deltax_node,
-        deltay_node,
-        deltaz_face,
-        dynamic_parameters,
-        static_parameters.shape_factor,
+    face_points = (
+        jnp.asarray(xpts_face) - offsets[0],
+        jnp.asarray(ypts_face) - offsets[1],
+        jnp.asarray(zpts_face) - offsets[2],
     )
-    _, wx_face = _collapse(xpts, x_face_weights, local_shape[0], reduced[0], g)
-    _, wy_face = _collapse(ypts, y_face_weights, local_shape[1], reduced[1], g)
-    _, wz_face = _collapse(zpts, z_face_weights, local_shape[2], reduced[2], g)
 
-    return (xpts, ypts, zpts), (wx_node, wy_node, wz_node), (wx_face, wy_face, wz_face)
+    collapsed_node_points = []
+    collapsed_face_points = []
+    collapsed_node_weights = []
+    collapsed_face_weights = []
+    for axis in range(3):
+        points, weights = _collapse(
+            node_points[axis],
+            node_weights[axis],
+            local_shape[axis],
+            reduced[axis],
+            g,
+        )
+        collapsed_node_points.append(points)
+        collapsed_node_weights.append(weights)
+
+        points, weights = _collapse(
+            face_points[axis],
+            face_weights[axis],
+            local_shape[axis],
+            reduced[axis],
+            g,
+        )
+        collapsed_face_points.append(points)
+        collapsed_face_weights.append(weights)
+
+    return (
+        tuple(collapsed_node_points),
+        tuple(collapsed_face_points),
+        tuple(collapsed_node_weights),
+        tuple(collapsed_face_weights),
+    )
 
 
 def _add_stencil(field, tile, points, weights, scale):
@@ -229,13 +270,15 @@ def _add_stencil(field, tile, points, weights, scale):
 def _manual_rho_tiles(particles, species_config, static_parameters, dynamic_parameters):
     g = int(static_parameters.guard_cells)
     tile, x, _u = _particle_state(particles)
-    points, node_weights, _face_weights = _node_stencils(tile, x, static_parameters, dynamic_parameters)
+    node_points, _face_points, node_weights, _face_weights = _direct_deposition_stencils(
+        tile, x, static_parameters, dynamic_parameters
+    )
     rho = empty_tiled_scalar(static_parameters, dynamic_parameters)
     charge_density = species_config.charge[0] * species_config.weight[0] / (
         dynamic_parameters.dx * dynamic_parameters.dy * dynamic_parameters.dz
     )
 
-    rho = _add_stencil(rho, tile, points, node_weights, charge_density)
+    rho = _add_stencil(rho, tile, node_points, node_weights, charge_density)
     rho = fold_tiled_ghost_cells(rho, static_parameters, g, bc_type=1)
     rho = update_tiled_ghost_cells(rho, static_parameters, g, bc_type=1)
 
@@ -249,15 +292,39 @@ def _manual_rho_tiles(particles, species_config, static_parameters, dynamic_para
 def _manual_direct_current_tiles(particles, species_config, static_parameters, dynamic_parameters):
     g = int(static_parameters.guard_cells)
     tile, x, u = _particle_state(particles)
-    points, node_weights, face_weights = _node_stencils(tile, x, static_parameters, dynamic_parameters)
+    node_points, face_points, node_weights, face_weights = _direct_deposition_stencils(
+        tile, x, static_parameters, dynamic_parameters
+    )
     Jx, Jy, Jz = empty_tiled_vector(static_parameters, dynamic_parameters)
     charge_density = species_config.charge[0] * species_config.weight[0] / (
         dynamic_parameters.dx * dynamic_parameters.dy * dynamic_parameters.dz
     )
 
-    Jx = _add_stencil(Jx, tile, points, (face_weights[0], node_weights[1], node_weights[2]), charge_density * u[0])
-    Jy = _add_stencil(Jy, tile, points, (node_weights[0], face_weights[1], node_weights[2]), charge_density * u[1])
-    Jz = _add_stencil(Jz, tile, points, (node_weights[0], node_weights[1], face_weights[2]), charge_density * u[2])
+    Jx_points = (face_points[0], node_points[1], node_points[2])
+    Jy_points = (node_points[0], face_points[1], node_points[2])
+    Jz_points = (node_points[0], node_points[1], face_points[2])
+
+    Jx = _add_stencil(
+        Jx,
+        tile,
+        Jx_points,
+        (face_weights[0], node_weights[1], node_weights[2]),
+        charge_density * u[0],
+    )
+    Jy = _add_stencil(
+        Jy,
+        tile,
+        Jy_points,
+        (node_weights[0], face_weights[1], node_weights[2]),
+        charge_density * u[1],
+    )
+    Jz = _add_stencil(
+        Jz,
+        tile,
+        Jz_points,
+        (node_weights[0], node_weights[1], face_weights[2]),
+        charge_density * u[2],
+    )
 
     J = fold_tiled_vector_ghost_cells((Jx, Jy, Jz), static_parameters, g, bc_type=1)
     J = update_tiled_vector_ghost_cells(J, static_parameters, g, bc_type=1)

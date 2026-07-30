@@ -6,7 +6,7 @@ import jax
 import jax.numpy as jnp
 
 from PyPIC3D.boundary_conditions import ghost_cells
-from PyPIC3D.boundary_conditions.grid_and_stencil import BC_PERIODIC
+from PyPIC3D.boundary_conditions.grid_and_stencil import BC_ABSORBING, BC_PERIODIC
 from PyPIC3D.deposition.rho import compute_rho
 from PyPIC3D.diagnostics.output_adapters import assemble_tiled_scalar_field
 from tests.kernel_fixtures import build_tiled_particles, particle_parameters_from_tile_values, particle_species
@@ -306,7 +306,11 @@ class TestTiledRho(unittest.TestCase):
         )
         absorbing_parameters = self._build_parameter_values(
             shape_factor=1,
-            particle_boundary_conditions={"x": 2, "y": BC_PERIODIC, "z": BC_PERIODIC},
+            particle_boundary_conditions={
+                "x": BC_ABSORBING,
+                "y": BC_PERIODIC,
+                "z": BC_PERIODIC,
+            },
         )
         particles = self._particles(periodic_parameters)
 

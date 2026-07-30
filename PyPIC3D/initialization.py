@@ -35,7 +35,12 @@ from PyPIC3D.boundary_conditions.ghost_cells import (
     update_tiled_vector_ghost_cells,
 )
 from PyPIC3D.evolve import time_loop_electrodynamic, time_loop_electrostatic, time_loop_static_metric
-from PyPIC3D.boundary_conditions.grid_and_stencil import BC_CONDUCTING, BC_CONSTANT, BC_PERIODIC
+from PyPIC3D.boundary_conditions.grid_and_stencil import (
+    BC_ABSORBING,
+    BC_CONDUCTING,
+    BC_CONSTANT,
+    BC_PERIODIC,
+)
 from PyPIC3D.boundary_conditions.PML import initialize_tiled_pml_state, load_pml_from_toml
 from PyPIC3D.boundary_conditions.supergaussian import load_supergaussian_from_toml
 from PyPIC3D.parameters import build_dynamic_parameters, build_static_parameters
@@ -69,9 +74,9 @@ def _encode_particle_bc(bc_name):
     Encode global particle boundary condition labels into integer codes.
     """
     bc_codes = {
-        "periodic": 0,
-        "reflecting": 1,
-        "absorbing": 2,
+        "periodic": BC_PERIODIC,
+        "reflecting": BC_CONDUCTING,
+        "absorbing": BC_ABSORBING,
     }
     if bc_name not in bc_codes:
         raise ValueError(f"Unsupported particle boundary condition: {bc_name}")

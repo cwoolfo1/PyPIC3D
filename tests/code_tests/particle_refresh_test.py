@@ -3,6 +3,10 @@ import unittest
 import jax
 import jax.numpy as jnp
 
+from PyPIC3D.boundary_conditions.grid_and_stencil import (
+    BC_ABSORBING,
+    BC_PERIODIC,
+)
 from tests.kernel_fixtures import build_tiled_particles, particle_parameters_from_tile_values, particle_species
 from tests.kernel_fixtures import kernel_parameters_from_values
 from PyPIC3D.particles.particle_tile_communication import (
@@ -172,7 +176,11 @@ class TestTiledParticleRefresh(unittest.TestCase):
 
     def test_refresh_absorbs_particle_from_global_boundary_condition(self):
         parameter_set = self._build_parameter_values()
-        parameter_set["particle_boundary_conditions"] = {"x": 2, "y": 0, "z": 0}
+        parameter_set["particle_boundary_conditions"] = {
+            "x": BC_ABSORBING,
+            "y": BC_PERIODIC,
+            "z": BC_PERIODIC,
+        }
         species = self._species(parameter_set, x1=[1.75, -0.25], v1=[0.5, 0.0])
         tiled_particles, species_config = self._tiled_particles([species], parameter_set)
         moved = tiled_particles._replace(x=tiled_particles.x.at[1, 0, 0, 0, 0, 0].set(2.25))
