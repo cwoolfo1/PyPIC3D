@@ -93,21 +93,6 @@ def _metric_tile(metric, tx, ty, tz):
     )
 
 
-def _grad_gamma_inv_from_christoffel(gamma_inv, christoffel):
-    grad_gamma_inv = jnp.zeros(gamma_inv.shape[:-2] + (3, 3, 3), dtype=gamma_inv.dtype)
-    for i in range(3):
-        for l in range(3):
-            for m in range(3):
-                value = 0.0
-                for n in range(3):
-                    value = value - (
-                        christoffel[..., l, i, n] * gamma_inv[..., n, m]
-                        + christoffel[..., m, i, n] * gamma_inv[..., l, n]
-                    )
-                grad_gamma_inv = grad_gamma_inv.at[..., i, l, m].set(value)
-    return grad_gamma_inv
-
-
 def GR_position_update(position, u_cov, metric):
     """
     Coordinate velocity dx^i/dt from covariant spatial momentum u_i.
@@ -119,14 +104,13 @@ def GR_position_update(position, u_cov, metric):
     return metric.lapse[..., jnp.newaxis] * u_con / Gamma[..., jnp.newaxis] - metric.shift
 
 
-def geodesic_velocity(position, u_cov, metric):
+def geodesic_velocity(position, u_cov, metric, grad_gamma_inv):
     """
     Geodesic source term du_i/dt for covariant spatial momentum.
     """
 
     del position
     Gamma = covariant_lorentz_factor(u_cov, metric.gamma_inv)
-    grad_gamma_inv = _grad_gamma_inv_from_christoffel(metric.gamma_inv, metric.christoffel)
     grad_beta_term = jnp.einsum("...j,...ji->...i", u_cov, metric.grad_shift)
     metric_force = (-0.5 * metric.lapse / Gamma)[..., jnp.newaxis] * jnp.einsum(
         "...l,...m,...ilm->...i",
@@ -208,6 +192,28 @@ def _sample_center_metric_at_position(position, metric_tiles, static_parameters,
     )
 
 
+def _sample_center_grad_gamma_inv_at_position(
+    position,
+    metric_tiles,
+    static_parameters,
+    dynamic_parameters,
+    tx,
+    ty,
+    tz,
+):
+    shape_factor = static_parameters.shape_factor
+    center_grid = _metric_component_grid(("C", "C", "C"), dynamic_parameters, tx, ty, tz)
+
+    return _sample_rank3(
+        metric_tiles.center_grad_gamma_inv[tx, ty, tz],
+        position[..., 0],
+        position[..., 1],
+        position[..., 2],
+        center_grid,
+        shape_factor,
+    )
+
+
 @partial(jax.jit, static_argnames="static_parameters")
 def hybrid_boris_geodesic_push(
     particles,
@@ -243,6 +249,15 @@ def hybrid_boris_geodesic_push(
             ty,
             tz,
         )
+        grad_gamma_inv_n = _sample_center_grad_gamma_inv_at_position(
+            x_tile,
+            metric,
+            static_parameters,
+            dynamic_parameters,
+            tx,
+            ty,
+            tz,
+        )
 
         u_after_first_em = _electromagnetic_boris_step(
             x_tile,
@@ -261,9 +276,19 @@ def hybrid_boris_geodesic_push(
         u_after_first_em = jnp.where(active & update_x, u_after_first_em, u_tile)
         # a disabled direction freezes both its covariant velocity and coordinate
 
-        du_dt_n = geodesic_velocity(x_tile, u_after_first_em, metric_n)
+        du_dt_n = geodesic_velocity(
+            x_tile,
+            u_after_first_em,
+            metric_n,
+            grad_gamma_inv_n,
+        )
         u_geo_mid = u_after_first_em + 0.5 * dt * du_dt_n
-        du_dt_mid = geodesic_velocity(x_tile, u_geo_mid, metric_n)
+        du_dt_mid = geodesic_velocity(
+            x_tile,
+            u_geo_mid,
+            metric_n,
+            grad_gamma_inv_n,
+        )
         u_after_geodesic = u_after_first_em + dt * du_dt_mid
         u_after_geodesic = jnp.where(active & update_x, u_after_geodesic, u_tile)
         # midpoint geodesic velocity source at x^n; positions remain staggered until the velocity update is complete.

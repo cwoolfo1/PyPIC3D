@@ -1,20 +1,13 @@
+from functools import partial
+
 import jax.numpy as jnp
 
 from PyPIC3D.relativity.core import (
     B_FIELD_LOCATIONS,
     D_FIELD_LOCATIONS,
-    Metric,
     YeeMetric,
-    fill_metric_derivatives,
+    analytic_metric_on_grid,
 )
-
-
-def _coordinate_mesh(grid):
-    x_grid, y_grid, z_grid = grid
-    X = x_grid[..., :, jnp.newaxis, jnp.newaxis]
-    Y = y_grid[..., jnp.newaxis, :, jnp.newaxis]
-    Z = z_grid[..., jnp.newaxis, jnp.newaxis, :]
-    return jnp.broadcast_arrays(X, Y, Z)
 
 
 def _location_grid(location, dynamic_parameters):
@@ -26,18 +19,9 @@ def _location_grid(location, dynamic_parameters):
     )
 
 
-def _empty_derivative_arrays(shape, dtype):
-    return (
-        jnp.zeros(shape + (3, 3, 3), dtype=dtype),
-        jnp.zeros(shape + (3,), dtype=dtype),
-        jnp.zeros(shape + (3, 3), dtype=dtype),
-    )
-
-
-def _kerr_schild_cartesian_on_grid(grid, dynamic_parameters, mass=1.0, spin=0.0):
-    x, y, z = _coordinate_mesh(grid)
+def _kerr_schild_cartesian_metric_at_position(position, mass=1.0, spin=0.0):
+    x, y, z = position
     dtype = x.dtype
-    shape = x.shape
     eye = jnp.eye(3, dtype=dtype)
 
     a = spin
@@ -62,31 +46,19 @@ def _kerr_schild_cartesian_on_grid(grid, dynamic_parameters, mass=1.0, spin=0.0)
     H = mass * r**3 / (r**4 + a**2 * z**2)
     two_H = 2.0 * H
     lapse = 1.0 / jnp.sqrt(1.0 + two_H)
-    shift = (two_H / (1.0 + two_H))[..., jnp.newaxis] * ell
+    shift = (two_H / (1.0 + two_H)) * ell
 
     inverse_factor = two_H / (1.0 + two_H)
-    gamma = eye + two_H[..., jnp.newaxis, jnp.newaxis] * ell[..., :, jnp.newaxis] * ell[..., jnp.newaxis, :]
-    gamma_inv = eye - inverse_factor[..., jnp.newaxis, jnp.newaxis] * ell[..., :, jnp.newaxis] * ell[..., jnp.newaxis, :]
+    gamma = eye + two_H * ell[:, jnp.newaxis] * ell[jnp.newaxis, :]
+    gamma_inv = eye - inverse_factor * ell[:, jnp.newaxis] * ell[jnp.newaxis, :]
     sqrt_gamma = jnp.sqrt(1.0 + two_H)
-    christoffel, grad_lapse, grad_shift = _empty_derivative_arrays(shape, dtype)
 
-    metric = Metric(
-        lapse=lapse,
-        shift=shift,
-        gamma=gamma,
-        gamma_inv=gamma_inv,
-        sqrt_gamma=sqrt_gamma,
-        christoffel=christoffel,
-        grad_lapse=grad_lapse,
-        grad_shift=grad_shift,
-    )
-    return fill_metric_derivatives(metric, dynamic_parameters.dx, dynamic_parameters.dy, dynamic_parameters.dz)
+    return lapse, shift, gamma, gamma_inv, sqrt_gamma
 
 
-def _kerr_schild_spherical_on_grid(grid, dynamic_parameters, mass=1.0, spin=0.0):
-    r, theta, _ = _coordinate_mesh(grid)
+def _kerr_schild_spherical_metric_at_position(position, mass=1.0, spin=0.0):
+    r, theta, _ = position
     dtype = r.dtype
-    shape = r.shape
 
     a = spin
     sin_theta = jnp.sin(theta)
@@ -95,54 +67,68 @@ def _kerr_schild_spherical_on_grid(grid, dynamic_parameters, mass=1.0, spin=0.0)
     xi = 1.0 + 2.0 * mass * r / rho_squared
 
     lapse = xi**-0.5
-    shift = jnp.zeros(shape + (3,), dtype=dtype)
-    shift = shift.at[..., 0].set((xi - 1.0) / xi)
+    shift = jnp.zeros(3, dtype=dtype)
+    shift = shift.at[0].set((xi - 1.0) / xi)
 
-    gamma = jnp.zeros(shape + (3, 3), dtype=dtype)
-    gamma = gamma.at[..., 0, 0].set(xi)
-    gamma = gamma.at[..., 1, 1].set(rho_squared)
-    gamma = gamma.at[..., 2, 2].set(
+    gamma = jnp.zeros((3, 3), dtype=dtype)
+    gamma = gamma.at[0, 0].set(xi)
+    gamma = gamma.at[1, 1].set(rho_squared)
+    gamma = gamma.at[2, 2].set(
         sin_theta**2 * (rho_squared + a**2 * xi * sin_theta**2)
     )
-    gamma = gamma.at[..., 0, 2].set(-a * xi * sin_theta**2)
-    gamma = gamma.at[..., 2, 0].set(gamma[..., 0, 2])
+    gamma = gamma.at[0, 2].set(-a * xi * sin_theta**2)
+    gamma = gamma.at[2, 0].set(gamma[0, 2])
 
-    gamma_inv = jnp.zeros(shape + (3, 3), dtype=dtype)
-    gamma_inv = gamma_inv.at[..., 0, 0].set(1.0 / xi + a**2 * sin_theta**2 / rho_squared)
-    gamma_inv = gamma_inv.at[..., 1, 1].set(1.0 / rho_squared)
-    gamma_inv = gamma_inv.at[..., 2, 2].set(1.0 / (rho_squared * sin_theta**2))
-    gamma_inv = gamma_inv.at[..., 0, 2].set(a / rho_squared)
-    gamma_inv = gamma_inv.at[..., 2, 0].set(gamma_inv[..., 0, 2])
+    gamma_inv = jnp.zeros((3, 3), dtype=dtype)
+    gamma_inv = gamma_inv.at[0, 0].set(1.0 / xi + a**2 * sin_theta**2 / rho_squared)
+    gamma_inv = gamma_inv.at[1, 1].set(1.0 / rho_squared)
+    gamma_inv = gamma_inv.at[2, 2].set(1.0 / (rho_squared * sin_theta**2))
+    gamma_inv = gamma_inv.at[0, 2].set(a / rho_squared)
+    gamma_inv = gamma_inv.at[2, 0].set(gamma_inv[0, 2])
 
     sqrt_gamma = rho_squared * jnp.sqrt(xi) * sin_theta
-    christoffel, grad_lapse, grad_shift = _empty_derivative_arrays(shape, dtype)
 
-    metric = Metric(
-        lapse=lapse,
-        shift=shift,
-        gamma=gamma,
-        gamma_inv=gamma_inv,
-        sqrt_gamma=sqrt_gamma,
-        christoffel=christoffel,
-        grad_lapse=grad_lapse,
-        grad_shift=grad_shift,
-    )
-    return fill_metric_derivatives(metric, dynamic_parameters.dx, dynamic_parameters.dy, dynamic_parameters.dz)
+    return lapse, shift, gamma, gamma_inv, sqrt_gamma
 
 
-def _build_yee_metric(static_parameters, dynamic_parameters, metric_on_grid, mass=1.0, spin=0.0):
+def _build_yee_metric(static_parameters, dynamic_parameters, metric_at_position, mass=1.0, spin=0.0):
     del static_parameters
+    metric_at_position = partial(
+        metric_at_position,
+        mass=mass,
+        spin=spin,
+    )
+
     D = tuple(
-        metric_on_grid(_location_grid(location, dynamic_parameters), dynamic_parameters, mass=mass, spin=spin)
+        analytic_metric_on_grid(
+            _location_grid(location, dynamic_parameters),
+            metric_at_position,
+        )[0]
         for location in D_FIELD_LOCATIONS
     )
     B = tuple(
-        metric_on_grid(_location_grid(location, dynamic_parameters), dynamic_parameters, mass=mass, spin=spin)
+        analytic_metric_on_grid(
+            _location_grid(location, dynamic_parameters),
+            metric_at_position,
+        )[0]
         for location in B_FIELD_LOCATIONS
     )
-    center = metric_on_grid(dynamic_parameters.grids.tiled_center_grid, dynamic_parameters, mass=mass, spin=spin)
-    vertex = metric_on_grid(dynamic_parameters.grids.tiled_vertex_grid, dynamic_parameters, mass=mass, spin=spin)
-    return YeeMetric(D=D, B=B, center=center, vertex=vertex)
+    center, center_grad_gamma_inv = analytic_metric_on_grid(
+        dynamic_parameters.grids.tiled_center_grid,
+        metric_at_position,
+    )
+    vertex, _ = analytic_metric_on_grid(
+        dynamic_parameters.grids.tiled_vertex_grid,
+        metric_at_position,
+    )
+
+    return YeeMetric(
+        D=D,
+        B=B,
+        center=center,
+        vertex=vertex,
+        center_grad_gamma_inv=center_grad_gamma_inv,
+    )
 
 
 def initialize_kerr_schild_cartesian_metric(static_parameters, dynamic_parameters, mass=1.0, spin=0.0):
@@ -153,7 +139,7 @@ def initialize_kerr_schild_cartesian_metric(static_parameters, dynamic_parameter
     return _build_yee_metric(
         static_parameters,
         dynamic_parameters,
-        _kerr_schild_cartesian_on_grid,
+        _kerr_schild_cartesian_metric_at_position,
         mass=mass,
         spin=spin,
     )
@@ -167,7 +153,7 @@ def initialize_kerr_schild_spherical_metric(static_parameters, dynamic_parameter
     return _build_yee_metric(
         static_parameters,
         dynamic_parameters,
-        _kerr_schild_spherical_on_grid,
+        _kerr_schild_spherical_metric_at_position,
         mass=mass,
         spin=spin,
     )

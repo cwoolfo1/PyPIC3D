@@ -1,5 +1,6 @@
 from typing import NamedTuple
 
+import jax
 import jax.numpy as jnp
 
 
@@ -41,6 +42,7 @@ class YeeMetric(NamedTuple):
     B: tuple
     center: Metric
     vertex: Metric
+    center_grad_gamma_inv: object
 
 
 def covariant_lorentz_factor(u_cov, gamma_inv):
@@ -84,6 +86,94 @@ def centered_metric_gradient(field, dx, dy, dz):
             / (2.0 * spacing)
         )
     return jnp.stack(gradients, axis=-1)
+
+
+def centered_inverse_metric_gradient(gamma_inv, dx, dy, dz):
+    """
+    Return ``partial_i gamma^{jk}`` on a metric grid.
+
+    The derivative index is stored first in the trailing tensor dimensions,
+    giving the layout ``[..., i, j, k]`` used by the Hamiltonian geodesic
+    force.
+    """
+
+    component_rows = []
+    for j in range(3):
+        component_columns = []
+        for k in range(3):
+            component_columns.append(
+                centered_metric_gradient(gamma_inv[..., j, k], dx, dy, dz)
+            )
+        component_rows.append(jnp.stack(tuple(component_columns), axis=-2))
+
+    grad_gamma_inv_jki = jnp.stack(tuple(component_rows), axis=-3)
+    return jnp.moveaxis(grad_gamma_inv_jki, -1, -3)
+
+
+def analytic_metric_on_grid(grid, metric_at_position):
+    """
+    Evaluate an analytic spatial metric and its derivatives on a tiled grid.
+
+    ``metric_at_position`` returns ``(lapse, shift, gamma, gamma_inv,
+    sqrt_gamma)`` for one coordinate position.  Forward-mode automatic
+    differentiation supplies derivatives with respect to those coordinates.
+    """
+
+    x_grid, y_grid, z_grid = grid
+    X = x_grid[..., :, jnp.newaxis, jnp.newaxis]
+    Y = y_grid[..., jnp.newaxis, :, jnp.newaxis]
+    Z = z_grid[..., jnp.newaxis, jnp.newaxis, :]
+    X, Y, Z = jnp.broadcast_arrays(X, Y, Z)
+
+    grid_shape = X.shape
+    positions = jnp.stack((X, Y, Z), axis=-1).reshape((-1, 3))
+
+    def differentiable_metric(position):
+        metric_values = metric_at_position(position)
+        return metric_values[:4], metric_values
+
+    metric_jacobian, metric_values = jax.vmap(
+        jax.jacfwd(differentiable_metric, has_aux=True)
+    )(positions)
+    lapse, shift, gamma, gamma_inv, sqrt_gamma = metric_values
+    grad_lapse, grad_shift, grad_gamma, grad_gamma_inv = metric_jacobian
+
+    lapse = lapse.reshape(grid_shape)
+    shift = shift.reshape(grid_shape + (3,))
+    gamma = gamma.reshape(grid_shape + (3, 3))
+    gamma_inv = gamma_inv.reshape(grid_shape + (3, 3))
+    sqrt_gamma = sqrt_gamma.reshape(grid_shape)
+    grad_lapse = grad_lapse.reshape(grid_shape + (3,))
+    grad_shift = grad_shift.reshape(grid_shape + (3, 3))
+    grad_gamma = grad_gamma.reshape(grid_shape + (3, 3, 3))
+    grad_gamma_inv = grad_gamma_inv.reshape(grid_shape + (3, 3, 3))
+
+    christoffel = jnp.zeros(grid_shape + (3, 3, 3), dtype=gamma.dtype)
+    for k in range(3):
+        for i in range(3):
+            for j in range(3):
+                value = 0.0
+                for l in range(3):
+                    value = value + gamma_inv[..., k, l] * (
+                        grad_gamma[..., l, j, i]
+                        + grad_gamma[..., l, i, j]
+                        - grad_gamma[..., i, j, l]
+                    )
+                christoffel = christoffel.at[..., k, i, j].set(0.5 * value)
+
+    metric = Metric(
+        lapse=lapse,
+        shift=shift,
+        gamma=gamma,
+        gamma_inv=gamma_inv,
+        sqrt_gamma=sqrt_gamma,
+        christoffel=christoffel,
+        grad_lapse=grad_lapse,
+        grad_shift=grad_shift,
+    )
+    # jacfwd returns ``[..., component_j, component_k, derivative_i]``.
+    grad_gamma_inv = jnp.moveaxis(grad_gamma_inv, -1, -3)
+    return metric, grad_gamma_inv
 
 
 def fill_metric_derivatives(metric, dx, dy, dz):

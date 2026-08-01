@@ -3,18 +3,9 @@ import jax.numpy as jnp
 from PyPIC3D.relativity.core import (
     B_FIELD_LOCATIONS,
     D_FIELD_LOCATIONS,
-    Metric,
     YeeMetric,
-    fill_metric_derivatives,
+    analytic_metric_on_grid,
 )
-
-
-def _coordinate_mesh(grid):
-    x_grid, y_grid, z_grid = grid
-    X = x_grid[..., :, jnp.newaxis, jnp.newaxis]
-    Y = y_grid[..., jnp.newaxis, :, jnp.newaxis]
-    Z = z_grid[..., jnp.newaxis, jnp.newaxis, :]
-    return jnp.broadcast_arrays(X, Y, Z)
 
 
 def _location_grid(location, dynamic_parameters):
@@ -26,114 +17,88 @@ def _location_grid(location, dynamic_parameters):
     )
 
 
-def _zeros_like_metric_derivatives(shape, dtype):
-    return (
-        jnp.zeros(shape + (3, 3, 3), dtype=dtype),
-        jnp.zeros(shape + (3,), dtype=dtype),
-        jnp.zeros(shape + (3, 3), dtype=dtype),
-    )
-
-
-def _metric_from_diagonal(gamma_diag, sqrt_gamma):
-    shape = gamma_diag.shape[:-1]
+def _metric_terms_from_diagonal(gamma_diag, sqrt_gamma):
     dtype = gamma_diag.dtype
     eye = jnp.eye(3, dtype=dtype)
 
-    gamma = gamma_diag[..., :, jnp.newaxis] * eye
+    gamma = gamma_diag[:, jnp.newaxis] * eye
     gamma_inv_diag = 1.0 / gamma_diag
-    gamma_inv = gamma_inv_diag[..., :, jnp.newaxis] * eye
+    gamma_inv = gamma_inv_diag[:, jnp.newaxis] * eye
 
-    lapse = jnp.ones(shape, dtype=dtype)
-    shift = jnp.zeros(shape + (3,), dtype=dtype)
-    christoffel, grad_lapse, grad_shift = _zeros_like_metric_derivatives(shape, dtype)
-
-    return Metric(
-        lapse=lapse,
-        shift=shift,
-        gamma=gamma,
-        gamma_inv=gamma_inv,
-        sqrt_gamma=sqrt_gamma,
-        christoffel=christoffel,
-        grad_lapse=grad_lapse,
-        grad_shift=grad_shift,
+    return (
+        jnp.asarray(1.0, dtype=dtype),
+        jnp.zeros(3, dtype=dtype),
+        gamma,
+        gamma_inv,
+        sqrt_gamma,
     )
 
 
-def _flat_cartesian_metric_on_grid(grid):
-    X, _, _ = _coordinate_mesh(grid)
-    gamma_diag = jnp.ones(X.shape + (3,), dtype=X.dtype)
-    sqrt_gamma = jnp.ones_like(X)
-    return _metric_from_diagonal(gamma_diag, sqrt_gamma)
+def _flat_cartesian_metric_at_position(position):
+    gamma_diag = jnp.ones(3, dtype=position.dtype)
+    sqrt_gamma = jnp.asarray(1.0, dtype=position.dtype)
+    return _metric_terms_from_diagonal(gamma_diag, sqrt_gamma)
 
 
-def _flat_cylindrical_metric_on_grid(grid):
-    R, _, _ = _coordinate_mesh(grid)
-    gamma_diag = jnp.stack(
+def _flat_cylindrical_metric_at_position(position):
+    R = position[0]
+    gamma_diag = jnp.asarray(
         (
-            jnp.ones_like(R),
+            1.0,
             R**2,
-            jnp.ones_like(R),
+            1.0,
         ),
-        axis=-1,
+        dtype=position.dtype,
     )
-    sqrt_gamma = R
-    return _metric_from_diagonal(gamma_diag, sqrt_gamma)
+    return _metric_terms_from_diagonal(gamma_diag, R)
 
 
-def _flat_spherical_metric_on_grid(grid):
-    R, theta, _ = _coordinate_mesh(grid)
+def _flat_spherical_metric_at_position(position):
+    R, theta, _ = position
     sin_theta = jnp.sin(theta)
-    gamma_diag = jnp.stack(
+    gamma_diag = jnp.asarray(
         (
-            jnp.ones_like(R),
+            1.0,
             R**2,
             R**2 * sin_theta**2,
         ),
-        axis=-1,
+        dtype=position.dtype,
     )
     sqrt_gamma = R**2 * sin_theta
-    return _metric_from_diagonal(gamma_diag, sqrt_gamma)
+    return _metric_terms_from_diagonal(gamma_diag, sqrt_gamma)
 
 
-def _maybe_fill_derivatives(metric, dynamic_parameters, fill_derivatives):
-    if not fill_derivatives:
-        return metric
-    return fill_metric_derivatives(
-        metric,
-        dynamic_parameters.dx,
-        dynamic_parameters.dy,
-        dynamic_parameters.dz,
-    )
-
-
-def _build_yee_metric(dynamic_parameters, metric_on_grid, fill_derivatives=False):
+def _build_yee_metric(dynamic_parameters, metric_at_position):
     D = tuple(
-        _maybe_fill_derivatives(
-            metric_on_grid(_location_grid(location, dynamic_parameters)),
-            dynamic_parameters,
-            fill_derivatives,
-        )
+        analytic_metric_on_grid(
+            _location_grid(location, dynamic_parameters),
+            metric_at_position,
+        )[0]
         for location in D_FIELD_LOCATIONS
     )
     B = tuple(
-        _maybe_fill_derivatives(
-            metric_on_grid(_location_grid(location, dynamic_parameters)),
-            dynamic_parameters,
-            fill_derivatives,
-        )
+        analytic_metric_on_grid(
+            _location_grid(location, dynamic_parameters),
+            metric_at_position,
+        )[0]
         for location in B_FIELD_LOCATIONS
     )
-    center = _maybe_fill_derivatives(
-        metric_on_grid(dynamic_parameters.grids.tiled_center_grid),
-        dynamic_parameters,
-        fill_derivatives,
+    center, center_grad_gamma_inv = analytic_metric_on_grid(
+        dynamic_parameters.grids.tiled_center_grid,
+        metric_at_position,
     )
-    vertex = _maybe_fill_derivatives(
-        metric_on_grid(dynamic_parameters.grids.tiled_vertex_grid),
-        dynamic_parameters,
-        fill_derivatives,
+    vertex, _ = analytic_metric_on_grid(
+        dynamic_parameters.grids.tiled_vertex_grid,
+        metric_at_position,
     )
-    return YeeMetric(D=D, B=B, center=center, vertex=vertex)
+
+    return YeeMetric(
+        D=D,
+        B=B,
+        center=center,
+        vertex=vertex,
+        center_grad_gamma_inv=center_grad_gamma_inv,
+    )
 
 
 def initialize_flat_cartesian_metric(static_parameters, dynamic_parameters):
@@ -142,7 +107,7 @@ def initialize_flat_cartesian_metric(static_parameters, dynamic_parameters):
     """
 
     del static_parameters
-    return _build_yee_metric(dynamic_parameters, _flat_cartesian_metric_on_grid)
+    return _build_yee_metric(dynamic_parameters, _flat_cartesian_metric_at_position)
 
 
 def initialize_flat_cylindrical_metric(static_parameters, dynamic_parameters):
@@ -153,8 +118,7 @@ def initialize_flat_cylindrical_metric(static_parameters, dynamic_parameters):
     del static_parameters
     return _build_yee_metric(
         dynamic_parameters,
-        _flat_cylindrical_metric_on_grid,
-        fill_derivatives=True,
+        _flat_cylindrical_metric_at_position,
     )
 
 
@@ -166,6 +130,5 @@ def initialize_flat_spherical_metric(static_parameters, dynamic_parameters):
     del static_parameters
     return _build_yee_metric(
         dynamic_parameters,
-        _flat_spherical_metric_on_grid,
-        fill_derivatives=True,
+        _flat_spherical_metric_at_position,
     )

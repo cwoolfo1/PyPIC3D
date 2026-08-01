@@ -108,8 +108,10 @@ def test_flat_cartesian_metric_matches_center_grid_shape():
 
     assert metric.center.lapse.shape == shape
     assert metric.center.gamma_inv.shape == shape + (3, 3)
+    assert metric.center_grad_gamma_inv.shape == shape + (3, 3, 3)
     assert jnp.allclose(metric.center.lapse, 1.0)
     assert jnp.allclose(metric.center.gamma_inv[..., 0, 0], 1.0)
+    assert jnp.all(jnp.isfinite(metric.center_grad_gamma_inv))
     assert jnp.allclose(metric.center.sqrt_gamma, 1.0)
 
 
@@ -146,9 +148,13 @@ def test_kerr_schild_metric_initializers_build_finite_derivatives():
     assert jnp.all(jnp.isfinite(cartesian.center.christoffel))
     assert jnp.all(jnp.isfinite(cartesian.center.grad_lapse))
     assert jnp.all(jnp.isfinite(cartesian.center.grad_shift))
+    assert cartesian.center_grad_gamma_inv.shape == cartesian.center.lapse.shape + (3, 3, 3)
+    assert jnp.all(jnp.isfinite(cartesian.center_grad_gamma_inv))
     assert jnp.all(jnp.isfinite(spherical.center.christoffel))
     assert jnp.all(jnp.isfinite(spherical.center.grad_lapse))
     assert jnp.all(jnp.isfinite(spherical.center.grad_shift))
+    assert spherical.center_grad_gamma_inv.shape == spherical.center.lapse.shape + (3, 3, 3)
+    assert jnp.all(jnp.isfinite(spherical.center_grad_gamma_inv))
 
 
 def test_flat_cylindrical_metric_fills_nonzero_christoffels():
@@ -302,8 +308,14 @@ def test_geodesic_velocity_returns_zero_for_flat_constant_metric():
         grad_shift=jnp.zeros((3, 3)),
     )
     u_cov = jnp.asarray((0.4, -0.2, 0.1))
+    grad_gamma_inv = jnp.zeros((3, 3, 3))
 
-    du_dt = geodesic_velocity(jnp.asarray((0.0, 0.0, 0.0)), u_cov, metric)
+    du_dt = geodesic_velocity(
+        jnp.asarray((0.0, 0.0, 0.0)),
+        u_cov,
+        metric,
+        grad_gamma_inv,
+    )
 
     assert du_dt.shape == u_cov.shape
     np.testing.assert_allclose(np.asarray(du_dt), np.zeros(3), rtol=0.0, atol=1.0e-12)
