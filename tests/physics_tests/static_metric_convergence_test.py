@@ -433,6 +433,8 @@ class TestStaticMetricConvergence(unittest.TestCase):
             0,
             0,
             0,
+            (True, True, False),
+            (static_parameters.guard_cells,) * 3,
         )
         sampled_grad_gamma_inv = _sample_center_grad_gamma_inv_at_position(
             position,
@@ -442,6 +444,8 @@ class TestStaticMetricConvergence(unittest.TestCase):
             0,
             0,
             0,
+            (True, True, False),
+            (static_parameters.guard_cells,) * 3,
         )
         du_dt = geodesic_velocity(
             position,

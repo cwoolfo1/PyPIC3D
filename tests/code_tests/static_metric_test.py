@@ -412,6 +412,8 @@ def test_hybrid_boris_geodesic_push_uses_current_position_for_both_electric_half
         x_n[2:3],
         D_grid,
         static_parameters.shape_factor,
+        (True, True, True),
+        (static_parameters.guard_cells,) * 3,
     )[0]
     expected_u = u_n_minushalf + dynamic_parameters.dt * jnp.asarray((D_at_x_n, 0.0, 0.0))
     expected_dx_dt = expected_u / jnp.sqrt(1.0 + jnp.dot(expected_u, expected_u))

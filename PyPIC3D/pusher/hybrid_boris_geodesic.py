@@ -24,9 +24,19 @@ def _metric_component_grid(location, dynamic_parameters, tx, ty, tz):
     )
 
 
-def _sample_scalar(field, x, y, z, grid, shape_factor):
+def _sample_scalar(
+    field,
+    x,
+    y,
+    z,
+    grid,
+    shape_factor,
+    active_axes,
+    inactive_axis_indices,
+):
     particle_shape = x.shape
-    return interpolate_field_to_particles(
+    component_shape = field.shape[3:]
+    sampled_field = interpolate_field_to_particles(
         field,
         x.reshape(-1),
         y.reshape(-1),
@@ -34,49 +44,147 @@ def _sample_scalar(field, x, y, z, grid, shape_factor):
         grid,
         shape_factor,
         ghost_cells=True,
-    ).reshape(particle_shape)
-
-
-def _sample_vector(field, x, y, z, grids, shape_factor):
-    return jnp.stack(
-        tuple(_sample_scalar(field[i], x, y, z, grids[i], shape_factor) for i in range(3)),
-        axis=-1,
+        active_axes=active_axes,
+        inactive_axis_indices=inactive_axis_indices,
     )
+    return sampled_field.reshape(particle_shape + component_shape)
 
 
-def _sample_tensor(field, x, y, z, grid, shape_factor):
-    rows = []
-    for i in range(3):
-        columns = []
-        for j in range(3):
-            columns.append(_sample_scalar(field[..., i, j], x, y, z, grid, shape_factor))
-        rows.append(jnp.stack(tuple(columns), axis=-1))
-    return jnp.stack(tuple(rows), axis=-2)
+def _sample_vector(
+    field,
+    x,
+    y,
+    z,
+    grids,
+    shape_factor,
+    active_axes,
+    inactive_axis_indices,
+):
+    fields = jnp.stack(field, axis=0)
+    x_grids = jnp.stack((grids[0][0], grids[1][0], grids[2][0]), axis=0)
+    y_grids = jnp.stack((grids[0][1], grids[1][1], grids[2][1]), axis=0)
+    z_grids = jnp.stack((grids[0][2], grids[1][2], grids[2][2]), axis=0)
+
+    def sample_component(component_field, x_grid, y_grid, z_grid):
+        return _sample_scalar(
+            component_field,
+            x,
+            y,
+            z,
+            (x_grid, y_grid, z_grid),
+            shape_factor,
+            active_axes,
+            inactive_axis_indices,
+        )
+
+    sampled_components = jax.vmap(sample_component)(
+        fields,
+        x_grids,
+        y_grids,
+        z_grids,
+    )
+    return jnp.moveaxis(sampled_components, 0, -1)
 
 
-def _sample_rank3(field, x, y, z, grid, shape_factor):
-    planes = []
-    for i in range(3):
-        rows = []
-        for j in range(3):
-            columns = []
-            for k in range(3):
-                columns.append(_sample_scalar(field[..., i, j, k], x, y, z, grid, shape_factor))
-            rows.append(jnp.stack(tuple(columns), axis=-1))
-        planes.append(jnp.stack(tuple(rows), axis=-2))
-    return jnp.stack(tuple(planes), axis=-3)
+def _sample_metric(
+    metric,
+    x,
+    y,
+    z,
+    grid,
+    shape_factor,
+    metric_name,
+    active_axes,
+    inactive_axis_indices,
+):
+    gamma = _sample_scalar(
+        metric.gamma,
+        x,
+        y,
+        z,
+        grid,
+        shape_factor,
+        active_axes,
+        inactive_axis_indices,
+    )
+    gamma_inv = jnp.linalg.inv(gamma)
+    sqrt_gamma_magnitude = jnp.sqrt(jnp.linalg.det(gamma))
 
+    # gamma fixes the determinant magnitude.  The particle coordinate fixes
+    # the orientation of cylindrical and full-theta spherical charts.
+    position = jnp.stack((x, y, z), axis=-1)
+    is_cylindrical = metric_name == "flat_cylindrical"
+    is_spherical = metric_name in (
+        "flat_spherical",
+        "kerr_schild_spherical",
+    )
+    orientation_source = jax.lax.cond(
+        jnp.asarray(is_cylindrical),
+        lambda position: position[..., 0],
+        lambda position: jax.lax.cond(
+            jnp.asarray(is_spherical),
+            lambda position: jnp.sin(position[..., 1]),
+            lambda position: jnp.ones_like(position[..., 0]),
+            position,
+        ),
+        position,
+    )
+    sqrt_gamma = jnp.copysign(sqrt_gamma_magnitude, orientation_source)
 
-def _sample_metric(metric, x, y, z, grid, shape_factor):
     return Metric(
-        lapse=_sample_scalar(metric.lapse, x, y, z, grid, shape_factor),
-        shift=_sample_vector(tuple(metric.shift[..., i] for i in range(3)), x, y, z, (grid, grid, grid), shape_factor),
-        gamma=_sample_tensor(metric.gamma, x, y, z, grid, shape_factor),
-        gamma_inv=_sample_tensor(metric.gamma_inv, x, y, z, grid, shape_factor),
-        sqrt_gamma=_sample_scalar(metric.sqrt_gamma, x, y, z, grid, shape_factor),
-        christoffel=_sample_rank3(metric.christoffel, x, y, z, grid, shape_factor),
-        grad_lapse=_sample_vector(tuple(metric.grad_lapse[..., i] for i in range(3)), x, y, z, (grid, grid, grid), shape_factor),
-        grad_shift=_sample_tensor(metric.grad_shift, x, y, z, grid, shape_factor),
+        lapse=_sample_scalar(
+            metric.lapse,
+            x,
+            y,
+            z,
+            grid,
+            shape_factor,
+            active_axes,
+            inactive_axis_indices,
+        ),
+        shift=_sample_scalar(
+            metric.shift,
+            x,
+            y,
+            z,
+            grid,
+            shape_factor,
+            active_axes,
+            inactive_axis_indices,
+        ),
+        gamma=gamma,
+        gamma_inv=gamma_inv,
+        sqrt_gamma=sqrt_gamma,
+        christoffel=_sample_scalar(
+            metric.christoffel,
+            x,
+            y,
+            z,
+            grid,
+            shape_factor,
+            active_axes,
+            inactive_axis_indices,
+        ),
+        grad_lapse=_sample_scalar(
+            metric.grad_lapse,
+            x,
+            y,
+            z,
+            grid,
+            shape_factor,
+            active_axes,
+            inactive_axis_indices,
+        ),
+        grad_shift=_sample_scalar(
+            metric.grad_shift,
+            x,
+            y,
+            z,
+            grid,
+            shape_factor,
+            active_axes,
+            inactive_axis_indices,
+        ),
     )
 
 
@@ -136,7 +244,22 @@ def _magnetic_boris_rotation(u_minus, B_con, metric, q_over_m, dt):
     return u_minus + metric.sqrt_gamma[..., jnp.newaxis] * jnp.cross(u_prime_con, s_con)
 
 
-def _electromagnetic_boris_step(position, u_cov, q_over_m, D_tiles, B_tiles, metric_tiles, static_parameters, dynamic_parameters, tx, ty, tz, dt):
+def _electromagnetic_boris_step(
+    position,
+    u_cov,
+    q_over_m,
+    D_tiles,
+    B_tiles,
+    metric_tiles,
+    static_parameters,
+    dynamic_parameters,
+    tx,
+    ty,
+    tz,
+    dt,
+    active_axes,
+    inactive_axis_indices,
+):
     shape_factor = static_parameters.shape_factor
     x = position[..., 0]
     y = position[..., 1]
@@ -159,6 +282,8 @@ def _electromagnetic_boris_step(position, u_cov, q_over_m, D_tiles, B_tiles, met
         z,
         D_grids,
         shape_factor,
+        active_axes,
+        inactive_axis_indices,
     )
     B_con = _sample_vector(
         tuple(B_tiles[i][tx, ty, tz] for i in range(3)),
@@ -167,8 +292,20 @@ def _electromagnetic_boris_step(position, u_cov, q_over_m, D_tiles, B_tiles, met
         z,
         B_grids,
         shape_factor,
+        active_axes,
+        inactive_axis_indices,
     )
-    metric = _sample_metric(_metric_tile(metric_tiles.center, tx, ty, tz), x, y, z, center_grid, shape_factor)
+    metric = _sample_metric(
+        _metric_tile(metric_tiles.center, tx, ty, tz),
+        x,
+        y,
+        z,
+        center_grid,
+        shape_factor,
+        static_parameters.metric,
+        active_axes,
+        inactive_axis_indices,
+    )
     E_cov = lower_vector(D_con, metric.gamma)
 
     u_minus = u_cov + (q_over_m * dt / 2.0)[..., jnp.newaxis] * metric.lapse[..., jnp.newaxis] * E_cov
@@ -178,7 +315,17 @@ def _electromagnetic_boris_step(position, u_cov, q_over_m, D_tiles, B_tiles, met
     return u_new
 
 
-def _sample_center_metric_at_position(position, metric_tiles, static_parameters, dynamic_parameters, tx, ty, tz):
+def _sample_center_metric_at_position(
+    position,
+    metric_tiles,
+    static_parameters,
+    dynamic_parameters,
+    tx,
+    ty,
+    tz,
+    active_axes,
+    inactive_axis_indices,
+):
     shape_factor = static_parameters.shape_factor
     center_grid = _metric_component_grid(("C", "C", "C"), dynamic_parameters, tx, ty, tz)
 
@@ -189,6 +336,9 @@ def _sample_center_metric_at_position(position, metric_tiles, static_parameters,
         position[..., 2],
         center_grid,
         shape_factor,
+        static_parameters.metric,
+        active_axes,
+        inactive_axis_indices,
     )
 
 
@@ -200,17 +350,21 @@ def _sample_center_grad_gamma_inv_at_position(
     tx,
     ty,
     tz,
+    active_axes,
+    inactive_axis_indices,
 ):
     shape_factor = static_parameters.shape_factor
     center_grid = _metric_component_grid(("C", "C", "C"), dynamic_parameters, tx, ty, tz)
 
-    return _sample_rank3(
+    return _sample_scalar(
         metric_tiles.center_grad_gamma_inv[tx, ty, tz],
         position[..., 0],
         position[..., 1],
         position[..., 2],
         center_grid,
         shape_factor,
+        active_axes,
+        inactive_axis_indices,
     )
 
 
@@ -231,8 +385,19 @@ def hybrid_boris_geodesic_push(
     covariant spatial velocity components ``u_i``.
     """
 
+    tile_nx, tile_ny, tile_nz = tuple(
+        int(width) for width in static_parameters.tile_shape
+    )
+    g = int(static_parameters.guard_cells)
     dt = dynamic_parameters.dt
     ntx, nty, ntz = particles.active.shape[:3]
+    active_axes = (
+        int(ntx) * tile_nx > 1,
+        int(nty) * tile_ny > 1,
+        int(ntz) * tile_nz > 1,
+    )
+    # A width-one local tile remains physical when other tiles extend the axis.
+    inactive_axis_indices = (g, g, g)
     q_over_m = species_config.charge / species_config.mass
     q_over_m = q_over_m.reshape((species_config.charge.shape[0], 1))
     update_x = species_config.update_x.reshape((species_config.update_x.shape[0], 1, 3))
@@ -248,6 +413,8 @@ def hybrid_boris_geodesic_push(
             tx,
             ty,
             tz,
+            active_axes,
+            inactive_axis_indices,
         )
         grad_gamma_inv_n = _sample_center_grad_gamma_inv_at_position(
             x_tile,
@@ -257,6 +424,8 @@ def hybrid_boris_geodesic_push(
             tx,
             ty,
             tz,
+            active_axes,
+            inactive_axis_indices,
         )
 
         u_after_first_em = _electromagnetic_boris_step(
@@ -272,6 +441,8 @@ def hybrid_boris_geodesic_push(
             ty,
             tz,
             dt / 2.0,
+            active_axes,
+            inactive_axis_indices,
         )
         u_after_first_em = jnp.where(active & update_x, u_after_first_em, u_tile)
         # a disabled direction freezes both its covariant velocity and coordinate
@@ -306,6 +477,8 @@ def hybrid_boris_geodesic_push(
             ty,
             tz,
             dt / 2.0,
+            active_axes,
+            inactive_axis_indices,
         )
         u_new = jnp.where(active & update_x, u_new, u_tile)
         # second half of the electromagnetic Boris step, reinterpolated at the same x^n position.
@@ -326,6 +499,8 @@ def hybrid_boris_geodesic_push(
             tx,
             ty,
             tz,
+            active_axes,
+            inactive_axis_indices,
         )
         dx_dt_half = GR_position_update(
             x_half,
