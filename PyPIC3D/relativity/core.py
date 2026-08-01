@@ -72,9 +72,35 @@ def lower_vector(vector_con, gamma):
     return jnp.einsum("...ij,...j->...i", gamma, vector_con)
 
 
+@jax.jit
+def _christoffel_from_metric_gradient(gamma_inv, grad_gamma):
+    """
+    Compute ``Gamma^k_ij`` from ``gamma^kl`` and ``partial_i gamma_lj``.
+
+    ``grad_gamma`` stores the metric component indices first and the
+    derivative index last, ``[..., l, j, i]``.  The returned Christoffel
+    symbols use the layout ``[..., k, i, j]``.
+    """
+
+    metric_derivative = (
+        jnp.swapaxes(grad_gamma, -1, -2)
+        + grad_gamma
+        - jnp.moveaxis(grad_gamma, -1, -3)
+    )
+    return 0.5 * jnp.einsum(
+        "...kl,...lij->...kij",
+        gamma_inv,
+        metric_derivative,
+    )
+
+
 def centered_metric_gradient(field, dx, dy, dz):
     """
     Central differences on tile-local metric arrays including guard cells.
+
+    Spatial tile axes are stored at positions 3, 4, and 5.  Any trailing
+    vector or tensor component axes are preserved, and the derivative index
+    is appended as the final axis.
     """
 
     spacings = (dx, dy, dz)
@@ -97,16 +123,7 @@ def centered_inverse_metric_gradient(gamma_inv, dx, dy, dz):
     force.
     """
 
-    component_rows = []
-    for j in range(3):
-        component_columns = []
-        for k in range(3):
-            component_columns.append(
-                centered_metric_gradient(gamma_inv[..., j, k], dx, dy, dz)
-            )
-        component_rows.append(jnp.stack(tuple(component_columns), axis=-2))
-
-    grad_gamma_inv_jki = jnp.stack(tuple(component_rows), axis=-3)
+    grad_gamma_inv_jki = centered_metric_gradient(gamma_inv, dx, dy, dz)
     return jnp.moveaxis(grad_gamma_inv_jki, -1, -3)
 
 
@@ -148,18 +165,7 @@ def analytic_metric_on_grid(grid, metric_at_position):
     grad_gamma = grad_gamma.reshape(grid_shape + (3, 3, 3))
     grad_gamma_inv = grad_gamma_inv.reshape(grid_shape + (3, 3, 3))
 
-    christoffel = jnp.zeros(grid_shape + (3, 3, 3), dtype=gamma.dtype)
-    for k in range(3):
-        for i in range(3):
-            for j in range(3):
-                value = 0.0
-                for l in range(3):
-                    value = value + gamma_inv[..., k, l] * (
-                        grad_gamma[..., l, j, i]
-                        + grad_gamma[..., l, i, j]
-                        - grad_gamma[..., i, j, l]
-                    )
-                christoffel = christoffel.at[..., k, i, j].set(0.5 * value)
+    christoffel = _christoffel_from_metric_gradient(gamma_inv, grad_gamma)
 
     metric = Metric(
         lapse=lapse,
@@ -182,31 +188,10 @@ def fill_metric_derivatives(metric, dx, dy, dz):
     """
 
     grad_lapse = centered_metric_gradient(metric.lapse, dx, dy, dz)
-    grad_shift = jnp.stack(
-        [centered_metric_gradient(metric.shift[..., i], dx, dy, dz) for i in range(3)],
-        axis=-2,
-    )
+    grad_shift = centered_metric_gradient(metric.shift, dx, dy, dz)
+    grad_gamma = centered_metric_gradient(metric.gamma, dx, dy, dz)
 
-    grad_gamma_rows = []
-    for i in range(3):
-        row = []
-        for j in range(3):
-            row.append(centered_metric_gradient(metric.gamma[..., i, j], dx, dy, dz))
-        grad_gamma_rows.append(jnp.stack(tuple(row), axis=-2))
-    grad_gamma = jnp.stack(tuple(grad_gamma_rows), axis=-3)
-
-    christoffel = jnp.zeros_like(metric.christoffel)
-    for k in range(3):
-        for i in range(3):
-            for j in range(3):
-                term = 0.0
-                for l in range(3):
-                    term = term + metric.gamma_inv[..., k, l] * (
-                        grad_gamma[..., l, j, i]
-                        + grad_gamma[..., l, i, j]
-                        - grad_gamma[..., i, j, l]
-                    )
-                christoffel = christoffel.at[..., k, i, j].set(0.5 * term)
+    christoffel = _christoffel_from_metric_gradient(metric.gamma_inv, grad_gamma)
 
     return metric._replace(
         christoffel=christoffel,
