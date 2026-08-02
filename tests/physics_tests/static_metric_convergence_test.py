@@ -5,6 +5,7 @@ import jax
 import jax.numpy as jnp
 
 from PyPIC3D.particles.particle_class import SpeciesConfig, TiledParticles
+from PyPIC3D.pusher.boris import interpolate_field_to_particles
 from PyPIC3D.pusher.hybrid_boris_geodesic import (
     _sample_center_grad_gamma_inv_at_position,
     _sample_center_metric_at_position,
@@ -425,6 +426,8 @@ class TestStaticMetricConvergence(unittest.TestCase):
 
         position = jnp.asarray((10.6498, 0.5 * math.pi, 0.0))
         u_cov = jnp.asarray((0.1891441241525076, 0.0, 2.0))
+        active_axes = (True, True, False)
+        inactive_axis_indices = (static_parameters.guard_cells,) * 3
         sampled_metric = _sample_center_metric_at_position(
             position,
             metric,
@@ -433,8 +436,44 @@ class TestStaticMetricConvergence(unittest.TestCase):
             0,
             0,
             0,
-            (True, True, False),
-            (static_parameters.guard_cells,) * 3,
+            active_axes,
+            inactive_axis_indices,
+        )
+        center_grid = tuple(
+            axis[0, 0, 0]
+            for axis in dynamic_parameters.grids.tiled_center_grid
+        )
+        expected_gamma_inv = interpolate_field_to_particles(
+            metric.center.gamma_inv[0, 0, 0],
+            position[0:1],
+            position[1:2],
+            position[2:3],
+            center_grid,
+            static_parameters.shape_factor,
+            ghost_cells=True,
+            active_axes=active_axes,
+            inactive_axis_indices=inactive_axis_indices,
+        )[0]
+        self.assertTrue(
+            bool(
+                jnp.allclose(
+                    sampled_metric.gamma_inv,
+                    expected_gamma_inv,
+                    rtol=1.0e-13,
+                    atol=1.0e-13,
+                )
+            )
+        )
+        self.assertGreater(
+            float(
+                jnp.max(
+                    jnp.abs(
+                        expected_gamma_inv
+                        - jnp.linalg.inv(sampled_metric.gamma)
+                    )
+                )
+            ),
+            1.0e-10,
         )
         sampled_grad_gamma_inv = _sample_center_grad_gamma_inv_at_position(
             position,
@@ -444,8 +483,8 @@ class TestStaticMetricConvergence(unittest.TestCase):
             0,
             0,
             0,
-            (True, True, False),
-            (static_parameters.guard_cells,) * 3,
+            active_axes,
+            inactive_axis_indices,
         )
         du_dt = geodesic_velocity(
             position,

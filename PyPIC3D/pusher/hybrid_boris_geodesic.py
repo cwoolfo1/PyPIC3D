@@ -107,7 +107,18 @@ def _sample_metric(
         active_axes,
         inactive_axis_indices,
     )
-    gamma_inv = jnp.linalg.inv(gamma)
+    # Keep the sampled inverse metric paired with the independently sampled
+    # center_grad_gamma_inv used by the geodesic force.
+    gamma_inv = _sample_scalar(
+        metric.gamma_inv,
+        x,
+        y,
+        z,
+        grid,
+        shape_factor,
+        active_axes,
+        inactive_axis_indices,
+    )
     sqrt_gamma_magnitude = jnp.sqrt(jnp.linalg.det(gamma))
 
     # gamma fixes the determinant magnitude.  The particle coordinate fixes
