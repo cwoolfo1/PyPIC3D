@@ -294,10 +294,10 @@ class TestDirectDeposition(unittest.TestCase):
         """
         Build the tiled particle view expected by direct tiled deposition.
 
-        ``J_from_rhov`` stores particles at the forward position and steps them
-        back by ``0.5*u*dt`` internally.  The tiled deposition kernel is already
-        centered, so the test view applies that half-step before deposition and
-        refreshes tile ownership at the centered position.
+        ``J_from_rhov`` expects particles at the centered direct-current
+        deposition position.  These fixtures start from the forward position,
+        so the test view applies the half-step before deposition and refreshes
+        tile ownership at the centered position.
         """
 
         particles = particles._replace(x=particles.x - 0.5 * particles.u * parameter_set["dt"])
