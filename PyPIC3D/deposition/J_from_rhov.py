@@ -45,8 +45,9 @@ def J_from_rhov(
     g = int(g)
     # determine the number of guard cells and the shape of each of the tiles
 
-    tiled_grid = dynamic_parameters.grids.tiled_center_grid
-    # get the grid for the tiles
+    tiled_center_grid = dynamic_parameters.grids.tiled_center_grid
+    tiled_vertex_grid = dynamic_parameters.grids.tiled_vertex_grid
+    # direct scatter must use the same component-grid anchors as the Yee gather
 
     dx = dynamic_parameters.dx
     dy = dynamic_parameters.dy
@@ -106,98 +107,130 @@ def J_from_rhov(
         dq = q / (dx * dy * dz)
         # compute the charge density contribution of each particle
 
-        x_grid = tiled_grid[0][tx, ty, tz]
-        y_grid = tiled_grid[1][tx, ty, tz]
-        z_grid = tiled_grid[2][tx, ty, tz]
-        # get the grid points for the current tile in each dimension
+        center_x = tiled_center_grid[0][tx, ty, tz]
+        center_y = tiled_center_grid[1][tx, ty, tz]
+        center_z = tiled_center_grid[2][tx, ty, tz]
+        vertex_x = tiled_vertex_grid[0][tx, ty, tz]
+        vertex_y = tiled_vertex_grid[1][tx, ty, tz]
+        vertex_z = tiled_vertex_grid[2][tx, ty, tz]
+        # get the collocated and staggered grid points for the current tile
 
-        x, x0, deltax_node, xpts = prepare_particle_axis_stencil(
+        _, _, deltax_center, xpts_center = prepare_particle_axis_stencil(
             x,
-            x_grid,
+            center_x,
             local_Nx,
             shape_factor,
             local_bc,
             wind=tile_nx * dx,
             ghost_cells=True,
         )
-        y, y0, deltay_node, ypts = prepare_particle_axis_stencil(
+        _, _, deltay_center, ypts_center = prepare_particle_axis_stencil(
             y,
-            y_grid,
+            center_y,
             local_Ny,
             shape_factor,
             local_bc,
             wind=tile_ny * dy,
             ghost_cells=True,
         )
-        z, z0, deltaz_node, zpts = prepare_particle_axis_stencil(
+        _, _, deltaz_center, zpts_center = prepare_particle_axis_stencil(
             z,
-            z_grid,
+            center_z,
             local_Nz,
             shape_factor,
             local_bc,
             wind=tile_nz * dz,
             ghost_cells=True,
         )
-        # prepare the particle positions and compute the stencil points and deltas for each axis
+        _, _, deltax_vertex, xpts_vertex = prepare_particle_axis_stencil(
+            x,
+            vertex_x,
+            local_Nx,
+            shape_factor,
+            local_bc,
+            wind=tile_nx * dx,
+            ghost_cells=True,
+        )
+        _, _, deltay_vertex, ypts_vertex = prepare_particle_axis_stencil(
+            y,
+            vertex_y,
+            local_Ny,
+            shape_factor,
+            local_bc,
+            wind=tile_ny * dy,
+            ghost_cells=True,
+        )
+        _, _, deltaz_vertex, zpts_vertex = prepare_particle_axis_stencil(
+            z,
+            vertex_z,
+            local_Nz,
+            shape_factor,
+            local_bc,
+            wind=tile_nz * dz,
+            ghost_cells=True,
+        )
+        # compute the independent stencils on each actual Yee grid axis
 
-        deltax_face = (x - x_grid[0]) - (x0 + 0.5) * dx
-        deltay_face = (y - y_grid[0]) - (y0 + 0.5) * dy
-        deltaz_face = (z - z_grid[0]) - (z0 + 0.5) * dz
-        # compute the deltas for the face-centered weights based on the particle positions and grid points
-
-        x_weights_node, y_weights_node, z_weights_node = jax.lax.cond(
+        x_weights_center, y_weights_center, z_weights_center = jax.lax.cond(
             shape_factor == 1,
-            lambda _: get_first_order_weights(deltax_node, deltay_node, deltaz_node, dx, dy, dz),
-            lambda _: get_second_order_weights(deltax_node, deltay_node, deltaz_node, dx, dy, dz),
+            lambda _: get_first_order_weights(deltax_center, deltay_center, deltaz_center, dx, dy, dz),
+            lambda _: get_second_order_weights(deltax_center, deltay_center, deltaz_center, dx, dy, dz),
             operand=None,
         )
-        x_weights_face, y_weights_face, z_weights_face = jax.lax.cond(
+        x_weights_vertex, y_weights_vertex, z_weights_vertex = jax.lax.cond(
             shape_factor == 1,
-            lambda _: get_first_order_weights(deltax_face, deltay_face, deltaz_face, dx, dy, dz),
-            lambda _: get_second_order_weights(deltax_face, deltay_face, deltaz_face, dx, dy, dz),
+            lambda _: get_first_order_weights(deltax_vertex, deltay_vertex, deltaz_vertex, dx, dy, dz),
+            lambda _: get_second_order_weights(deltax_vertex, deltay_vertex, deltaz_vertex, dx, dy, dz),
             operand=None,
         )
-        # compute the weights for the node-centered and face-centered contributions based on the shape factor and deltas
+        # compute the center- and vertex-grid weights for the selected shape
 
-        xpts = jnp.asarray(xpts)
-        ypts = jnp.asarray(ypts)
-        zpts = jnp.asarray(zpts)
-        x_weights_node = jnp.asarray(x_weights_node)
-        y_weights_node = jnp.asarray(y_weights_node)
-        z_weights_node = jnp.asarray(z_weights_node)
-        x_weights_face = jnp.asarray(x_weights_face)
-        y_weights_face = jnp.asarray(y_weights_face)
-        z_weights_face = jnp.asarray(z_weights_face)
-        # convert the stencil points and weights to JAX arrays for further processing
-
-        xpts, x_weights_node = _collapse_tiled_axis_stencil(xpts, x_weights_node, local_Nx, reduced_x, g)
-        _, x_weights_face = _collapse_tiled_axis_stencil(xpts, x_weights_face, local_Nx, reduced_x, g)
-        ypts, y_weights_node = _collapse_tiled_axis_stencil(ypts, y_weights_node, local_Ny, reduced_y, g)
-        _, y_weights_face = _collapse_tiled_axis_stencil(ypts, y_weights_face, local_Ny, reduced_y, g)
-        zpts, z_weights_node = _collapse_tiled_axis_stencil(zpts, z_weights_node, local_Nz, reduced_z, g)
-        _, z_weights_face = _collapse_tiled_axis_stencil(zpts, z_weights_face, local_Nz, reduced_z, g)
-        # collapse the stencil points and weights for each axis, taking into account any reduced axes and guard cells
+        xpts_center, x_weights_center = _collapse_tiled_axis_stencil(
+            jnp.asarray(xpts_center), jnp.asarray(x_weights_center), local_Nx, reduced_x, g
+        )
+        xpts_vertex, x_weights_vertex = _collapse_tiled_axis_stencil(
+            jnp.asarray(xpts_vertex), jnp.asarray(x_weights_vertex), local_Nx, reduced_x, g
+        )
+        ypts_center, y_weights_center = _collapse_tiled_axis_stencil(
+            jnp.asarray(ypts_center), jnp.asarray(y_weights_center), local_Ny, reduced_y, g
+        )
+        ypts_vertex, y_weights_vertex = _collapse_tiled_axis_stencil(
+            jnp.asarray(ypts_vertex), jnp.asarray(y_weights_vertex), local_Ny, reduced_y, g
+        )
+        zpts_center, z_weights_center = _collapse_tiled_axis_stencil(
+            jnp.asarray(zpts_center), jnp.asarray(z_weights_center), local_Nz, reduced_z, g
+        )
+        zpts_vertex, z_weights_vertex = _collapse_tiled_axis_stencil(
+            jnp.asarray(zpts_vertex), jnp.asarray(z_weights_vertex), local_Nz, reduced_z, g
+        )
+        # collapse each center and vertex stencil independently on reduced axes
 
         tile_Jx = Jx_template
         tile_Jy = Jy_template
         tile_Jz = Jz_template
 
-        for i in range(xpts.shape[0]):
-            for j in range(ypts.shape[0]):
-                for k in range(zpts.shape[0]):
-                    ix = xpts[i]
-                    iy = ypts[j]
-                    iz = zpts[k]
-                    tile_Jx = tile_Jx.at[ix, iy, iz].add(
-                        active * update_x1 * dq * vx * x_weights_face[i] * y_weights_node[j] * z_weights_node[k],
+        for i in range(xpts_center.shape[0]):
+            for j in range(ypts_center.shape[0]):
+                for k in range(zpts_center.shape[0]):
+                    tile_Jx = tile_Jx.at[
+                        xpts_vertex[i], ypts_center[j], zpts_center[k]
+                    ].add(
+                        active * update_x1 * dq * vx
+                        * x_weights_vertex[i] * y_weights_center[j] * z_weights_center[k],
                         mode="drop",
                     )
-                    tile_Jy = tile_Jy.at[ix, iy, iz].add(
-                        active * update_x2 * dq * vy * x_weights_node[i] * y_weights_face[j] * z_weights_node[k],
+                    tile_Jy = tile_Jy.at[
+                        xpts_center[i], ypts_vertex[j], zpts_center[k]
+                    ].add(
+                        active * update_x2 * dq * vy
+                        * x_weights_center[i] * y_weights_vertex[j] * z_weights_center[k],
                         mode="drop",
                     )
-                    tile_Jz = tile_Jz.at[ix, iy, iz].add(
-                        active * update_x3 * dq * vz * x_weights_node[i] * y_weights_node[j] * z_weights_face[k],
+                    tile_Jz = tile_Jz.at[
+                        xpts_center[i], ypts_center[j], zpts_vertex[k]
+                    ].add(
+                        active * update_x3 * dq * vz
+                        * x_weights_center[i] * y_weights_center[j] * z_weights_vertex[k],
                         mode="drop",
                     )
 

@@ -23,6 +23,7 @@ from PyPIC3D.diagnostics.output_adapters import assemble_tiled_scalar_field, ass
 from PyPIC3D.evolve import time_loop_electrodynamic
 from PyPIC3D.initialization import initialize_fields
 from PyPIC3D.particles.particle_tile_communication import refresh_tiled_particle_tiles, update_tiled_particle_positions
+from PyPIC3D.pusher.boris import interpolate_field_to_particles
 from PyPIC3D.utilities.filters import digital_filter, digital_filter_vector
 from tests.kernel_fixtures import build_tiled_particles, empty_tiled_scalar, empty_tiled_vector, kernel_parameters, particle_species
 
@@ -129,7 +130,7 @@ def _collapse(points, weights, local_n, reduced_axis, g):
     return collapse_axis_stencil(points, weights, local_n, ghost_cells=True)
 
 
-def _node_stencils(tile, x, static_parameters, dynamic_parameters):
+def _yee_stencils(tile, x, static_parameters, dynamic_parameters):
     tx, ty, tz = tile
     g = int(static_parameters.guard_cells)
     tile_nx, tile_ny, tile_nz = [int(width) for width in static_parameters.tile_shape]
@@ -140,34 +141,37 @@ def _node_stencils(tile, x, static_parameters, dynamic_parameters):
         tile_ny == 1 and int(nty) == 1,
         tile_nz == 1 and int(ntz) == 1,
     )
-    x_grid = dynamic_parameters.grids.tiled_center_grid[0][tx, ty, tz]
-    y_grid = dynamic_parameters.grids.tiled_center_grid[1][tx, ty, tz]
-    z_grid = dynamic_parameters.grids.tiled_center_grid[2][tx, ty, tz]
+    center_x = dynamic_parameters.grids.tiled_center_grid[0][tx, ty, tz]
+    center_y = dynamic_parameters.grids.tiled_center_grid[1][tx, ty, tz]
+    center_z = dynamic_parameters.grids.tiled_center_grid[2][tx, ty, tz]
+    vertex_x = dynamic_parameters.grids.tiled_vertex_grid[0][tx, ty, tz]
+    vertex_y = dynamic_parameters.grids.tiled_vertex_grid[1][tx, ty, tz]
+    vertex_z = dynamic_parameters.grids.tiled_vertex_grid[2][tx, ty, tz]
 
     x_pos = jnp.asarray([x[0]])
     y_pos = jnp.asarray([x[1]])
     z_pos = jnp.asarray([x[2]])
-    _, x0, deltax_node, xpts = prepare_particle_axis_stencil(
+    _, _, deltax_center, xpts_center = prepare_particle_axis_stencil(
         x_pos,
-        x_grid,
+        center_x,
         local_shape[0],
         static_parameters.shape_factor,
         2,
         wind=tile_nx * dynamic_parameters.dx,
         ghost_cells=True,
     )
-    _, _y0, deltay_node, ypts = prepare_particle_axis_stencil(
+    _, _, deltay_center, ypts_center = prepare_particle_axis_stencil(
         y_pos,
-        y_grid,
+        center_y,
         local_shape[1],
         static_parameters.shape_factor,
         2,
         wind=tile_ny * dynamic_parameters.dy,
         ghost_cells=True,
     )
-    _, _z0, deltaz_node, zpts = prepare_particle_axis_stencil(
+    _, _, deltaz_center, zpts_center = prepare_particle_axis_stencil(
         z_pos,
-        z_grid,
+        center_z,
         local_shape[2],
         static_parameters.shape_factor,
         2,
@@ -175,40 +179,74 @@ def _node_stencils(tile, x, static_parameters, dynamic_parameters):
         ghost_cells=True,
     )
 
-    node_weights = _weights(deltax_node, deltay_node, deltaz_node, dynamic_parameters, static_parameters.shape_factor)
-    xpts, wx_node = _collapse(jnp.asarray(xpts), node_weights[0], local_shape[0], reduced[0], g)
-    ypts, wy_node = _collapse(jnp.asarray(ypts), node_weights[1], local_shape[1], reduced[1], g)
-    zpts, wz_node = _collapse(jnp.asarray(zpts), node_weights[2], local_shape[2], reduced[2], g)
+    _, _, deltax_vertex, xpts_vertex = prepare_particle_axis_stencil(
+        x_pos,
+        vertex_x,
+        local_shape[0],
+        static_parameters.shape_factor,
+        2,
+        wind=tile_nx * dynamic_parameters.dx,
+        ghost_cells=True,
+    )
+    _, _, deltay_vertex, ypts_vertex = prepare_particle_axis_stencil(
+        y_pos,
+        vertex_y,
+        local_shape[1],
+        static_parameters.shape_factor,
+        2,
+        wind=tile_ny * dynamic_parameters.dy,
+        ghost_cells=True,
+    )
+    _, _, deltaz_vertex, zpts_vertex = prepare_particle_axis_stencil(
+        z_pos,
+        vertex_z,
+        local_shape[2],
+        static_parameters.shape_factor,
+        2,
+        wind=tile_nz * dynamic_parameters.dz,
+        ghost_cells=True,
+    )
 
-    deltax_face = (x_pos - x_grid[0]) - (x0 + 0.5) * dynamic_parameters.dx
-    deltay_face = (y_pos - y_grid[0]) - (_y0 + 0.5) * dynamic_parameters.dy
-    deltaz_face = (z_pos - z_grid[0]) - (_z0 + 0.5) * dynamic_parameters.dz
-    x_face_weights, _, _ = _weights(
-        deltax_face,
-        deltay_node,
-        deltaz_node,
+    center_weights = _weights(
+        deltax_center,
+        deltay_center,
+        deltaz_center,
         dynamic_parameters,
         static_parameters.shape_factor,
     )
-    _, y_face_weights, _ = _weights(
-        deltax_node,
-        deltay_face,
-        deltaz_node,
+    vertex_weights = _weights(
+        deltax_vertex,
+        deltay_vertex,
+        deltaz_vertex,
         dynamic_parameters,
         static_parameters.shape_factor,
     )
-    _, _, z_face_weights = _weights(
-        deltax_node,
-        deltay_node,
-        deltaz_face,
-        dynamic_parameters,
-        static_parameters.shape_factor,
-    )
-    _, wx_face = _collapse(xpts, x_face_weights, local_shape[0], reduced[0], g)
-    _, wy_face = _collapse(ypts, y_face_weights, local_shape[1], reduced[1], g)
-    _, wz_face = _collapse(zpts, z_face_weights, local_shape[2], reduced[2], g)
 
-    return (xpts, ypts, zpts), (wx_node, wy_node, wz_node), (wx_face, wy_face, wz_face)
+    xpts_center, wx_center = _collapse(
+        jnp.asarray(xpts_center), center_weights[0], local_shape[0], reduced[0], g
+    )
+    ypts_center, wy_center = _collapse(
+        jnp.asarray(ypts_center), center_weights[1], local_shape[1], reduced[1], g
+    )
+    zpts_center, wz_center = _collapse(
+        jnp.asarray(zpts_center), center_weights[2], local_shape[2], reduced[2], g
+    )
+    xpts_vertex, wx_vertex = _collapse(
+        jnp.asarray(xpts_vertex), vertex_weights[0], local_shape[0], reduced[0], g
+    )
+    ypts_vertex, wy_vertex = _collapse(
+        jnp.asarray(ypts_vertex), vertex_weights[1], local_shape[1], reduced[1], g
+    )
+    zpts_vertex, wz_vertex = _collapse(
+        jnp.asarray(zpts_vertex), vertex_weights[2], local_shape[2], reduced[2], g
+    )
+
+    center_points = (xpts_center, ypts_center, zpts_center)
+    center_weights = (wx_center, wy_center, wz_center)
+    vertex_points = (xpts_vertex, ypts_vertex, zpts_vertex)
+    vertex_weights = (wx_vertex, wy_vertex, wz_vertex)
+
+    return center_points, center_weights, vertex_points, vertex_weights
 
 
 def _add_stencil(field, tile, points, weights, scale):
@@ -229,13 +267,15 @@ def _add_stencil(field, tile, points, weights, scale):
 def _manual_rho_tiles(particles, species_config, static_parameters, dynamic_parameters):
     g = int(static_parameters.guard_cells)
     tile, x, _u = _particle_state(particles)
-    points, node_weights, _face_weights = _node_stencils(tile, x, static_parameters, dynamic_parameters)
+    center_points, center_weights, _vertex_points, _vertex_weights = _yee_stencils(
+        tile, x, static_parameters, dynamic_parameters
+    )
     rho = empty_tiled_scalar(static_parameters, dynamic_parameters)
     charge_density = species_config.charge[0] * species_config.weight[0] / (
         dynamic_parameters.dx * dynamic_parameters.dy * dynamic_parameters.dz
     )
 
-    rho = _add_stencil(rho, tile, points, node_weights, charge_density)
+    rho = _add_stencil(rho, tile, center_points, center_weights, charge_density)
     rho = fold_tiled_ghost_cells(rho, static_parameters, g, bc_type=1)
     rho = update_tiled_ghost_cells(rho, static_parameters, g, bc_type=1)
 
@@ -249,15 +289,25 @@ def _manual_rho_tiles(particles, species_config, static_parameters, dynamic_para
 def _manual_direct_current_tiles(particles, species_config, static_parameters, dynamic_parameters):
     g = int(static_parameters.guard_cells)
     tile, x, u = _particle_state(particles)
-    points, node_weights, face_weights = _node_stencils(tile, x, static_parameters, dynamic_parameters)
+    center_points, center_weights, vertex_points, vertex_weights = _yee_stencils(
+        tile, x, static_parameters, dynamic_parameters
+    )
     Jx, Jy, Jz = empty_tiled_vector(static_parameters, dynamic_parameters)
     charge_density = species_config.charge[0] * species_config.weight[0] / (
         dynamic_parameters.dx * dynamic_parameters.dy * dynamic_parameters.dz
     )
 
-    Jx = _add_stencil(Jx, tile, points, (face_weights[0], node_weights[1], node_weights[2]), charge_density * u[0])
-    Jy = _add_stencil(Jy, tile, points, (node_weights[0], face_weights[1], node_weights[2]), charge_density * u[1])
-    Jz = _add_stencil(Jz, tile, points, (node_weights[0], node_weights[1], face_weights[2]), charge_density * u[2])
+    Jx_points = (vertex_points[0], center_points[1], center_points[2])
+    Jy_points = (center_points[0], vertex_points[1], center_points[2])
+    Jz_points = (center_points[0], center_points[1], vertex_points[2])
+
+    Jx_weights = (vertex_weights[0], center_weights[1], center_weights[2])
+    Jy_weights = (center_weights[0], vertex_weights[1], center_weights[2])
+    Jz_weights = (center_weights[0], center_weights[1], vertex_weights[2])
+
+    Jx = _add_stencil(Jx, tile, Jx_points, Jx_weights, charge_density * u[0])
+    Jy = _add_stencil(Jy, tile, Jy_points, Jy_weights, charge_density * u[1])
+    Jz = _add_stencil(Jz, tile, Jz_points, Jz_weights, charge_density * u[2])
 
     J = fold_tiled_vector_ghost_cells((Jx, Jy, Jz), static_parameters, g, bc_type=1)
     J = update_tiled_vector_ghost_cells(J, static_parameters, g, bc_type=1)
@@ -267,6 +317,100 @@ def _manual_direct_current_tiles(particles, species_config, static_parameters, d
         J = update_tiled_vector_ghost_cells(J, static_parameters, g, bc_type=1)
 
     return J
+
+
+def _periodic_test_electric_field(static_parameters, dynamic_parameters):
+    Nx = int(dynamic_parameters.Nx)
+    Ny = int(dynamic_parameters.Ny)
+    Nz = int(dynamic_parameters.Nz)
+    g = int(static_parameters.guard_cells)
+
+    ix, iy, iz = jnp.meshgrid(
+        jnp.arange(Nx, dtype=float),
+        jnp.arange(Ny, dtype=float),
+        jnp.arange(Nz, dtype=float),
+        indexing="ij",
+    )
+
+    Ex_interior = (
+        0.83 * jnp.sin(2.0 * jnp.pi * (ix + 0.17) / Nx)
+        + 0.37 * jnp.cos(4.0 * jnp.pi * (iy + 0.31) / Ny)
+        + 0.19 * jnp.sin(6.0 * jnp.pi * (iz + 0.11) / Nz)
+    )
+    Ey_interior = (
+        -0.41 * jnp.cos(4.0 * jnp.pi * (ix + 0.23) / Nx)
+        + 0.71 * jnp.sin(2.0 * jnp.pi * (iy + 0.37) / Ny)
+        + 0.29 * jnp.cos(6.0 * jnp.pi * (iz + 0.07) / Nz)
+    )
+    Ez_interior = (
+        0.53 * jnp.sin(6.0 * jnp.pi * (ix + 0.43) / Nx)
+        - 0.47 * jnp.cos(2.0 * jnp.pi * (iy + 0.13) / Ny)
+        + 0.61 * jnp.sin(4.0 * jnp.pi * (iz + 0.29) / Nz)
+    )
+
+    E = empty_tiled_vector(static_parameters, dynamic_parameters)
+    E = tuple(
+        component.at[0, 0, 0, g:-g, g:-g, g:-g].set(interior)
+        for component, interior in zip(E, (Ex_interior, Ey_interior, Ez_interior))
+    )
+
+    return update_tiled_vector_ghost_cells(
+        E,
+        static_parameters,
+        num_guard_cells=g,
+        bc_type=0,
+    )
+
+
+def _gather_electric_field(E, position, static_parameters, dynamic_parameters):
+    x = jnp.asarray([position[0]], dtype=float)
+    y = jnp.asarray([position[1]], dtype=float)
+    z = jnp.asarray([position[2]], dtype=float)
+    g = int(static_parameters.guard_cells)
+
+    center_x = dynamic_parameters.grids.tiled_center_grid[0][0, 0, 0]
+    center_y = dynamic_parameters.grids.tiled_center_grid[1][0, 0, 0]
+    center_z = dynamic_parameters.grids.tiled_center_grid[2][0, 0, 0]
+    vertex_x = dynamic_parameters.grids.tiled_vertex_grid[0][0, 0, 0]
+    vertex_y = dynamic_parameters.grids.tiled_vertex_grid[1][0, 0, 0]
+    vertex_z = dynamic_parameters.grids.tiled_vertex_grid[2][0, 0, 0]
+
+    component_grids = (
+        (vertex_x, center_y, center_z),
+        (center_x, vertex_y, center_z),
+        (center_x, center_y, vertex_z),
+    )
+
+    gathered = []
+    for component, component_grid in zip(E, component_grids):
+        value = interpolate_field_to_particles(
+            component[0, 0, 0],
+            x,
+            y,
+            z,
+            component_grid,
+            static_parameters.shape_factor,
+            ghost_cells=True,
+            active_axes=(True, True, True),
+            inactive_axis_indices=(g, g, g),
+        )
+        gathered.append(value[0])
+
+    return jnp.asarray(gathered)
+
+
+def _grid_current_work(E, J, static_parameters, dynamic_parameters):
+    g = int(static_parameters.guard_cells)
+    cell_volume = dynamic_parameters.dx * dynamic_parameters.dy * dynamic_parameters.dz
+
+    work = 0.0
+    for electric_component, current_component in zip(E, J):
+        work += jnp.sum(
+            electric_component[0, 0, 0, g:-g, g:-g, g:-g]
+            * current_component[0, 0, 0, g:-g, g:-g, g:-g]
+        ) * cell_volume
+
+    return work
 
 
 def _shift_old_stencil(weights, shift):
@@ -456,6 +600,72 @@ class TestSingleParticleStencils(unittest.TestCase):
                     expected = _manual_direct_current_tiles(particles, species_config, static_parameters, dynamic_parameters)
 
                     _assert_vector_close(self, J, expected)
+
+    def test_direct_current_scatter_is_adjoint_to_production_yee_gather(self):
+        positions = {
+            "lower_cell_half": (-3.75, -2.75, -1.75),
+            "upper_cell_half": (-3.25, -2.25, -1.25),
+            "lower_periodic_seam": (-3.99, -3.91, -3.83),
+            "upper_periodic_seam": (3.99, 3.91, 3.83),
+        }
+        velocity = jnp.asarray((0.71, -0.43, 0.29))
+        charge = -1.3
+        weight = 0.6
+
+        for shape_factor in (1, 2):
+            static_parameters, dynamic_parameters = kernel_parameters(
+                Nx=8,
+                Ny=8,
+                Nz=8,
+                x_wind=8.0,
+                y_wind=8.0,
+                z_wind=8.0,
+                tile_shape=(8, 8, 8),
+                guard_cells=2,
+                shape_factor=shape_factor,
+                current_deposition="direct",
+                current_filter="none",
+                relativistic=False,
+                dt=0.1,
+            )
+            E = _periodic_test_electric_field(static_parameters, dynamic_parameters)
+
+            for phase, position in positions.items():
+                with self.subTest(shape_factor=shape_factor, phase=phase):
+                    particles, species_config = _one_particle(
+                        static_parameters,
+                        dynamic_parameters,
+                        position,
+                        velocity,
+                        charge=charge,
+                        weight=weight,
+                    )
+                    J = J_from_rhov(
+                        particles,
+                        species_config,
+                        empty_tiled_vector(static_parameters, dynamic_parameters),
+                        static_parameters,
+                        dynamic_parameters,
+                    )
+
+                    grid_work = _grid_current_work(
+                        E,
+                        J,
+                        static_parameters,
+                        dynamic_parameters,
+                    )
+                    particle_field = _gather_electric_field(
+                        E,
+                        position,
+                        static_parameters,
+                        dynamic_parameters,
+                    )
+                    particle_work = charge * weight * jnp.dot(velocity, particle_field)
+
+                    work_scale = max(abs(float(grid_work)), abs(float(particle_work)), 1.0e-30)
+                    relative_residual = abs(float(grid_work - particle_work)) / work_scale
+
+                    self.assertLessEqual(relative_residual, 1.0e-12)
 
     def test_single_particle_esirkepov_current_matches_exact_1d_shape_stencils(self):
         positions = {
