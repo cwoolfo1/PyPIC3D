@@ -1,0 +1,75 @@
+# Neutral particle orbit in spherical Kerr-Schild coordinates.
+
+[simulation_parameters]
+name = "Neutral particle orbit in spherical Kerr-Schild coordinates"
+solver = "static_metric"
+metric = "kerr_schild_spherical"
+metric_mass = 1.0
+metric_spin = 0.995
+particle_pusher = "hybrid_boris_geodesic"
+current_calculation = "GR_direct_deposition"
+filter_j = "none"
+
+Nx = 1024
+Ny = 250
+Nz = 1
+x_min = 1.0888761725594187
+x_max = 15.0
+y_min = 0.006283185307179587
+y_max = 6.289468492486765
+z_min = 0.0
+z_max = 6.283185307179586
+
+Nt = 200000
+dt = 0.01
+
+particle_tile_nx = 1024
+particle_tile_ny = 250
+particle_tile_nz = 1
+particle_tile_capacity_factor = 2.0
+guard_cells = 2
+shape_factor = 1
+
+x_bc = "constant"
+y_bc = "periodic"
+z_bc = "periodic"
+particle_x_bc = "absorbing"
+particle_y_bc = "periodic"
+particle_z_bc = "periodic"
+
+C = 1.0
+eps = 1.0
+mu = 1.0
+kb = 1.0
+alpha = 1.0
+
+[plotting]
+plot_openpmd_fields = false
+plot_openpmd_particles = false
+dump_particles = false
+dump_fields = false
+plotting_interval = 100
+
+[particle1]
+name = "orbit"
+N_particles = 1
+charge = 0.0
+mass = 1.0e-10
+weight = 1.0
+vth = 0.0
+
+# initialize_simulation jitters scalar positions within a cell. The script
+# reinstalls these exact spherical coordinates and covariant momenta afterward.
+initial_x = 10.6498
+initial_y = 1.5707963267948966
+initial_z = 0.0
+initial_vx = 0.18915
+initial_vy = 0.0
+initial_vz = 2.0
+
+update_x = true
+update_y = true
+update_z = true
+x_bc = "absorbing"
+y_bc = "periodic"
+z_bc = "periodic"
