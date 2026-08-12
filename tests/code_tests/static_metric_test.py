@@ -5,6 +5,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from PyPIC3D.deposition.GR_direct_deposition import GR_direct_deposition
+from PyPIC3D.deposition.J_from_rhov import J_from_rhov
 from PyPIC3D.evolve import time_loop_static_metric
 from PyPIC3D.initialization import (
     _encode_current_calculation,
@@ -658,6 +659,196 @@ def test_GR_direct_deposition_masks_complete_shifted_current_by_direction():
     assert jnp.allclose(masked_current[2], 0.0)
     for component in disabled_current:
         assert jnp.allclose(component, 0.0)
+
+
+def test_GR_direct_deposition_is_adjoint_to_staggered_field_gather():
+    positions = jnp.asarray(
+        (
+            ((0.1, 0.2, 0.3), (3.9, 1.7, 2.2)),
+            ((4.1, 2.8, 1.4), (7.9, 3.8, 3.7)),
+        )
+    ).reshape((2, 1, 1, 1, 2, 3))
+    u_cov = jnp.asarray(
+        (
+            ((0.31, -0.17, 0.09), (-0.22, 0.28, -0.13)),
+            ((0.19, 0.11, -0.24), (-0.27, -0.16, 0.21)),
+        )
+    ).reshape((2, 1, 1, 1, 2, 3))
+    active = jnp.ones((2, 1, 1, 1, 2), dtype=bool)
+    species = SpeciesConfig(
+        charge=jnp.asarray([-0.7]),
+        mass=jnp.asarray([1.0]),
+        weight=jnp.asarray([1.3]),
+        update_x=jnp.asarray([[True, True, True]]),
+    )
+
+    for shape_factor in (1, 2):
+        static_parameters, dynamic_parameters = kernel_parameters(
+            Nx=8,
+            Ny=4,
+            Nz=4,
+            x_wind=8.0,
+            y_wind=4.0,
+            z_wind=4.0,
+            x_min=0.0,
+            y_min=0.0,
+            z_min=0.0,
+            dt=0.1,
+            tile_shape=(4, 4, 4),
+            shape_factor=shape_factor,
+            current_filter="none",
+            solver="static_metric",
+            current_deposition="GR_direct",
+            particle_pusher="hybrid_boris_geodesic",
+        )
+        metric = initialize_flat_cartesian_metric(static_parameters, dynamic_parameters)
+        metric = _replace_lapse_shift(metric, lapse=0.73, shift=(0.12, -0.08, 0.05))
+        particles = TiledParticles(x=positions, u=u_cov, active=active)
+
+        center_grid = dynamic_parameters.grids.tiled_center_grid
+        vertex_grid = dynamic_parameters.grids.tiled_vertex_grid
+        D_grids = tuple(
+            metric_for_location(center_grid, vertex_grid, location)
+            for location in D_FIELD_LOCATIONS
+        )
+        D = []
+        for component, grid in enumerate(D_grids):
+            x_grid, y_grid, z_grid = grid
+            field = (
+                jnp.sin(2.0 * jnp.pi * x_grid[..., :, jnp.newaxis, jnp.newaxis] / 8.0)
+                + (0.3 + 0.1 * component)
+                * jnp.cos(2.0 * jnp.pi * y_grid[..., jnp.newaxis, :, jnp.newaxis] / 4.0)
+                + (0.2 - 0.05 * component)
+                * jnp.sin(2.0 * jnp.pi * z_grid[..., jnp.newaxis, jnp.newaxis, :] / 4.0)
+            )
+            D.append(field)
+        D = tuple(D)
+
+        J = GR_direct_deposition(
+            particles,
+            species,
+            empty_tiled_vector(static_parameters, dynamic_parameters),
+            metric,
+            static_parameters,
+            dynamic_parameters,
+        )
+
+        g = int(static_parameters.guard_cells)
+        interior = (
+            slice(None),
+            slice(None),
+            slice(None),
+            slice(g, -g),
+            slice(g, -g),
+            slice(g, -g),
+        )
+        grid_work = sum(
+            jnp.sum(
+                metric.D[i].sqrt_gamma[interior]
+                * D[i][interior]
+                * J[i][interior]
+            )
+            for i in range(3)
+        )
+        grid_work *= dynamic_parameters.dx * dynamic_parameters.dy * dynamic_parameters.dz
+
+        gathered_D = []
+        for tx in range(2):
+            tile_grids = tuple(
+                tuple(axis[tx, 0, 0] for axis in component_grid)
+                for component_grid in D_grids
+            )
+            gathered_D.append(
+                hybrid_pusher._sample_vector(
+                    tuple(D[i][tx, 0, 0] for i in range(3)),
+                    particles.x[tx, 0, 0, ..., 0],
+                    particles.x[tx, 0, 0, ..., 1],
+                    particles.x[tx, 0, 0, ..., 2],
+                    tile_grids,
+                    shape_factor,
+                    (True, True, True),
+                    (g, g, g),
+                )
+            )
+        gathered_D = jnp.stack(gathered_D, axis=0).reshape(particles.x.shape)
+
+        Gamma = jnp.sqrt(1.0 + jnp.sum(particles.u**2, axis=-1))
+        source_velocity = 0.73 * particles.u / Gamma[..., jnp.newaxis]
+        source_velocity -= jnp.asarray((0.12, -0.08, 0.05))
+        weighted_charge = species.charge[0] * species.weight[0]
+        particle_work = weighted_charge * jnp.sum(
+            particles.active[..., jnp.newaxis]
+            * source_velocity
+            * gathered_D
+        )
+
+        scale = jnp.maximum(jnp.abs(grid_work), jnp.abs(particle_work))
+        relative_residual = jnp.abs(grid_work - particle_work) / scale
+        assert relative_residual < 1.0e-12
+
+
+def test_flat_GR_direct_deposition_matches_standard_stencil_on_reduced_axes():
+    positions = jnp.asarray(
+        ((0.1, 0.0, 0.0), (0.9, 0.0, 0.0), (7.1, 0.0, 0.0), (7.9, 0.0, 0.0))
+    ).reshape((1, 1, 1, 1, 4, 3))
+    u_cov = jnp.asarray(
+        ((0.31, -0.17, 0.09), (-0.22, 0.28, -0.13), (0.19, 0.11, -0.24), (-0.27, -0.16, 0.21))
+    ).reshape((1, 1, 1, 1, 4, 3))
+    active = jnp.ones((1, 1, 1, 1, 4), dtype=bool)
+    species = SpeciesConfig(
+        charge=jnp.asarray([-0.7]),
+        mass=jnp.asarray([1.0]),
+        weight=jnp.asarray([1.3]),
+        update_x=jnp.asarray([[True, True, True]]),
+    )
+
+    for shape_factor in (1, 2):
+        static_parameters, dynamic_parameters = kernel_parameters(
+            Nx=8,
+            Ny=1,
+            Nz=1,
+            x_wind=8.0,
+            y_wind=1.0,
+            z_wind=1.0,
+            x_min=0.0,
+            y_min=-0.5,
+            z_min=-0.5,
+            tile_shape=(8, 1, 1),
+            shape_factor=shape_factor,
+            current_filter="none",
+            solver="static_metric",
+            current_deposition="GR_direct",
+            particle_pusher="hybrid_boris_geodesic",
+        )
+        metric = initialize_flat_cartesian_metric(static_parameters, dynamic_parameters)
+        GR_particles = TiledParticles(x=positions, u=u_cov, active=active)
+        Gamma = jnp.sqrt(1.0 + jnp.sum(u_cov**2, axis=-1))
+        standard_particles = GR_particles._replace(u=u_cov / Gamma[..., jnp.newaxis])
+        J_template = empty_tiled_vector(static_parameters, dynamic_parameters)
+
+        GR_J = GR_direct_deposition(
+            GR_particles,
+            species,
+            J_template,
+            metric,
+            static_parameters,
+            dynamic_parameters,
+        )
+        standard_J = J_from_rhov(
+            standard_particles,
+            species,
+            J_template,
+            static_parameters,
+            dynamic_parameters,
+        )
+
+        for GR_component, standard_component in zip(GR_J, standard_J):
+            np.testing.assert_allclose(
+                np.asarray(GR_component),
+                np.asarray(standard_component),
+                rtol=0.0,
+                atol=1.0e-12,
+            )
 
 
 def test_GR_direct_deposition_returns_physical_spherical_current():

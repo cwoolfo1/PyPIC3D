@@ -106,6 +106,7 @@ def GR_direct_deposition(
     tile_shape = tuple(int(width) for width in static_parameters.tile_shape)
     g = int(static_parameters.guard_cells)
     tiled_grid = dynamic_parameters.grids.tiled_center_grid
+    grid = dynamic_parameters.grids.center
     dx = dynamic_parameters.dx
     dy = dynamic_parameters.dy
     dz = dynamic_parameters.dz
@@ -140,10 +141,10 @@ def GR_direct_deposition(
         update_x3 = jnp.broadcast_to(species_config.update_x[:, 2, jnp.newaxis], active_tile.shape).reshape(-1)
         dq = q / (dx * dy * dz)
 
-        x_grid = tiled_grid[0][tx, ty, tz]
-        y_grid = tiled_grid[1][tx, ty, tz]
-        z_grid = tiled_grid[2][tx, ty, tz]
-        center_grid = (x_grid, y_grid, z_grid)
+        tiled_x_grid = tiled_grid[0][tx, ty, tz]
+        tiled_y_grid = tiled_grid[1][tx, ty, tz]
+        tiled_z_grid = tiled_grid[2][tx, ty, tz]
+        center_grid = (tiled_x_grid, tiled_y_grid, tiled_z_grid)
 
         metric_at_particles = _sample_current_metric(
             _metric_tile(metric.center, tx, ty, tz),
@@ -159,37 +160,63 @@ def GR_direct_deposition(
         vy = source_velocity[:, 1]
         vz = source_velocity[:, 2]
 
-        x, x0, deltax_node, xpts = prepare_particle_axis_stencil(
+        x_grid, y_grid, z_grid = grid
+
+        x, _, deltax_node, xpts_node = prepare_particle_axis_stencil(
             x,
             x_grid,
-            local_Nx,
+            x_grid.shape[0],
             shape_factor,
             local_bc,
             wind=tile_nx * dx,
             ghost_cells=True,
         )
-        y, y0, deltay_node, ypts = prepare_particle_axis_stencil(
+        _, _, deltax_face, xpts_face = prepare_particle_axis_stencil(
+            x,
+            x_grid + 0.5 * dx,
+            x_grid.shape[0],
+            shape_factor,
+            local_bc,
+            wind=tile_nx * dx,
+            ghost_cells=True,
+        )
+        y, _, deltay_node, ypts_node = prepare_particle_axis_stencil(
             y,
             y_grid,
-            local_Ny,
+            y_grid.shape[0],
             shape_factor,
             local_bc,
             wind=tile_ny * dy,
             ghost_cells=True,
         )
-        z, z0, deltaz_node, zpts = prepare_particle_axis_stencil(
+        _, _, deltay_face, ypts_face = prepare_particle_axis_stencil(
+            y,
+            y_grid + 0.5 * dy,
+            y_grid.shape[0],
+            shape_factor,
+            local_bc,
+            wind=tile_ny * dy,
+            ghost_cells=True,
+        )
+        z, _, deltaz_node, zpts_node = prepare_particle_axis_stencil(
             z,
             z_grid,
-            local_Nz,
+            z_grid.shape[0],
             shape_factor,
             local_bc,
             wind=tile_nz * dz,
             ghost_cells=True,
         )
-
-        deltax_face = (x - x_grid[0]) - (x0 + 0.5) * dx
-        deltay_face = (y - y_grid[0]) - (y0 + 0.5) * dy
-        deltaz_face = (z - z_grid[0]) - (z0 + 0.5) * dz
+        _, _, deltaz_face, zpts_face = prepare_particle_axis_stencil(
+            z,
+            z_grid + 0.5 * dz,
+            z_grid.shape[0],
+            shape_factor,
+            local_bc,
+            wind=tile_nz * dz,
+            ghost_cells=True,
+        )
+        # Center- and vertex-located quantities need independent anchors.
 
         x_weights_node, y_weights_node, z_weights_node = jax.lax.cond(
             shape_factor == 1,
@@ -204,9 +231,21 @@ def GR_direct_deposition(
             operand=None,
         )
 
-        xpts = jnp.asarray(xpts)
-        ypts = jnp.asarray(ypts)
-        zpts = jnp.asarray(zpts)
+        xpts_node = jnp.asarray(xpts_node)
+        ypts_node = jnp.asarray(ypts_node)
+        zpts_node = jnp.asarray(zpts_node)
+        xpts_face = jnp.asarray(xpts_face)
+        ypts_face = jnp.asarray(ypts_face)
+        zpts_face = jnp.asarray(zpts_face)
+        x_local_offset = tx * tile_nx - (g - 1)
+        y_local_offset = ty * tile_ny - (g - 1)
+        z_local_offset = tz * tile_nz - (g - 1)
+        xpts_node = xpts_node - x_local_offset
+        xpts_face = xpts_face - x_local_offset
+        ypts_node = ypts_node - y_local_offset
+        ypts_face = ypts_face - y_local_offset
+        zpts_node = zpts_node - z_local_offset
+        zpts_face = zpts_face - z_local_offset
         x_weights_node = jnp.asarray(x_weights_node)
         y_weights_node = jnp.asarray(y_weights_node)
         z_weights_node = jnp.asarray(z_weights_node)
@@ -214,32 +253,41 @@ def GR_direct_deposition(
         y_weights_face = jnp.asarray(y_weights_face)
         z_weights_face = jnp.asarray(z_weights_face)
 
-        xpts, x_weights_node = _collapse_tiled_axis_stencil(xpts, x_weights_node, local_Nx, reduced_x, g)
-        _, x_weights_face = _collapse_tiled_axis_stencil(xpts, x_weights_face, local_Nx, reduced_x, g)
-        ypts, y_weights_node = _collapse_tiled_axis_stencil(ypts, y_weights_node, local_Ny, reduced_y, g)
-        _, y_weights_face = _collapse_tiled_axis_stencil(ypts, y_weights_face, local_Ny, reduced_y, g)
-        zpts, z_weights_node = _collapse_tiled_axis_stencil(zpts, z_weights_node, local_Nz, reduced_z, g)
-        _, z_weights_face = _collapse_tiled_axis_stencil(zpts, z_weights_face, local_Nz, reduced_z, g)
+        xpts_node, x_weights_node = _collapse_tiled_axis_stencil(
+            xpts_node, x_weights_node, local_Nx, reduced_x, g
+        )
+        xpts_face, x_weights_face = _collapse_tiled_axis_stencil(
+            xpts_face, x_weights_face, local_Nx, reduced_x, g
+        )
+        ypts_node, y_weights_node = _collapse_tiled_axis_stencil(
+            ypts_node, y_weights_node, local_Ny, reduced_y, g
+        )
+        ypts_face, y_weights_face = _collapse_tiled_axis_stencil(
+            ypts_face, y_weights_face, local_Ny, reduced_y, g
+        )
+        zpts_node, z_weights_node = _collapse_tiled_axis_stencil(
+            zpts_node, z_weights_node, local_Nz, reduced_z, g
+        )
+        zpts_face, z_weights_face = _collapse_tiled_axis_stencil(
+            zpts_face, z_weights_face, local_Nz, reduced_z, g
+        )
 
         tile_Jx = Jx_template
         tile_Jy = Jy_template
         tile_Jz = Jz_template
 
-        for i in range(xpts.shape[0]):
-            for j in range(ypts.shape[0]):
-                for k in range(zpts.shape[0]):
-                    ix = xpts[i]
-                    iy = ypts[j]
-                    iz = zpts[k]
-                    tile_Jx = tile_Jx.at[ix, iy, iz].add(
+        for i in range(xpts_node.shape[0]):
+            for j in range(ypts_node.shape[0]):
+                for k in range(zpts_node.shape[0]):
+                    tile_Jx = tile_Jx.at[xpts_face[i], ypts_node[j], zpts_node[k]].add(
                         active * update_x1 * dq * vx * x_weights_face[i] * y_weights_node[j] * z_weights_node[k],
                         mode="drop",
                     )
-                    tile_Jy = tile_Jy.at[ix, iy, iz].add(
+                    tile_Jy = tile_Jy.at[xpts_node[i], ypts_face[j], zpts_node[k]].add(
                         active * update_x2 * dq * vy * x_weights_node[i] * y_weights_face[j] * z_weights_node[k],
                         mode="drop",
                     )
-                    tile_Jz = tile_Jz.at[ix, iy, iz].add(
+                    tile_Jz = tile_Jz.at[xpts_node[i], ypts_node[j], zpts_face[k]].add(
                         active * update_x3 * dq * vz * x_weights_node[i] * y_weights_node[j] * z_weights_face[k],
                         mode="drop",
                     )
