@@ -12,6 +12,7 @@ from PyPIC3D.boundary_conditions import ghost_cells
 from PyPIC3D.boundary_conditions.grid_and_stencil import BC_PERIODIC
 from PyPIC3D.particles import particle_tile_communication as particle_comm
 from PyPIC3D.particles.particle_class import TiledParticles
+from PyPIC3D.utilities.grids import build_yee_grid
 
 
 jax.config.update("jax_enable_x64", True)
@@ -41,7 +42,7 @@ def _dynamic_parameters(mesh_shape, tile_shape):
     nx = int(mesh_shape[0]) * int(tile_shape[0])
     ny = int(mesh_shape[1]) * int(tile_shape[1])
     nz = int(mesh_shape[2]) * int(tile_shape[2])
-    return SimpleNamespace(
+    dynamic_parameters = SimpleNamespace(
         dx=jnp.asarray(1.0),
         dy=jnp.asarray(1.0),
         dz=jnp.asarray(1.0),
@@ -52,6 +53,18 @@ def _dynamic_parameters(mesh_shape, tile_shape):
         y_wind=jnp.asarray(float(ny)),
         z_wind=jnp.asarray(float(nz)),
     )
+    grid_parameters = SimpleNamespace(
+        **vars(dynamic_parameters),
+        x_min=jnp.asarray(-0.5 * nx),
+        y_min=jnp.asarray(-0.5 * ny),
+        z_min=jnp.asarray(-0.5 * nz),
+    )
+    center_grid, vertex_grid = build_yee_grid(grid_parameters)
+    dynamic_parameters.grids = SimpleNamespace(
+        center=center_grid,
+        vertex=vertex_grid,
+    )
+    return dynamic_parameters
 
 
 def _empty_particles(mesh_shape, n_slots=2):

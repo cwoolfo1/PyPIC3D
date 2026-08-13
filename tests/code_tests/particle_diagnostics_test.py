@@ -145,6 +145,42 @@ class TestTiledParticleDiagnostics(unittest.TestCase):
 
             self.assertTrue(jnp.allclose(flattened_position, original_position))
 
+    def test_flattened_diagnostic_positions_wrap_from_shifted_grid_bounds(self):
+        parameter_set = self._parameter_values()
+        parameter_set["x_wind"] = 2.0
+        parameter_set["dx"] = 0.5
+        parameter_set["x_min"] = 1.0
+        parameter_set["x_max"] = 3.0
+        parameter_set["particle_boundary_conditions"] = {
+            "x": 0,
+            "y": 0,
+            "z": 0,
+        }
+        static_parameters, dynamic_parameters = self._particle_parameters(parameter_set)
+        species_list = [
+            particle_species(
+                name="ions",
+                charge=1.0,
+                mass=1.0,
+                x1=jnp.array([1.05]),
+                x2=jnp.array([0.0]),
+                x3=jnp.array([0.0]),
+                v1=jnp.array([1.0]),
+                v2=jnp.array([0.0]),
+                v3=jnp.array([0.0]),
+            )
+        ]
+        tiled_particles, species_config = build_tiled_particles(species_list, static_parameters, dynamic_parameters)
+
+        flattened_species = particles_for_output(
+            tiled_particles,
+            species_config=species_config,
+            static_parameters=static_parameters,
+            dynamic_parameters=dynamic_parameters,
+        )
+
+        self.assertTrue(jnp.allclose(flattened_species[0].x_diagnostic[:, 0], jnp.array([2.95])))
+
     def test_species_names_are_preserved_when_metadata_is_available(self):
         species_list = self._species()
         static_parameters, dynamic_parameters = self._particle_parameters()

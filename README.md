@@ -98,13 +98,13 @@ tests/physics_tests/          # numerical and convergence tests
 A suite of lightweight API call and implementation tests can be run with:
 
 ```bash
-pytest tests/code_tests
+python -m unittest tests/code_tests/*.py
 ```
 
 A suite of lightweight physics based tests to verify the correctness of the implementation can be run with:
 
 ```bash
-pytest tests/physics_tests
+python -m unittest tests/physics_tests/*.py
 ```
 
 ## Build Docs

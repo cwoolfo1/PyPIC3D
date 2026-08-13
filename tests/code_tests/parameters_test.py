@@ -2,6 +2,11 @@ import unittest
 
 import jax
 
+from PyPIC3D.boundary_conditions.grid_and_stencil import (
+    BC_ABSORBING,
+    BC_CONDUCTING,
+    BC_PERIODIC,
+)
 from PyPIC3D.deposition.Esirkepov import Esirkepov_current
 from PyPIC3D.deposition.J_from_rhov import J_from_rhov
 from PyPIC3D.deposition.rho import compute_rho
@@ -31,7 +36,7 @@ class TestKernelParameters(unittest.TestCase):
             tile_shape=(4, 2, 1),
             current_deposition="direct",
             current_filter="none",
-            particle_boundary_conditions=(0, 1, 2),
+            particle_boundary_conditions=(BC_PERIODIC, BC_CONDUCTING, BC_ABSORBING),
             relativistic=False,
             C=1.0,
             eps=2.0,
@@ -46,7 +51,10 @@ class TestKernelParameters(unittest.TestCase):
         self.assertEqual(static_parameters.particle_pusher, "boris")
         self.assertEqual(static_parameters.tile_shape, (4, 2, 1))
         self.assertEqual(static_parameters.boundary_conditions, (0, 0, 0))
-        self.assertEqual(static_parameters.particle_boundary_conditions, (0, 1, 2))
+        self.assertEqual(
+            static_parameters.particle_boundary_conditions,
+            (BC_PERIODIC, BC_CONDUCTING, BC_ABSORBING),
+        )
         self.assertNotIn("particle_species_names", static_parameters._asdict())
         self.assertNotIn("particle_species_metadata", static_parameters._asdict())
         self.assertIsInstance(hash(static_parameters), int)

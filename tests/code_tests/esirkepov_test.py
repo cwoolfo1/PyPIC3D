@@ -11,7 +11,11 @@ import jax.numpy as jnp
 import numpy as np
 import toml
 
-from PyPIC3D.boundary_conditions.grid_and_stencil import BC_CONDUCTING, BC_PERIODIC
+from PyPIC3D.boundary_conditions.grid_and_stencil import (
+    BC_ABSORBING,
+    BC_CONDUCTING,
+    BC_PERIODIC,
+)
 from PyPIC3D.deposition.Esirkepov import Esirkepov_current
 from PyPIC3D.deposition.rho import compute_rho
 from PyPIC3D.boundary_conditions import ghost_cells
@@ -746,7 +750,11 @@ class TestTiledEsirkepovCurrent(unittest.TestCase):
             Nz=1,
             dt=0.05,
             boundary_conditions={"x": BC_PERIODIC, "y": BC_PERIODIC, "z": BC_PERIODIC},
-            particle_boundary_conditions={"x": 2, "y": 0, "z": 0},
+            particle_boundary_conditions={
+                "x": BC_ABSORBING,
+                "y": BC_PERIODIC,
+                "z": BC_PERIODIC,
+            },
         )
         periodic_particle_parameters["guard_cells"] = 2
         absorbing_particle_parameters["guard_cells"] = 2

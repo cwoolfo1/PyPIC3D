@@ -1,4 +1,5 @@
 import math
+from types import SimpleNamespace
 
 import jax.numpy as jnp
 import numpy as np
@@ -7,7 +8,7 @@ from PyPIC3D.boundary_conditions.ghost_cells import make_field_mesh, update_tile
 from PyPIC3D.boundary_conditions.grid_and_stencil import BC_PERIODIC
 from PyPIC3D.parameters import DynamicParameters, GridParameters, StaticParameters
 from PyPIC3D.particles.particle_class import SpeciesConfig, TiledParticles
-from PyPIC3D.utilities.grids import build_collocated_grid, build_tiled_yee_grids, build_yee_grid
+from PyPIC3D.utilities.grids import build_collocated_grid, build_tiled_yee_grids, build_yee_grid, grid_domain_bounds
 
 
 def _tile_axis_count(n_cells, cells_per_tile):
@@ -34,6 +35,9 @@ def kernel_parameters(
     x_wind=4.0,
     y_wind=3.0,
     z_wind=2.0,
+    x_min=None,
+    y_min=None,
+    z_min=None,
     dx=None,
     dy=None,
     dz=None,
@@ -49,6 +53,9 @@ def kernel_parameters(
     particle_pusher="boris",
     current_deposition="direct",
     current_filter="none",
+    metric="flat_cartesian",
+    metric_mass=1.0,
+    metric_spin=0.0,
     C=1.0,
     eps=1.0,
     mu=1.0,
@@ -61,6 +68,8 @@ def kernel_parameters(
     GPUs=False,
     benchmark=False,
     pml_active=False,
+    supergaussian_active=False,
+    supergaussian_layers=(),
     particle_tile_capacity_factor=1.0,
 ):
     if dx is None:
@@ -69,6 +78,12 @@ def kernel_parameters(
         dy = y_wind / Ny
     if dz is None:
         dz = z_wind / Nz
+    if x_min is None:
+        x_min = -x_wind / 2.0
+    if y_min is None:
+        y_min = -y_wind / 2.0
+    if z_min is None:
+        z_min = -z_wind / 2.0
     if tile_shape is None:
         tile_shape = (Nx, Ny, Nz)
 
@@ -92,11 +107,16 @@ def kernel_parameters(
         particle_pusher=particle_pusher,
         current_deposition=current_deposition,
         current_filter=current_filter,
+        metric=metric,
+        metric_mass=float(metric_mass),
+        metric_spin=float(metric_spin),
         shape_factor=int(shape_factor),
         guard_cells=int(guard_cells),
         tile_shape=tile_shape,
         particle_tile_capacity_factor=float(particle_tile_capacity_factor),
         pml_active=bool(pml_active),
+        supergaussian_active=bool(supergaussian_active),
+        supergaussian_layers=tuple(supergaussian_layers),
         boundary_conditions=tuple(int(value) for value in boundary_conditions),
         particle_boundary_conditions=tuple(int(value) for value in particle_boundary_conditions),
         field_mesh=make_field_mesh(tile_grid_shape),
@@ -126,10 +146,24 @@ def kernel_parameters(
         ),
     )
 
+    grid_setup = SimpleNamespace(
+        dx=dynamic_parameters.dx,
+        dy=dynamic_parameters.dy,
+        dz=dynamic_parameters.dz,
+        Nx=dynamic_parameters.Nx,
+        Ny=dynamic_parameters.Ny,
+        Nz=dynamic_parameters.Nz,
+        x_wind=dynamic_parameters.x_wind,
+        y_wind=dynamic_parameters.y_wind,
+        z_wind=dynamic_parameters.z_wind,
+        x_min=jnp.asarray(x_min),
+        y_min=jnp.asarray(y_min),
+        z_min=jnp.asarray(z_min),
+    )
     if electrostatic:
-        center_grid, vertex_grid = build_collocated_grid(dynamic_parameters)
+        center_grid, vertex_grid = build_collocated_grid(grid_setup)
     else:
-        center_grid, vertex_grid = build_yee_grid(dynamic_parameters)
+        center_grid, vertex_grid = build_yee_grid(grid_setup)
 
     dynamic_parameters = dynamic_parameters._replace(
         grids=GridParameters(
@@ -171,6 +205,9 @@ def kernel_parameters_from_values(parameter_set, dynamic_values=None):
     x_wind = parameter_set.get("x_wind", float(parameter_set["Nx"]) * float(1.0 if dx is None else dx))
     y_wind = parameter_set.get("y_wind", float(parameter_set["Ny"]) * float(1.0 if dy is None else dy))
     z_wind = parameter_set.get("z_wind", float(parameter_set["Nz"]) * float(1.0 if dz is None else dz))
+    x_min = parameter_set.get("x_min")
+    y_min = parameter_set.get("y_min")
+    z_min = parameter_set.get("z_min")
 
     return kernel_parameters(
         Nx=parameter_set["Nx"],
@@ -179,6 +216,9 @@ def kernel_parameters_from_values(parameter_set, dynamic_values=None):
         x_wind=x_wind,
         y_wind=y_wind,
         z_wind=z_wind,
+        x_min=x_min,
+        y_min=y_min,
+        z_min=z_min,
         dx=dx,
         dy=dy,
         dz=dz,
@@ -206,6 +246,8 @@ def kernel_parameters_from_values(parameter_set, dynamic_values=None):
         GPUs=parameter_set.get("GPUs", False),
         benchmark=parameter_set.get("benchmark", False),
         pml_active=parameter_set.get("pml_active", False),
+        supergaussian_active=parameter_set.get("supergaussian", (False, False, False, False, ()))[0],
+        supergaussian_layers=parameter_set.get("supergaussian", (False, False, False, False, ()))[-1],
         particle_tile_capacity_factor=parameter_set.get("particle_tile_capacity_factor", 1.0),
     )
 
@@ -230,6 +272,9 @@ def particle_parameters_from_values(parameter_set, tile_shape=None, dynamic_valu
     x_wind = parameter_set.get("x_wind", float(parameter_set["Nx"]) * float(dx))
     y_wind = parameter_set.get("y_wind", float(parameter_set["Ny"]) * float(dy))
     z_wind = parameter_set.get("z_wind", float(parameter_set["Nz"]) * float(dz))
+    x_min = parameter_set.get("x_min", -x_wind / 2.0)
+    y_min = parameter_set.get("y_min", -y_wind / 2.0)
+    z_min = parameter_set.get("z_min", -z_wind / 2.0)
 
     static_parameters = StaticParameters(
         name=parameter_set.get("name", "test"),
@@ -244,11 +289,16 @@ def particle_parameters_from_values(parameter_set, tile_shape=None, dynamic_valu
         particle_pusher=parameter_set.get("particle_pusher", "boris"),
         current_deposition=parameter_set.get("current_deposition", "direct"),
         current_filter=parameter_set.get("current_filter", "none"),
+        metric=parameter_set.get("metric", "flat_cartesian"),
+        metric_mass=float(parameter_set.get("metric_mass", 1.0)),
+        metric_spin=float(parameter_set.get("metric_spin", 0.0)),
         shape_factor=int(parameter_set.get("shape_factor", 1)),
         guard_cells=int(parameter_set.get("guard_cells", 2)),
         tile_shape=tile_shape,
         particle_tile_capacity_factor=float(parameter_set.get("particle_tile_capacity_factor", 1.0)),
         pml_active=bool(parameter_set.get("pml_active", False)),
+        supergaussian_active=bool(parameter_set.get("supergaussian", (False, False, False, False, ()))[0]),
+        supergaussian_layers=tuple(parameter_set.get("supergaussian", (False, False, False, False, ()))[-1]),
         boundary_conditions=_axis_tuple(parameter_set.get("boundary_conditions", (0, 0, 0))),
         particle_boundary_conditions=_axis_tuple(parameter_set.get("particle_boundary_conditions", (0, 0, 0))),
         field_mesh=None,
@@ -270,6 +320,29 @@ def particle_parameters_from_values(parameter_set, tile_shape=None, dynamic_valu
         kb=jnp.asarray(parameter_set.get("kb", dynamic_values.get("kb", 1.0))),
         alpha=jnp.asarray(parameter_set.get("alpha", dynamic_values.get("alpha", 1.0))),
         grids=GridParameters(vertex=(), center=(), tiled_vertex_grid=(), tiled_center_grid=()),
+    )
+    grid_setup = SimpleNamespace(
+        dx=dynamic_parameters.dx,
+        dy=dynamic_parameters.dy,
+        dz=dynamic_parameters.dz,
+        Nx=dynamic_parameters.Nx,
+        Ny=dynamic_parameters.Ny,
+        Nz=dynamic_parameters.Nz,
+        x_wind=dynamic_parameters.x_wind,
+        y_wind=dynamic_parameters.y_wind,
+        z_wind=dynamic_parameters.z_wind,
+        x_min=jnp.asarray(x_min),
+        y_min=jnp.asarray(y_min),
+        z_min=jnp.asarray(z_min),
+    )
+    center_grid, vertex_grid = build_yee_grid(grid_setup)
+    dynamic_parameters = dynamic_parameters._replace(
+        grids=GridParameters(
+            vertex=vertex_grid,
+            center=center_grid,
+            tiled_vertex_grid=(),
+            tiled_center_grid=(),
+        )
     )
     return static_parameters, dynamic_parameters
 
@@ -496,10 +569,11 @@ def particle_species(
 
 def _particle_tile_indices(x, dynamic_parameters, tile_shape):
     tile_nx, tile_ny, tile_nz = [int(width) for width in tile_shape]
+    (x_min, _), (y_min, _), (z_min, _) = grid_domain_bounds(dynamic_parameters)
 
-    x_cell = np.floor((np.asarray(x[:, 0]) + float(dynamic_parameters.x_wind) / 2.0) / float(dynamic_parameters.dx)).astype(int)
-    y_cell = np.floor((np.asarray(x[:, 1]) + float(dynamic_parameters.y_wind) / 2.0) / float(dynamic_parameters.dy)).astype(int)
-    z_cell = np.floor((np.asarray(x[:, 2]) + float(dynamic_parameters.z_wind) / 2.0) / float(dynamic_parameters.dz)).astype(int)
+    x_cell = np.floor((np.asarray(x[:, 0]) - float(x_min)) / float(dynamic_parameters.dx)).astype(int)
+    y_cell = np.floor((np.asarray(x[:, 1]) - float(y_min)) / float(dynamic_parameters.dy)).astype(int)
+    z_cell = np.floor((np.asarray(x[:, 2]) - float(z_min)) / float(dynamic_parameters.dz)).astype(int)
 
     x_cell = np.clip(x_cell, 0, int(dynamic_parameters.Nx) - 1)
     y_cell = np.clip(y_cell, 0, int(dynamic_parameters.Ny) - 1)

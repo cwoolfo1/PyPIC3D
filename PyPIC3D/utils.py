@@ -15,6 +15,7 @@ from scipy import stats
 # import external libraries
 
 from PyPIC3D.parameters import dynamic_parameters_for_output, static_parameters_for_output
+from PyPIC3D.utilities.grids import grid_axis_width, grid_domain_bounds
 
 def setup_pmd_files(file_path, name, extension=".bp"):
     """
@@ -329,14 +330,15 @@ def print_stats(static_parameters, dynamic_parameters):
     dy = dynamic_parameters.dy
     dz = dynamic_parameters.dz
     dt = dynamic_parameters.dt
-    x_wind = dynamic_parameters.x_wind
-    y_wind = dynamic_parameters.y_wind
-    z_wind = dynamic_parameters.z_wind
+    x_bounds, y_bounds, z_bounds = grid_domain_bounds(dynamic_parameters)
+    x_wind = grid_axis_width(dynamic_parameters.grids.center[0])
+    y_wind = grid_axis_width(dynamic_parameters.grids.center[1])
+    z_wind = grid_axis_width(dynamic_parameters.grids.center[2])
     t_wind = Nt*dt
     print(f'\ntime window: {t_wind} s with {Nt} time steps of {dt} s')
-    print(f'x window: {x_wind} m with dx: {dx} m')
-    print(f'y window: {y_wind} m with dy: {dy} m')
-    print(f'z window: {z_wind} m with dz: {dz} m\n')
+    print(f'x window: {x_wind} m [{x_bounds[0]}, {x_bounds[1]}] with dx: {dx} m')
+    print(f'y window: {y_wind} m [{y_bounds[0]}, {y_bounds[1]}] with dy: {dy} m')
+    print(f'z window: {z_wind} m [{z_bounds[0]}, {z_bounds[1]}] with dz: {dz} m\n')
 
 def check_stability(plasma_parameters, dt):
     """
@@ -403,7 +405,11 @@ def build_plasma_parameters_dict(static_parameters, dynamic_parameters, electron
     kb = dynamic_parameters.kb
     dx, dy, dz = dynamic_parameters.dx, dynamic_parameters.dy, dynamic_parameters.dz
 
-    volume = dynamic_parameters.x_wind * dynamic_parameters.y_wind * dynamic_parameters.z_wind
+    volume = (
+        grid_axis_width(dynamic_parameters.grids.center[0])
+        * grid_axis_width(dynamic_parameters.grids.center[1])
+        * grid_axis_width(dynamic_parameters.grids.center[2])
+    )
     density = weight * N / volume
     theoretical_freq = jnp.sqrt(density) * jnp.abs(q) / jnp.sqrt(dynamic_parameters.eps * me)
     debye = jnp.sqrt(dynamic_parameters.eps * kb * Te / (density * q**2))
@@ -505,6 +511,18 @@ def grab_field_keys(config):
             field_keys.append(key)
     return field_keys
 
+
+def grab_previous_field_keys(config):
+    """
+    Extract previous-field blocks used by time-centered field solvers.
+    """
+    field_keys = []
+    for key in config.keys():
+        if key[:14] == "previous_field":
+            field_keys.append(key)
+    return field_keys
+
+
 def _add_external_field_to_tiled_component(component, external_field, static_parameters, dynamic_parameters, field_name):
     """
     Add one physical field array into the active interiors of a tiled component.
@@ -535,6 +553,40 @@ def _add_external_field_to_tiled_component(component, external_field, static_par
                 ].add(block)
 
     return component
+
+
+def load_previous_fields_from_toml(previous_fields, config, static_parameters, dynamic_parameters):
+    """
+    Load previous D/B field components from TOML blocks named previous_fieldN.
+
+    The static-metric solver stores D at integer time and B at half-integer
+    time.  Optional previous_fieldN blocks let a run initialize the older
+    time levels from npy arrays instead of duplicating the current fields.
+    """
+
+    field_keys = grab_previous_field_keys(config)
+    field_components = [component for field in previous_fields for component in field]
+
+    for toml_key in field_keys:
+        field_name = config[toml_key]['name']
+        field_type = config[toml_key]['type']
+        field_path = config[toml_key]['path']
+        print(f"Loading previous field: {field_name} from {field_path}")
+
+        if field_type < 0 or field_type > 5:
+            raise ValueError("Previous static-metric fields must be D or B components with type 0 through 5")
+
+        external_field = jnp.load(field_path)
+        field_components[field_type] = _add_external_field_to_tiled_component(
+            jnp.zeros_like(field_components[field_type]),
+            external_field,
+            static_parameters,
+            dynamic_parameters,
+            field_name,
+        )
+        print(f"Previous field loaded successfully: {field_name}")
+
+    return tuple(field_components[:3]), tuple(field_components[3:6])
 
 
 def load_external_fields_from_toml(fields, external_fields, config, static_parameters, dynamic_parameters):

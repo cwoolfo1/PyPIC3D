@@ -2,6 +2,7 @@ import os
 import inspect
 import tempfile
 import unittest
+from types import SimpleNamespace
 
 import jax
 import jax.numpy as jnp
@@ -9,6 +10,8 @@ import numpy as np
 
 from PyPIC3D.particles.particle_initialization import load_particles_from_toml
 from PyPIC3D.particles.particle_class import SpeciesConfig, TiledParticles
+from PyPIC3D.parameters import GridParameters
+from PyPIC3D.utilities.grids import build_yee_grid
 from tests.kernel_fixtures import build_tiled_particles, particle_parameters_from_tile_values, particle_species
 
 
@@ -253,6 +256,86 @@ class TestTiledParticleInitialization(unittest.TestCase):
             self.assertTrue(jnp.allclose(species_config.charge, jnp.array([-1.0])))
             self.assertTrue(jnp.allclose(species_config.mass, jnp.array([2.0])))
             self.assertTrue(jnp.allclose(species_config.weight, jnp.array([4.0])))
+
+    def test_load_particles_from_toml_assigns_tiles_from_shifted_grid_bounds(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            x_path = self._write_array(tmpdir, "x.npy", [1.25, 1.75, 2.25, 2.75])
+            y_path = self._write_array(tmpdir, "y.npy", [0.0, 0.0, 0.0, 0.0])
+            z_path = self._write_array(tmpdir, "z.npy", [2.5, 2.5, 2.5, 2.5])
+            zeros_path = self._write_array(tmpdir, "zeros.npy", [0.0, 0.0, 0.0, 0.0])
+
+            parameter_set = {
+                "Nx": 4,
+                "Ny": 1,
+                "Nz": 1,
+                "dx": 0.5,
+                "dy": 1.0,
+                "dz": 1.0,
+                "dt": 0.1,
+                "x_wind": 2.0,
+                "y_wind": 1.0,
+                "z_wind": 1.0,
+                "tile_shape": (2, 1, 1),
+            }
+            dynamic_values = {"kb": 1.0, "eps": 1.0}
+            simulation_parameters = {
+                "ds_per_debye": None,
+                "shape_factor": 1,
+                "particle_tile_nx": 2,
+                "particle_tile_ny": 1,
+                "particle_tile_nz": 1,
+            }
+            grid_setup = SimpleNamespace(
+                dx=0.5,
+                dy=1.0,
+                dz=1.0,
+                x_wind=2.0,
+                y_wind=1.0,
+                z_wind=1.0,
+                x_min=1.0,
+                y_min=-0.5,
+                z_min=2.0,
+                Nx=4,
+                Ny=1,
+                Nz=1,
+            )
+            center_grid, vertex_grid = build_yee_grid(grid_setup)
+            config = {
+                "particle1": {
+                    "name": "electrons",
+                    "N_particles": 4,
+                    "charge": -1.0,
+                    "mass": 2.0,
+                    "weight": 4.0,
+                    "temperature": 1.0,
+                    "initial_x": x_path,
+                    "initial_y": y_path,
+                    "initial_z": z_path,
+                    "initial_vx": zeros_path,
+                    "initial_vy": zeros_path,
+                    "initial_vz": zeros_path,
+                }
+            }
+
+            static_parameters, dynamic_parameters = self._particle_parameters(simulation_parameters, parameter_set, dynamic_values)
+            dynamic_parameters = dynamic_parameters._replace(
+                grids=GridParameters(
+                    vertex=vertex_grid,
+                    center=center_grid,
+                    tiled_vertex_grid=(),
+                    tiled_center_grid=(),
+                )
+            )
+            particles, _species_config, _species_names, _metadata = load_particles_from_toml(
+                config,
+                static_parameters,
+                dynamic_parameters,
+            )
+
+            self.assertEqual(int(jnp.sum(particles.active[0, 0, 0, 0])), 2)
+            self.assertEqual(int(jnp.sum(particles.active[1, 0, 0, 0])), 2)
+            self.assertTrue(jnp.allclose(particles.x[0, 0, 0, 0, :, 0], jnp.array([1.25, 1.75])))
+            self.assertTrue(jnp.allclose(particles.x[1, 0, 0, 0, :, 0], jnp.array([2.25, 2.75])))
 
     def test_load_particles_from_toml_preserves_interleaved_tile_order(self):
         with tempfile.TemporaryDirectory() as tmpdir:

@@ -1,0 +1,44 @@
+[physics]
+mass = 1.0
+spin = 0.99
+seed_spin = 0.0
+B0 = 1.0
+
+[grid]
+nr = 256
+ntheta = 128
+nphi = 1
+r_outer = 10.0
+theta_offset_fraction = 0.25
+phi_inner = 0.0
+phi_outer = 6.283185307179586
+guard_cells = 2
+
+[time]
+dt = 0.01
+t_end = 100.0
+
+[absorber]
+fraction = 0.01
+order = 4.0
+target_reflection = 1.0e-8
+
+[output]
+directory = "output/demo"
+field_filename = "fields"
+field_extension = ".h5"
+dump_interval = 100
+queue_size = 2
+
+[analysis]
+comparison_filename = "wald_comparison.png"
+movie_filename = "wald_relaxation.mp4"
+plot_r_outer = 4.0
+fps = 10
+dpi = 200
+field_line_count = 29
+field_line_radial_fraction = 0.94
+threading_field_line_count = 2
+threading_impact_fraction = 0.8
+near_horizon_field_line_count = 32
+near_horizon_seed_offset_cells = 2.0

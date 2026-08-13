@@ -4,6 +4,7 @@ from PyPIC3D.boundary_conditions.PML import (
     apply_tiled_pml_to_b_curl,
     apply_tiled_pml_to_e_curl,
 )
+from PyPIC3D.boundary_conditions.supergaussian import apply_tiled_supergaussian_absorber
 from PyPIC3D.boundary_conditions import ghost_cells
 from PyPIC3D.boundary_conditions.grid_and_stencil import BC_CONDUCTING
 from PyPIC3D.utilities.filters import digital_filter_vector
@@ -90,7 +91,16 @@ def update_E(E_tiles, B_tiles, J_tiles, static_parameters, dynamic_parameters, p
     # conducting walls zero tangential E components on the physical boundary
     # planes; the shared scalar helper refreshes halos through ppermute.
 
-    return ghost_cells.update_tiled_vector_ghost_cells((Ex, Ey, Ez), static_parameters, g), pml_state
+    E_tiles = apply_tiled_supergaussian_absorber(
+        (Ex, Ey, Ez),
+        static_parameters,
+        dynamic_parameters,
+        dynamic_parameters.dt,
+    )
+    # A supergaussian layer is a field-only sponge: it damps the evolved fields
+    # after the Maxwell update without changing the deposited current.
+
+    return ghost_cells.update_tiled_vector_ghost_cells(E_tiles, static_parameters, g), pml_state
 
 
 def update_B(E_tiles, B_tiles, static_parameters, dynamic_parameters, pml_state=None, do_filter=False):
@@ -141,6 +151,14 @@ def update_B(E_tiles, B_tiles, static_parameters, dynamic_parameters, pml_state=
     By = By.at[:, :, :, active, active, active].set(By[:, :, :, active, active, active] - dt * curl_y)
     Bz = Bz.at[:, :, :, active, active, active].set(Bz[:, :, :, active, active, active] - dt * curl_z)
 
+    Bx, By, Bz = apply_tiled_supergaussian_absorber(
+        (Bx, By, Bz),
+        static_parameters,
+        dynamic_parameters,
+        dt,
+    )
+    # The B update is split into half steps, so the sponge uses the same half
+    # timestep as Faraday's-law update here.
 
     def apply_filter(Bx, By, Bz):
         Bx, By, Bz = ghost_cells.update_tiled_vector_ghost_cells((Bx, By, Bz), static_parameters, g)

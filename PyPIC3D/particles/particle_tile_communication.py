@@ -2,9 +2,15 @@ import jax
 import jax.numpy as jnp
 from jax.sharding import NamedSharding, PartitionSpec as P
 
-from PyPIC3D.boundary_conditions.grid_and_stencil import wrap_periodic_position
+from PyPIC3D.boundary_conditions.grid_and_stencil import (
+    BC_ABSORBING,
+    BC_CONDUCTING,
+    BC_PERIODIC,
+    wrap_periodic_position,
+)
 from PyPIC3D.boundary_conditions.ghost_cells import MESH_AXES
 from PyPIC3D.particles.particle_class import TiledParticles
+from PyPIC3D.utilities.grids import grid_domain_bounds
 
 
 PARTICLE_STATE_TILE_SPEC = P("tile_x", "tile_y", "tile_z", None, None, None)
@@ -38,23 +44,24 @@ def shard_tiled_particles(tiled_particles, static_parameters):
     )
 
 
-def _apply_tiled_axis_boundary(x, u, active, wind, bc):
-    half_wind = 0.5 * wind
-    periodic = bc == 0
-    reflecting = bc == 1
-    absorbing = bc == 2
+def _apply_tiled_axis_boundary(x, u, active, axis_min, axis_max, bc):
+    wind = axis_max - axis_min
+    center = 0.5 * (axis_min + axis_max)
+    periodic = bc == BC_PERIODIC
+    reflecting = bc == BC_CONDUCTING
+    absorbing = bc == BC_ABSORBING
 
-    periodic_x = wrap_periodic_position(x, wind)
+    periodic_x = wrap_periodic_position(x - center, wind) + center
     reflected_x = jnp.where(
-        x > half_wind,
-        2.0 * half_wind - x,
-        jnp.where(x < -half_wind, -2.0 * half_wind - x, x),
+        x > axis_max,
+        2.0 * axis_max - x,
+        jnp.where(x < axis_min, 2.0 * axis_min - x, x),
     )
-    reflected_u = jnp.where((x >= half_wind) | (x <= -half_wind), -u, u)
+    reflected_u = jnp.where((x >= axis_max) | (x <= axis_min), -u, u)
 
     x_out = jnp.where(periodic, periodic_x, jnp.where(reflecting, reflected_x, x))
     u_out = jnp.where(reflecting, reflected_u, u)
-    active_out = jnp.where(absorbing, active & (x <= half_wind) & (x >= -half_wind), active)
+    active_out = jnp.where(absorbing, active & (x <= axis_max) & (x >= axis_min), active)
 
     return x_out, u_out, active_out
 
@@ -63,10 +70,11 @@ def _particle_tile_indices(x, y, z, static_parameters, dynamic_parameters, tile_
     tile_shape = static_parameters.tile_shape
     tile_nx, tile_ny, tile_nz = tile_shape
     ntx, nty, ntz = tile_counts
+    (x_min, _), (y_min, _), (z_min, _) = grid_domain_bounds(dynamic_parameters)
 
-    x_cell = jnp.floor((x + 0.5 * dynamic_parameters.x_wind) / dynamic_parameters.dx).astype(int)
-    y_cell = jnp.floor((y + 0.5 * dynamic_parameters.y_wind) / dynamic_parameters.dy).astype(int)
-    z_cell = jnp.floor((z + 0.5 * dynamic_parameters.z_wind) / dynamic_parameters.dz).astype(int)
+    x_cell = jnp.floor((x - x_min) / dynamic_parameters.dx).astype(int)
+    y_cell = jnp.floor((y - y_min) / dynamic_parameters.dy).astype(int)
+    z_cell = jnp.floor((z - z_min) / dynamic_parameters.dz).astype(int)
 
     x_cell = jnp.clip(x_cell, 0, dynamic_parameters.Nx - 1)
     y_cell = jnp.clip(y_cell, 0, dynamic_parameters.Ny - 1)
@@ -239,26 +247,30 @@ def _bounded_local_state_and_tile_offsets(local_x, local_u, local_active, static
     bounded_x = local_x
     bounded_u = local_u
     bounded_active = local_active
+    (x_bounds, y_bounds, z_bounds) = grid_domain_bounds(dynamic_parameters)
 
     x1, u1, bounded_active = _apply_tiled_axis_boundary(
         bounded_x[..., 0],
         bounded_u[..., 0],
         bounded_active,
-        dynamic_parameters.x_wind,
+        x_bounds[0],
+        x_bounds[1],
         particle_bc[0],
     )
     x2, u2, bounded_active = _apply_tiled_axis_boundary(
         bounded_x[..., 1],
         bounded_u[..., 1],
         bounded_active,
-        dynamic_parameters.y_wind,
+        y_bounds[0],
+        y_bounds[1],
         particle_bc[1],
     )
     x3, u3, bounded_active = _apply_tiled_axis_boundary(
         bounded_x[..., 2],
         bounded_u[..., 2],
         bounded_active,
-        dynamic_parameters.z_wind,
+        z_bounds[0],
+        z_bounds[1],
         particle_bc[2],
     )
 

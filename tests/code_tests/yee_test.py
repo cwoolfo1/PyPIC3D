@@ -11,7 +11,7 @@ from PyPIC3D.solvers.first_order_yee import (
 from PyPIC3D.diagnostics.output_adapters import assemble_tiled_vector_field
 from PyPIC3D.boundary_conditions import ghost_cells
 from PyPIC3D.utilities.grids import build_tiled_yee_grids, build_yee_grid
-from PyPIC3D.boundary_conditions.grid_and_stencil import BC_CONDUCTING, BC_PERIODIC
+from PyPIC3D.boundary_conditions.grid_and_stencil import BC_CONDUCTING, BC_CONSTANT, BC_PERIODIC
 from tests.kernel_fixtures import kernel_parameters_from_values
 
 
@@ -135,6 +135,16 @@ class TestYeeTiled(unittest.TestCase):
         parameter_set = self._build_parameter_values()
         parameter_set["boundary_conditions"] = {"x": BC_CONDUCTING, "y": BC_CONDUCTING, "z": BC_CONDUCTING}
         return parameter_set
+
+    def _constant_x_parameters(self):
+        parameter_set = self._build_parameter_values()
+        parameter_set["boundary_conditions"] = {"x": BC_CONSTANT, "y": BC_PERIODIC, "z": BC_PERIODIC}
+        return parameter_set
+
+    def _assert_x_ghosts_are_constant(self, vector_field, g):
+        for component in vector_field:
+            self.assertTrue(jnp.allclose(component[:, :, :, :g, :, :], component[:, :, :, g:g + 1, :, :]))
+            self.assertTrue(jnp.allclose(component[:, :, :, -g:, :, :], component[:, :, :, -g - 1:-g, :, :]))
 
     def _with_tile_metadata(self, parameter_set, tile_shape, g=2):
         parameter_set["tile_shape"] = tuple(int(width) for width in tile_shape)
@@ -591,6 +601,48 @@ class TestYeeTiled(unittest.TestCase):
 
         for reference, tiled in zip(B_reference, B_from_tiles):
             self.assertTrue(jnp.allclose(tiled, reference, rtol=1.0e-12, atol=1.0e-12))
+
+    def test_update_E_uses_constant_boundary_without_conducting_tangential_zeroing(self):
+        parameter_set = self._constant_x_parameters()
+        dynamic_values = {"C": 1.0, "eps": 1.0, "mu": 1.0, "alpha": 1.0}
+        tile_shape = (2, 3, 2)
+        parameter_set = self._with_tile_metadata(parameter_set, tile_shape)
+        E = tuple(jnp.ones((10, 8, 6), dtype=float) * value for value in (2.0, 3.0, 5.0))
+        B = tuple(jnp.zeros((10, 8, 6), dtype=float) for _ in range(3))
+        J = tuple(jnp.zeros((10, 8, 6), dtype=float) for _ in range(3))
+        static_parameters, dynamic_parameters = self._split_parameters(parameter_set, dynamic_values)
+
+        E_tiled, pml_state = update_E(
+            tile_vector_field(E, parameter_set, tile_shape),
+            tile_vector_field(B, parameter_set, tile_shape),
+            tile_vector_field(J, parameter_set, tile_shape),
+            static_parameters,
+            dynamic_parameters,
+        )
+
+        self.assertIsNone(pml_state)
+        self._assert_x_ghosts_are_constant(E_tiled, int(static_parameters.guard_cells))
+        self.assertTrue(jnp.allclose(E_tiled[1][:, :, :, int(static_parameters.guard_cells), :, :], 3.0))
+        self.assertTrue(jnp.allclose(E_tiled[2][:, :, :, int(static_parameters.guard_cells), :, :], 5.0))
+
+    def test_update_B_uses_constant_boundary(self):
+        parameter_set = self._constant_x_parameters()
+        dynamic_values = {"C": 1.0, "eps": 1.0, "mu": 1.0, "alpha": 1.0}
+        tile_shape = (2, 3, 2)
+        parameter_set = self._with_tile_metadata(parameter_set, tile_shape)
+        E = tuple(jnp.zeros((10, 8, 6), dtype=float) for _ in range(3))
+        B = tuple(jnp.ones((10, 8, 6), dtype=float) * value for value in (7.0, 11.0, 13.0))
+        static_parameters, dynamic_parameters = self._split_parameters(parameter_set, dynamic_values)
+
+        B_tiled, pml_state = update_B(
+            tile_vector_field(E, parameter_set, tile_shape),
+            tile_vector_field(B, parameter_set, tile_shape),
+            static_parameters,
+            dynamic_parameters,
+        )
+
+        self.assertIsNone(pml_state)
+        self._assert_x_ghosts_are_constant(B_tiled, int(static_parameters.guard_cells))
 
     def test_tiled_electrodynamic_step_matches_single_tile_yee_sequence(self):
         parameter_set = self._build_parameter_values()

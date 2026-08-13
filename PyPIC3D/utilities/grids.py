@@ -6,6 +6,43 @@ from PyPIC3D.boundary_conditions.grid_and_stencil import (
     build_staggered_axis,
 )
 
+
+def grid_axis_min(center_axis):
+    """
+    Return the lower physical domain boundary from a ghost-celled center axis.
+    """
+    return center_axis[1]
+
+
+def grid_axis_max(center_axis):
+    """
+    Return the upper physical domain boundary from a ghost-celled center axis.
+    """
+    return center_axis[-1]
+
+
+def grid_axis_width(center_axis):
+    """
+    Return the physical domain width from a ghost-celled center axis.
+    """
+    return grid_axis_max(center_axis) - grid_axis_min(center_axis)
+
+
+def grid_axis_bounds(center_axis):
+    """
+    Return lower and upper physical boundaries from a center-grid axis.
+    """
+    return grid_axis_min(center_axis), grid_axis_max(center_axis)
+
+
+def grid_domain_bounds(dynamic_parameters):
+    """
+    Return physical domain bounds from the initialized untiled center grid.
+    """
+    center_grid = dynamic_parameters.grids.center
+    return tuple(grid_axis_bounds(axis) for axis in center_grid)
+
+
 def _tile_axis_count(n_cells, cells_per_tile):
     if int(n_cells) % int(cells_per_tile) != 0:
         raise ValueError("Shared tile sizes must divide the physical grid dimensions exactly.")
@@ -24,15 +61,19 @@ def build_collocated_grid(dynamic_parameters):
     y_wind = dynamic_parameters.y_wind
     z_wind = dynamic_parameters.z_wind
     # get the physical domain sizes
+    x_min = getattr(dynamic_parameters, "x_min", -x_wind / 2)
+    y_min = getattr(dynamic_parameters, "y_min", -y_wind / 2)
+    z_min = getattr(dynamic_parameters, "z_min", -z_wind / 2)
+    # get the lower physical boundaries
     Nx = dynamic_parameters.Nx
     Ny = dynamic_parameters.Ny
     Nz = dynamic_parameters.Nz
     # get the number of grid points
 
     grid = (
-        build_collocated_axis(-x_wind / 2, dx, Nx),
-        build_collocated_axis(-y_wind / 2, dy, Ny),
-        build_collocated_axis(-z_wind / 2, dz, Nz),
+        build_collocated_axis(x_min, dx, Nx),
+        build_collocated_axis(y_min, dy, Ny),
+        build_collocated_axis(z_min, dz, Nz),
     )
     # construct a collocated grid with ghost cells
 
@@ -55,22 +96,26 @@ def build_yee_grid(dynamic_parameters):
     y_wind = dynamic_parameters.y_wind
     z_wind = dynamic_parameters.z_wind
     # get the physical domain sizes
+    x_min = getattr(dynamic_parameters, "x_min", -x_wind / 2)
+    y_min = getattr(dynamic_parameters, "y_min", -y_wind / 2)
+    z_min = getattr(dynamic_parameters, "z_min", -z_wind / 2)
+    # get the lower physical boundaries
     Nx = dynamic_parameters.Nx
     Ny = dynamic_parameters.Ny
     Nz = dynamic_parameters.Nz
     # get the number of grid points
 
     center_grid = (
-        build_collocated_axis(-x_wind / 2, dx, Nx),
-        build_collocated_axis(-y_wind / 2, dy, Ny),
-        build_collocated_axis(-z_wind / 2, dz, Nz),
+        build_collocated_axis(x_min, dx, Nx),
+        build_collocated_axis(y_min, dy, Ny),
+        build_collocated_axis(z_min, dz, Nz),
     )
     # construct the collocated/base grid with ghost cells
 
     vertex_grid = (
-        build_staggered_axis(-x_wind / 2, dx, Nx),
-        build_staggered_axis(-y_wind / 2, dy, Ny),
-        build_staggered_axis(-z_wind / 2, dz, Nz),
+        build_staggered_axis(x_min, dx, Nx),
+        build_staggered_axis(y_min, dy, Ny),
+        build_staggered_axis(z_min, dz, Nz),
     )
     # construct the staggered half-cell grid with ghost cells
 
