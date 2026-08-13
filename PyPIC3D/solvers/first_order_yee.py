@@ -10,48 +10,98 @@ from PyPIC3D.boundary_conditions.grid_and_stencil import BC_CONDUCTING
 from PyPIC3D.utilities.filters import digital_filter_vector
 
 
+def _active_vector(field_tiles, g):
+    active = slice(g, -g)
+    return tuple(component[:, :, :, active, active, active] for component in field_tiles)
+
+
+def yee_curl_e_to_b(E_tiles, static_parameters, dynamic_parameters):
+    """
+    Apply the linear ordinary Yee curl from centered E to staggered B.
+
+    Halo refresh is part of this spatial operator.  The current field boundary
+    maps are linear: they copy neighboring/periodic values, copy the adjacent
+    interior for constant boundaries, or insert homogeneous zeros at conducting
+    boundaries.  No nonzero prescribed value is injected into this path.
+    """
+
+    g = int(static_parameters.guard_cells)
+    active = slice(g, -g)
+    forward = slice(g + 1, None if g == 1 else -g + 1)
+
+    Ex, Ey, Ez = ghost_cells.update_tiled_vector_ghost_cells(E_tiles, static_parameters, g)
+    dx, dy, dz = dynamic_parameters.dx, dynamic_parameters.dy, dynamic_parameters.dz
+
+    dEz_dy = (Ez[:, :, :, active, forward, active] - Ez[:, :, :, active, active, active]) / dy
+    dEy_dz = (Ey[:, :, :, active, active, forward] - Ey[:, :, :, active, active, active]) / dz
+    dEx_dz = (Ex[:, :, :, active, active, forward] - Ex[:, :, :, active, active, active]) / dz
+    dEx_dy = (Ex[:, :, :, active, forward, active] - Ex[:, :, :, active, active, active]) / dy
+    dEz_dx = (Ez[:, :, :, forward, active, active] - Ez[:, :, :, active, active, active]) / dx
+    dEy_dx = (Ey[:, :, :, forward, active, active] - Ey[:, :, :, active, active, active]) / dx
+
+    return (
+        dEz_dy - dEy_dz,
+        dEx_dz - dEz_dx,
+        dEy_dx - dEx_dy,
+    )
+
+
+def yee_curl_b_to_e(B_tiles, E_template, static_parameters, dynamic_parameters):
+    """
+    Apply the algebraic transpose of ``yee_curl_e_to_b`` to active B.
+
+    Transposing the constant-copy halo map changes the two exterior wall
+    planes relative to the legacy independently refreshed backward stencil.
+    """
+
+    g = int(static_parameters.guard_cells)
+    transpose_curl = jax.linear_transpose(
+        lambda E: yee_curl_e_to_b(E, static_parameters, dynamic_parameters),
+        E_template,
+    )
+    curl_B, = transpose_curl(_active_vector(B_tiles, g))
+    return _active_vector(curl_B, g)
+
+
 def update_E(E_tiles, B_tiles, J_tiles, static_parameters, dynamic_parameters, pml_state=None):
     """
     Update compact tiled electric fields without assembling a global field.
 
-    The Yee curl is evaluated on each tile's physical interior after B halos
-    have been refreshed from neighbor tiles or field boundary conditions.
+    The ordinary B-to-E curl is the algebraic transpose of the centered-E to
+    staggered-B spatial operator, including its halo communication.
     """
 
     Ex, Ey, Ez = E_tiles
-    tile_shape = tuple(int(width) for width in static_parameters.tile_shape)
-    g = static_parameters.guard_cells
-    # get the tile information
-    del tile_shape
-
+    g = int(static_parameters.guard_cells)
     active = slice(g, -g)
     # build interior slice for active axes
-    backward = slice(g - 1, -g - 1)
-    # build backward slice used for differences from vertex fields to center fields
-
-    Bx, By, Bz = ghost_cells.update_tiled_vector_ghost_cells(B_tiles, static_parameters, g)
     Jx, Jy, Jz = J_tiles
-    current = slice(g, -g) #_active_slice(g)
 
     dt = dynamic_parameters.dt
-    dx, dy, dz = dynamic_parameters.dx, dynamic_parameters.dy, dynamic_parameters.dz
     C = dynamic_parameters.C
     eps = dynamic_parameters.eps
 
-    # Backward differences map staggered B components onto same-index E/J
-    # locations under the legacy center=collocated, vertex=staggered contract.
-    dBz_dy = (Bz[:, :, :, active, active, active] - Bz[:, :, :, active, backward, active]) / dy
-    dBy_dz = (By[:, :, :, active, active, active] - By[:, :, :, active, active, backward]) / dz
-    dBx_dz = (Bx[:, :, :, active, active, active] - Bx[:, :, :, active, active, backward]) / dz
-    dBx_dy = (Bx[:, :, :, active, active, active] - Bx[:, :, :, active, backward, active]) / dy
-    dBz_dx = (Bz[:, :, :, active, active, active] - Bz[:, :, :, backward, active, active]) / dx
-    dBy_dx = (By[:, :, :, active, active, active] - By[:, :, :, backward, active, active]) / dx
-
     if pml_state is None:
-        curl_x = dBz_dy - dBy_dz
-        curl_y = dBx_dz - dBz_dx
-        curl_z = dBy_dx - dBx_dy
+        curl_x, curl_y, curl_z = yee_curl_b_to_e(
+            B_tiles,
+            E_tiles,
+            static_parameters,
+            dynamic_parameters,
+        )
     else:
+        backward = slice(g - 1, -g - 1)
+        Bx, By, Bz = ghost_cells.update_tiled_vector_ghost_cells(B_tiles, static_parameters, g)
+        dx, dy, dz = dynamic_parameters.dx, dynamic_parameters.dy, dynamic_parameters.dz
+
+        # PML evolves six split directional terms and cannot use the static
+        # transpose operator used by the ordinary Yee update.
+        dBz_dy = (Bz[:, :, :, active, active, active] - Bz[:, :, :, active, backward, active]) / dy
+        dBy_dz = (By[:, :, :, active, active, active] - By[:, :, :, active, active, backward]) / dz
+        dBx_dz = (Bx[:, :, :, active, active, active] - Bx[:, :, :, active, active, backward]) / dz
+        dBx_dy = (Bx[:, :, :, active, active, active] - Bx[:, :, :, active, backward, active]) / dy
+        dBz_dx = (Bz[:, :, :, active, active, active] - Bz[:, :, :, backward, active, active]) / dx
+        dBy_dx = (By[:, :, :, active, active, active] - By[:, :, :, backward, active, active]) / dx
+
         (curl_x, curl_y, curl_z), pml_state = apply_tiled_pml_to_e_curl(
             (dBz_dy, dBy_dz, dBx_dz, dBz_dx, dBy_dx, dBx_dy),
             static_parameters,
@@ -61,15 +111,15 @@ def update_E(E_tiles, B_tiles, J_tiles, static_parameters, dynamic_parameters, p
 
     Ex = Ex.at[:, :, :, active, active, active].set(
         Ex[:, :, :, active, active, active]
-        + (C**2 * curl_x - Jx[:, :, :, current, current, current] / eps) * dt
+        + (C**2 * curl_x - Jx[:, :, :, active, active, active] / eps) * dt
     )
     Ey = Ey.at[:, :, :, active, active, active].set(
         Ey[:, :, :, active, active, active]
-        + (C**2 * curl_y - Jy[:, :, :, current, current, current] / eps) * dt
+        + (C**2 * curl_y - Jy[:, :, :, active, active, active] / eps) * dt
     )
     Ez = Ez.at[:, :, :, active, active, active].set(
         Ez[:, :, :, active, active, active]
-        + (C**2 * curl_z - Jz[:, :, :, current, current, current] / eps) * dt
+        + (C**2 * curl_z - Jz[:, :, :, active, active, active] / eps) * dt
     )
 
     Ex, Ey, Ez = ghost_cells.update_tiled_vector_ghost_cells((Ex, Ey, Ez), static_parameters, g)
@@ -112,34 +162,31 @@ def update_B(E_tiles, B_tiles, static_parameters, dynamic_parameters, pml_state=
     """
 
     Bx, By, Bz = B_tiles
-    tile_shape = tuple(int(width) for width in static_parameters.tile_shape)
-    tile_nx, tile_ny, tile_nz = tile_shape
-    g = static_parameters.guard_cells
-    g = int(g)
-    del tile_nx, tile_ny, tile_nz
+    g = int(static_parameters.guard_cells)
     active = slice(g, -g)
     # build interior slice for active axes
-    forward = slice(g + 1, None if g == 1 else -g + 1)
-    # build forward slice used for differences from center fields to vertex fields
-
-    Ex, Ey, Ez = ghost_cells.update_tiled_vector_ghost_cells(E_tiles, static_parameters, g)
     dt = dynamic_parameters.dt / 2  # half timestep for B update
-    dx, dy, dz = dynamic_parameters.dx, dynamic_parameters.dy, dynamic_parameters.dz
-
-    # Forward differences map same-index E/J components onto staggered B
-    # locations under the legacy center=collocated, vertex=staggered contract.
-    dEz_dy = (Ez[:, :, :, active, forward, active] - Ez[:, :, :, active, active, active]) / dy
-    dEy_dz = (Ey[:, :, :, active, active, forward] - Ey[:, :, :, active, active, active]) / dz
-    dEx_dz = (Ex[:, :, :, active, active, forward] - Ex[:, :, :, active, active, active]) / dz
-    dEx_dy = (Ex[:, :, :, active, forward, active] - Ex[:, :, :, active, active, active]) / dy
-    dEz_dx = (Ez[:, :, :, forward, active, active] - Ez[:, :, :, active, active, active]) / dx
-    dEy_dx = (Ey[:, :, :, forward, active, active] - Ey[:, :, :, active, active, active]) / dx
 
     if pml_state is None:
-        curl_x = dEz_dy - dEy_dz
-        curl_y = dEx_dz - dEz_dx
-        curl_z = dEy_dx - dEx_dy
+        curl_x, curl_y, curl_z = yee_curl_e_to_b(
+            E_tiles,
+            static_parameters,
+            dynamic_parameters,
+        )
     else:
+        forward = slice(g + 1, None if g == 1 else -g + 1)
+        Ex, Ey, Ez = ghost_cells.update_tiled_vector_ghost_cells(E_tiles, static_parameters, g)
+        dx, dy, dz = dynamic_parameters.dx, dynamic_parameters.dy, dynamic_parameters.dz
+
+        # PML evolves six split directional terms and keeps the explicit
+        # forward derivatives needed by its auxiliary magnetic state.
+        dEz_dy = (Ez[:, :, :, active, forward, active] - Ez[:, :, :, active, active, active]) / dy
+        dEy_dz = (Ey[:, :, :, active, active, forward] - Ey[:, :, :, active, active, active]) / dz
+        dEx_dz = (Ex[:, :, :, active, active, forward] - Ex[:, :, :, active, active, active]) / dz
+        dEx_dy = (Ex[:, :, :, active, forward, active] - Ex[:, :, :, active, active, active]) / dy
+        dEz_dx = (Ez[:, :, :, forward, active, active] - Ez[:, :, :, active, active, active]) / dx
+        dEy_dx = (Ey[:, :, :, forward, active, active] - Ey[:, :, :, active, active, active]) / dx
+
         (curl_x, curl_y, curl_z), pml_state = apply_tiled_pml_to_b_curl(
             (dEz_dy, dEy_dz, dEx_dz, dEz_dx, dEy_dx, dEx_dy),
             static_parameters,
