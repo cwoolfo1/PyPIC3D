@@ -6,8 +6,14 @@ import jax
 import jax.numpy as jnp
 
 from PyPIC3D.boundary_conditions import ghost_cells
-from PyPIC3D.boundary_conditions.grid_and_stencil import BC_CONDUCTING, BC_PERIODIC
+from PyPIC3D.boundary_conditions.grid_and_stencil import (
+    BC_CONDUCTING,
+    BC_CONSTANT,
+    BC_PERIODIC,
+    prepare_particle_axis_stencil,
+)
 from PyPIC3D.deposition.J_from_rhov import J_from_rhov
+from PyPIC3D.deposition.shapes import get_first_order_weights
 from PyPIC3D.utilities.filters import (
     digital_filter,
     digital_filter_vector,
@@ -137,6 +143,44 @@ class TestDirectDeposition(unittest.TestCase):
         self.assertIn("fold_tiled_vector_ghost_cells((Jx, Jy, Jz), static_parameters, g, bc_type=1)", source)
         self.assertIn("update_tiled_vector_ghost_cells(J, static_parameters, g, bc_type=1)", source)
         self.assertIn("update_tiled_vector_ghost_cells(J, static_parameters, num_guard_cells=g, bc_type=1)", source)
+
+    def test_face_stencil_at_grid_node_is_independent_of_tile_origin(self):
+        dx = 0.5
+        position = jnp.asarray([-1.1102230246251565e-16])
+        grid_axes = (
+            jnp.asarray((-1.0, -0.5, 0.0, 0.5)),
+            jnp.asarray((-2.0, -1.5, -1.0, -0.5, 0.0, 0.5, 1.0, 1.5)),
+        )
+        face_stencils = []
+
+        for grid_axis in grid_axes:
+            face_grid_axis = grid_axis + 0.5 * dx
+            _, _, delta_face, points_face = prepare_particle_axis_stencil(
+                position,
+                face_grid_axis,
+                len(face_grid_axis),
+                shape_factor=1,
+                bc=BC_CONSTANT,
+                ghost_cells=True,
+            )
+            weights_face, _, _ = get_first_order_weights(
+                delta_face,
+                delta_face,
+                delta_face,
+                dx,
+                dx,
+                dx,
+            )
+            weights_face = jnp.stack(weights_face)[:, 0]
+            coordinates_face = face_grid_axis[0] + points_face[:, 0] * dx
+            face_stencils.append((coordinates_face, weights_face))
+
+            self.assertTrue(jnp.all(weights_face >= 0.0))
+            self.assertAlmostEqual(float(jnp.sum(weights_face)), 1.0)
+
+        for tiled_values, one_tile_values in zip(face_stencils[0], face_stencils[1]):
+            self.assertTrue(jnp.allclose(tiled_values, one_tile_values))
+        self.assertTrue(jnp.allclose(face_stencils[0][1], jnp.asarray((0.0, 0.5, 0.5))))
 
     def _build_parameter_values(self, Nx=8, Ny=6, Nz=4, dt=0.05, boundary_conditions=None):
         x_wind, y_wind, z_wind = 4.0, 3.0, 2.0
@@ -1022,6 +1066,11 @@ class TestDirectDeposition(unittest.TestCase):
             dt=0.0,
             boundary_conditions={"x": BC_CONDUCTING, "y": BC_CONDUCTING, "z": BC_CONDUCTING},
         )
+        parameter_set["particle_boundary_conditions"] = {
+            "x": BC_CONDUCTING,
+            "y": BC_CONDUCTING,
+            "z": BC_CONDUCTING,
+        }
         simulation_parameters = {
             "particle_tile_nx": 2,
             "particle_tile_ny": 2,

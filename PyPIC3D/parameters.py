@@ -24,11 +24,16 @@ class StaticParameters(NamedTuple):
     particle_pusher: str
     current_deposition: str
     current_filter: str
+    metric: str
+    metric_mass: float
+    metric_spin: float
     shape_factor: int
     guard_cells: int
     tile_shape: tuple
     particle_tile_capacity_factor: float
     pml_active: bool
+    supergaussian_active: bool
+    supergaussian_layers: tuple
     boundary_conditions: tuple
     particle_boundary_conditions: tuple
     field_mesh: object
@@ -110,11 +115,16 @@ def build_static_parameters(static_config):
         particle_pusher=static_config.get("particle_pusher", "boris"),
         current_deposition=static_config.get("current_deposition", "direct"),
         current_filter=static_config.get("current_filter", "none"),
+        metric=static_config.get("metric", "flat_cartesian"),
+        metric_mass=float(static_config.get("metric_mass", 1.0)),
+        metric_spin=float(static_config.get("metric_spin", 0.0)),
         shape_factor=int(static_config["shape_factor"]),
         guard_cells=int(static_config["guard_cells"]),
         tile_shape=tile_shape,
         particle_tile_capacity_factor=float(static_config.get("particle_tile_capacity_factor", 1.0)),
         pml_active=bool(static_config.get("pml_active", False)),
+        supergaussian_active=bool(static_config.get("supergaussian_active", False)),
+        supergaussian_layers=tuple(static_config.get("supergaussian_layers", ())),
         boundary_conditions=_axis_tuple(static_config["boundary_conditions"]),
         particle_boundary_conditions=_axis_tuple(
             static_config.get("particle_boundary_conditions", {"x": 0, "y": 0, "z": 0})

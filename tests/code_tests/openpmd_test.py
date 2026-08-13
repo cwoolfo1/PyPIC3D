@@ -263,8 +263,38 @@ class OpenPMDDiagnosticsTests(unittest.TestCase):
         self.assertEqual(set(series.iterations[0].meshes), {"E", "B", "J"})
         self.assertEqual(B_mesh.axis_labels, ["x", "y", "z"])
         self.assertEqual(B_mesh.grid_spacing, [0.25, 0.5, 0.75])
-        self.assertEqual(B_mesh.grid_global_offset, [-0.5, -1.0, -1.5])
+        self.assertTrue(jnp.allclose(jnp.asarray(B_mesh.grid_global_offset), jnp.array([-0.5, -1.0, -1.5])))
         self.assertEqual(B_mesh.records["x"].shape, (4, 1, 6))
+
+    def test_write_openpmd_fields_uses_shifted_grid_lower_bounds_for_offsets(self):
+        shape_with_ghosts = (6, 3, 3)
+        E = _zero_field(shape_with_ghosts)
+        field_map = {"E": E}
+        static_parameters, dynamic_parameters = kernel_parameters(
+            Nx=4,
+            Ny=1,
+            Nz=1,
+            x_wind=2.0,
+            y_wind=1.0,
+            z_wind=1.0,
+            x_min=1.0,
+            y_min=-0.5,
+            z_min=2.0,
+            dx=0.5,
+            dy=1.0,
+            dz=1.0,
+            dt=1.0,
+            tile_shape=(4, 1, 1),
+            guard_cells=1,
+        )
+        series = FakeSeries()
+
+        with patch.object(openPMD, "_open_openpmd_series", return_value=series):
+            openPMD.write_openpmd_fields(field_map, static_parameters, dynamic_parameters, "/tmp", plot_t=0, t=0)
+
+        E_mesh = series.iterations[0].meshes["E"]
+        self.assertEqual(E_mesh.grid_spacing, [0.5, 1.0, 1.0])
+        self.assertEqual(E_mesh.grid_global_offset, [1.0, -0.5, 2.0])
 
     def test_write_openpmd_fields_assembles_tiled_fields_before_output(self):
         shape_with_ghosts = (6, 4, 4)

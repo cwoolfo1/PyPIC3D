@@ -25,3 +25,7 @@ demos/two_stream/*/
 demos/weibel/*/
 demos/ot_vortex/*/
 *.mpg
+*.h5
+*.mp4
+*.pmd
+*.png

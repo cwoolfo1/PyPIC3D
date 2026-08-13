@@ -52,6 +52,7 @@ def run_PyPIC3D(config_file):
     Nt = static_parameters.Nt
     output_dir = static_parameters.output_dir
     particle_species_names = plotting_parameters.get("particle_species_names")
+    static_metric = static_parameters.solver == "static_metric"
 
     def loop_with_static_parameters(
         particles,
@@ -69,17 +70,19 @@ def run_PyPIC3D(config_file):
 
     jit_loop = jax.jit(loop_with_static_parameters)
 
-    E, B, J, rho, phi, external_fields, *rest = fields
-    total_E, total_B = add_external_fields(E, B, external_fields)
-    e_energy, b_energy, kinetic_energy = compute_energy(
-        particles,
-        total_E,
-        total_B,
-        static_parameters,
-        dynamic_parameters,
-        species_config=species_config,
-    )
-    initial_energy = e_energy + b_energy + kinetic_energy
+    initial_energy = None
+    if not static_metric:
+        E, B, J, rho, phi, external_fields, *rest = fields
+        total_E, total_B = add_external_fields(E, B, external_fields)
+        e_energy, b_energy, kinetic_energy = compute_energy(
+            particles,
+            total_E,
+            total_B,
+            static_parameters,
+            dynamic_parameters,
+            species_config=species_config,
+        )
+        initial_energy = e_energy + b_energy + kinetic_energy
 
     field_writer = None
     particle_writer = None
@@ -110,29 +113,30 @@ def run_PyPIC3D(config_file):
             if t % plotting_parameters["plotting_interval"] == 0:
                 plot_num = t // plotting_parameters["plotting_interval"]
 
-                E, B, J, rho, phi, external_fields, *rest = fields
-                total_E, total_B = add_external_fields(E, B, external_fields)
-                e_energy, b_energy, kinetic_energy = compute_energy(
-                    particles,
-                    total_E,
-                    total_B,
-                    static_parameters,
-                    dynamic_parameters,
-                    species_config=species_config,
-                )
-                total_energy = e_energy + b_energy + kinetic_energy
-                write_data(f"{output_dir}/data/total_energy.txt", t * dt, total_energy)
-                write_data(
-                    f"{output_dir}/data/energy_error.txt",
-                    t * dt,
-                    abs(initial_energy - total_energy) / max(initial_energy, 1e-10),
-                )
-                write_data(f"{output_dir}/data/electric_field_energy.txt", t * dt, e_energy)
-                write_data(f"{output_dir}/data/magnetic_field_energy.txt", t * dt, b_energy)
-                write_data(f"{output_dir}/data/kinetic_energy.txt", t * dt, kinetic_energy)
+                if not static_metric:
+                    E, B, J, rho, phi, external_fields, *rest = fields
+                    total_E, total_B = add_external_fields(E, B, external_fields)
+                    e_energy, b_energy, kinetic_energy = compute_energy(
+                        particles,
+                        total_E,
+                        total_B,
+                        static_parameters,
+                        dynamic_parameters,
+                        species_config=species_config,
+                    )
+                    total_energy = e_energy + b_energy + kinetic_energy
+                    write_data(f"{output_dir}/data/total_energy.txt", t * dt, total_energy)
+                    write_data(
+                        f"{output_dir}/data/energy_error.txt",
+                        t * dt,
+                        abs(initial_energy - total_energy) / max(initial_energy, 1e-10),
+                    )
+                    write_data(f"{output_dir}/data/electric_field_energy.txt", t * dt, e_energy)
+                    write_data(f"{output_dir}/data/magnetic_field_energy.txt", t * dt, b_energy)
+                    write_data(f"{output_dir}/data/kinetic_energy.txt", t * dt, kinetic_energy)
 
-                total_momentum = compute_total_momentum(particles, species_config=species_config)
-                write_data(f"{output_dir}/data/total_momentum.txt", t * dt, total_momentum)
+                    total_momentum = compute_total_momentum(particles, species_config=species_config)
+                    write_data(f"{output_dir}/data/total_momentum.txt", t * dt, total_momentum)
 
                 if particle_writer is not None:
                     enqueue_openpmd_particle_output(
@@ -211,20 +215,23 @@ def main():
     ) = block_until_ready(run_PyPIC3D(toml_file))
     end = time.time()
 
-    E, B, J, rho, phi, external_fields, *rest = fields
-    total_E, total_B = add_external_fields(E, B, external_fields)
-    e_energy, b_energy, kinetic_energy = compute_energy(
-        particles,
-        total_E,
-        total_B,
-        static_parameters,
-        dynamic_parameters,
-        species_config=species_config,
-    )
-    print(f"Final Electric Field Energy: {e_energy}")
-    print(f"Final Magnetic Field Energy: {b_energy}")
-    print(f"Final Kinetic Energy: {kinetic_energy}")
-    print(f"Total Final Energy: {e_energy + b_energy + kinetic_energy}\n")
+    if static_parameters.solver == "static_metric":
+        print("Skipping final flat-space energy diagnostics for static_metric fields and covariant particle u_i\n")
+    else:
+        E, B, J, rho, phi, external_fields, *rest = fields
+        total_E, total_B = add_external_fields(E, B, external_fields)
+        e_energy, b_energy, kinetic_energy = compute_energy(
+            particles,
+            total_E,
+            total_B,
+            static_parameters,
+            dynamic_parameters,
+            species_config=species_config,
+        )
+        print(f"Final Electric Field Energy: {e_energy}")
+        print(f"Final Magnetic Field Energy: {b_energy}")
+        print(f"Final Kinetic Energy: {kinetic_energy}")
+        print(f"Total Final Energy: {e_energy + b_energy + kinetic_energy}\n")
 
     duration = end - start
     Nt = static_parameters.Nt

@@ -7,8 +7,21 @@ import numpy as np
 import toml
 import jax
 import jax.numpy as jnp
-from PyPIC3D.initialization import setup_write_dir, default_parameters, initialize_simulation, validate_field_solver
-from PyPIC3D.evolve import time_loop_electrodynamic, time_loop_electrostatic
+from PyPIC3D.initialization import (
+    _encode_field_bc,
+    _encode_particle_bc,
+    default_parameters,
+    initialize_simulation,
+    setup_write_dir,
+    validate_field_solver,
+)
+from PyPIC3D.evolve import time_loop_electrodynamic, time_loop_electrostatic, time_loop_static_metric
+from PyPIC3D.boundary_conditions.grid_and_stencil import (
+    BC_ABSORBING,
+    BC_CONDUCTING,
+    BC_CONSTANT,
+    BC_PERIODIC,
+)
 from PyPIC3D.particles.particle_class import TiledParticles
 from PyPIC3D.utilities.grids import build_yee_grid
 
@@ -58,6 +71,22 @@ class TestInitializationFunctions(unittest.TestCase):
         self.assertFalse(plotting["plotchargedensity"])
         self.assertIn('eps', dynamic)
         # check that the default parameters contain expected keys
+
+    def test_encode_field_bc_accepts_constant_boundary(self):
+        self.assertEqual(_encode_field_bc("constant"), BC_CONSTANT)
+
+    def test_field_and_particle_boundaries_use_one_code_map(self):
+        self.assertEqual(BC_PERIODIC, 0)
+        self.assertEqual(BC_CONDUCTING, 1)
+        self.assertEqual(BC_ABSORBING, 2)
+        self.assertEqual(BC_CONSTANT, 3)
+
+        self.assertEqual(_encode_field_bc("periodic"), BC_PERIODIC)
+        self.assertEqual(_encode_field_bc("conducting"), BC_CONDUCTING)
+        self.assertEqual(_encode_field_bc("constant"), BC_CONSTANT)
+        self.assertEqual(_encode_particle_bc("periodic"), BC_PERIODIC)
+        self.assertEqual(_encode_particle_bc("reflecting"), BC_CONDUCTING)
+        self.assertEqual(_encode_particle_bc("absorbing"), BC_ABSORBING)
 
     def test_initialize_simulation_returns_tiled_runtime_for_ordinary_electrodynamic_config(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -166,6 +195,64 @@ class TestInitializationFunctions(unittest.TestCase):
             # dump a dummy config file to tmp directory and confirm it can be read
             # in correctly
 
+    def test_initialize_static_metric_loads_previous_fields_from_npy(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            current_dtheta_path = os.path.join(tmpdir, "current_dtheta.npy")
+            previous_dtheta_path = os.path.join(tmpdir, "previous_dtheta.npy")
+            current_bphi_path = os.path.join(tmpdir, "current_bphi.npy")
+            previous_bphi_path = os.path.join(tmpdir, "previous_bphi.npy")
+            np.save(current_dtheta_path, np.full((4, 4, 1), 2.0))
+            np.save(previous_dtheta_path, np.full((4, 4, 1), 3.0))
+            np.save(current_bphi_path, np.full((4, 4, 1), 5.0))
+            np.save(previous_bphi_path, np.full((4, 4, 1), 7.0))
+            config = {
+                "simulation_parameters": {
+                    "name": "static previous field load test",
+                    "output_dir": tmpdir,
+                    "solver": "static_metric",
+                    "metric": "flat_spherical",
+                    "particle_pusher": "hybrid_boris_geodesic",
+                    "current_calculation": "GR_direct_deposition",
+                    "Nx": 4,
+                    "Ny": 4,
+                    "Nz": 1,
+                    "x_min": 1.0,
+                    "x_max": 2.0,
+                    "y_min": 0.1,
+                    "y_max": 2 * np.pi + 0.1,
+                    "z_wind": 1.0,
+                    "Nt": 1,
+                    "dt": 1.0e-2,
+                    "particle_tile_nx": 4,
+                    "particle_tile_ny": 4,
+                    "particle_tile_nz": 1,
+                    "filter_j": "none",
+                    "x_bc": "constant",
+                    "y_bc": "periodic",
+                    "z_bc": "periodic",
+                    "C": 1.0,
+                    "eps": 1.0,
+                    "mu": 1.0,
+                },
+                "plotting": {"plotting": False},
+                "field1": {"name": "Dtheta", "type": 1, "path": current_dtheta_path},
+                "field2": {"name": "Bphi", "type": 5, "path": current_bphi_path},
+                "previous_field1": {"name": "Dtheta previous", "type": 1, "path": previous_dtheta_path},
+                "previous_field2": {"name": "Bphi previous", "type": 5, "path": previous_bphi_path},
+            }
+
+            loop, particles, fields, static_parameters, dynamic_parameters, *_rest = initialize_simulation(config)
+
+            self.assertIs(loop, time_loop_static_metric)
+            g = int(static_parameters.guard_cells)
+            D, B, _J, _rho, _phi, _external_fields, _metric, previous_fields, _overflow = fields
+            D_previous, B_previous = previous_fields
+            interior = (0, 0, 0, slice(g, -g), slice(g, -g), slice(g, -g))
+            self.assertTrue(jnp.allclose(D[1][interior], 2.0))
+            self.assertTrue(jnp.allclose(B[2][interior], 5.0))
+            self.assertTrue(jnp.allclose(D_previous[1][interior], 3.0))
+            self.assertTrue(jnp.allclose(B_previous[2][interior], 7.0))
+
     def test_initialize_simulation_computes_courant_dt_before_runtime_parameters_exist(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             zeros_path = os.path.join(tmpdir, "zeros.npy")
@@ -222,6 +309,87 @@ class TestInitializationFunctions(unittest.TestCase):
             for velocity_component in plotting_parameters["field_map"]["fluid_velocity"]:
                 self.assertTrue(jnp.allclose(velocity_component, 0.0))
 
+    def test_initialize_simulation_builds_grid_from_explicit_bounds(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            zeros_path = os.path.join(tmpdir, "zeros.npy")
+            x_path = os.path.join(tmpdir, "x.npy")
+            z_path = os.path.join(tmpdir, "z.npy")
+            np.save(x_path, np.array([1.25, 1.75, 2.25, 2.75]))
+            np.save(zeros_path, np.zeros(4))
+            np.save(z_path, np.full(4, 2.5))
+            config = {
+                "simulation_parameters": {
+                    "name": "shifted grid bounds test",
+                    "output_dir": tmpdir,
+                    "Nx": 4,
+                    "Ny": 1,
+                    "Nz": 1,
+                    "x_min": 1.0,
+                    "x_max": 3.0,
+                    "y_min": -0.5,
+                    "y_max": 0.5,
+                    "z_min": 2.0,
+                    "z_max": 3.0,
+                    "Nt": 1,
+                    "dt": 1.0e-10,
+                    "particle_tile_nx": 4,
+                    "particle_tile_ny": 1,
+                    "particle_tile_nz": 1,
+                    "filter_j": "none",
+                },
+                "plotting": {"plotting": False},
+                "particle1": {
+                    "name": "electrons",
+                    "N_particles": 4,
+                    "charge": -1.0,
+                    "mass": 1.0,
+                    "temperature": 1.0,
+                    "initial_x": x_path,
+                    "initial_y": zeros_path,
+                    "initial_z": z_path,
+                    "initial_vx": zeros_path,
+                    "initial_vy": zeros_path,
+                    "initial_vz": zeros_path,
+                },
+            }
+
+            result = initialize_simulation(config)
+            dynamic_parameters = result[4]
+
+            self.assertAlmostEqual(float(dynamic_parameters.dx), 0.5)
+            self.assertAlmostEqual(float(dynamic_parameters.x_wind), 2.0)
+            self.assertTrue(jnp.allclose(
+                dynamic_parameters.grids.center[0],
+                jnp.array([0.5, 1.0, 1.5, 2.0, 2.5, 3.0]),
+            ))
+            self.assertTrue(jnp.allclose(
+                dynamic_parameters.grids.vertex[0],
+                jnp.array([0.75, 1.25, 1.75, 2.25, 2.75, 3.25]),
+            ))
+            self.assertAlmostEqual(float(dynamic_parameters.grids.center[1][1]), -0.5)
+            self.assertAlmostEqual(float(dynamic_parameters.grids.center[1][-1]), 0.5)
+            self.assertAlmostEqual(float(dynamic_parameters.grids.center[2][1]), 2.0)
+            self.assertAlmostEqual(float(dynamic_parameters.grids.center[2][-1]), 3.0)
+
+    def test_initialize_simulation_rejects_one_sided_grid_bounds(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = {
+                "simulation_parameters": {
+                    "name": "one sided bounds test",
+                    "output_dir": tmpdir,
+                    "Nx": 4,
+                    "Ny": 1,
+                    "Nz": 1,
+                    "x_min": 1.0,
+                    "Nt": 1,
+                    "dt": 1.0e-10,
+                },
+                "plotting": {"plotting": False},
+            }
+
+            with self.assertRaisesRegex(ValueError, "Both x_min and x_max"):
+                initialize_simulation(config)
+
     def test_initialize_simulation_encodes_global_particle_boundary_conditions(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             zeros_path = os.path.join(tmpdir, "zeros.npy")
@@ -265,7 +433,10 @@ class TestInitializationFunctions(unittest.TestCase):
 
             _, particles, _, parameter_set, *_ = initialize_simulation(toml.load(config_path))
 
-            self.assertEqual(parameter_set.particle_boundary_conditions, (1, 2, 0))
+            self.assertEqual(
+                parameter_set.particle_boundary_conditions,
+                (BC_CONDUCTING, BC_ABSORBING, BC_PERIODIC),
+            )
             self.assertIsInstance(particles, TiledParticles)
             # check that the global particle boundary conditions are encoded correctly in the parameter_set dictionary
 

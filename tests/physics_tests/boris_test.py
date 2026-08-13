@@ -128,6 +128,58 @@ class TestBorisMethods(unittest.TestCase):
 
         self.assertTrue(jnp.allclose(interpolated, reference, rtol=1.0e-12, atol=1.0e-12))
 
+    def test_interpolate_field_to_particles_preserves_trailing_tensor_axes(self):
+        x_grid = jnp.linspace(-1.0, 1.0, 7)
+        y_grid = jnp.linspace(-1.0, 1.0, 6)
+        z_grid = jnp.linspace(-1.0, 1.0, 5)
+        X, Y, Z = jnp.meshgrid(x_grid, y_grid, z_grid, indexing="ij")
+        scalar_field = 0.5 * X - 0.25 * Y + 0.75 * Z
+
+        component_scale = jnp.arange(1.0, 10.0).reshape((3, 3))
+        component_offset = jnp.arange(9.0).reshape((3, 3))
+        tensor_field = (
+            scalar_field[..., jnp.newaxis, jnp.newaxis] * component_scale
+            + component_offset
+        )
+
+        x = jnp.asarray((-0.37, 0.18, 0.61))
+        y = jnp.asarray((0.22, -0.44, 0.31))
+        z = jnp.asarray((-0.15, 0.29, -0.52))
+        grid = (x_grid, y_grid, z_grid)
+
+        for shape_factor in (1, 2):
+            with self.subTest(shape_factor=shape_factor):
+                sampled_scalar = interpolate_field_to_particles(
+                    scalar_field,
+                    x,
+                    y,
+                    z,
+                    grid,
+                    shape_factor,
+                )
+                sampled_tensor = interpolate_field_to_particles(
+                    tensor_field,
+                    x,
+                    y,
+                    z,
+                    grid,
+                    shape_factor,
+                )
+                expected_tensor = (
+                    sampled_scalar[..., jnp.newaxis, jnp.newaxis] * component_scale
+                    + component_offset
+                )
+
+                self.assertEqual(sampled_tensor.shape, (x.size, 3, 3))
+                self.assertTrue(
+                    jnp.allclose(
+                        sampled_tensor,
+                        expected_tensor,
+                        rtol=1.0e-12,
+                        atol=1.0e-13,
+                    )
+                )
+
 
 
     def test_boris_single_particle(self):

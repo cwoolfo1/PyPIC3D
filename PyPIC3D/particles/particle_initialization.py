@@ -5,6 +5,7 @@ import math
 
 from PyPIC3D.utils import vth_to_T, T_to_vth
 from PyPIC3D.particles.particle_class import SpeciesConfig, TiledParticles
+from PyPIC3D.utilities.grids import grid_domain_bounds
 
 
 def grab_particle_keys(config):
@@ -90,10 +91,11 @@ def _particle_tile_indices(x1, x2, x3, dynamic_parameters, tile_nx, tile_ny, til
     Nx = _as_int(dynamic_parameters.Nx)
     Ny = _as_int(dynamic_parameters.Ny)
     Nz = _as_int(dynamic_parameters.Nz)
+    (x_min, _), (y_min, _), (z_min, _) = grid_domain_bounds(dynamic_parameters)
 
-    x_cell = np.floor((np.asarray(x1) + float(dynamic_parameters.x_wind) / 2) / float(dynamic_parameters.dx)).astype(int)
-    y_cell = np.floor((np.asarray(x2) + float(dynamic_parameters.y_wind) / 2) / float(dynamic_parameters.dy)).astype(int)
-    z_cell = np.floor((np.asarray(x3) + float(dynamic_parameters.z_wind) / 2) / float(dynamic_parameters.dz)).astype(int)
+    x_cell = np.floor((np.asarray(x1) - float(x_min)) / float(dynamic_parameters.dx)).astype(int)
+    y_cell = np.floor((np.asarray(x2) - float(y_min)) / float(dynamic_parameters.dy)).astype(int)
+    z_cell = np.floor((np.asarray(x3) - float(z_min)) / float(dynamic_parameters.dz)).astype(int)
 
     x_cell = np.clip(x_cell, 0, Nx - 1)
     y_cell = np.clip(y_cell, 0, Ny - 1)
@@ -218,9 +220,6 @@ def load_particles_from_toml(config, static_parameters, dynamic_parameters):
     if config is None:
         config = {}
 
-    x_wind = dynamic_parameters.x_wind
-    y_wind = dynamic_parameters.y_wind
-    z_wind = dynamic_parameters.z_wind
     Nx = dynamic_parameters.Nx
     Ny = dynamic_parameters.Ny
     Nz = dynamic_parameters.Nz
@@ -231,6 +230,8 @@ def load_particles_from_toml(config, static_parameters, dynamic_parameters):
     kb = dynamic_parameters.kb
     eps = dynamic_parameters.eps
     # get the simulation domain dimensions, grid sizes, spatial resolution, and thermal scalar values
+    (x_min, x_max), (y_min, y_max), (z_min, z_max) = grid_domain_bounds(dynamic_parameters)
+    # get the physical domain boundaries from the grid geometry
 
     i = 0
     particle_keys = grab_particle_keys(config)
@@ -274,12 +275,12 @@ def load_particles_from_toml(config, static_parameters, dynamic_parameters):
         Tz = read_value("Tz", toml_key, config, T)
         # overwrite the temperature in each direction if specified in the configuration, otherwise use the previously determined temperature
 
-        xmin = read_value("xmin", toml_key, config, -x_wind / 2)
-        xmax = read_value("xmax", toml_key, config, x_wind / 2)
-        ymin = read_value("ymin", toml_key, config, -y_wind / 2)
-        ymax = read_value("ymax", toml_key, config, y_wind / 2)
-        zmin = read_value("zmin", toml_key, config, -z_wind / 2)
-        zmax = read_value("zmax", toml_key, config, z_wind / 2)
+        xmin = read_value("xmin", toml_key, config, x_min)
+        xmax = read_value("xmax", toml_key, config, x_max)
+        ymin = read_value("ymin", toml_key, config, y_min)
+        ymax = read_value("ymax", toml_key, config, y_max)
+        zmin = read_value("zmin", toml_key, config, z_min)
+        zmax = read_value("zmax", toml_key, config, z_max)
 
         x, y, z, vx, vy, vz = initial_particles(
             N_per_cell,

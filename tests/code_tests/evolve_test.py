@@ -4,6 +4,10 @@ from types import SimpleNamespace
 import jax
 import jax.numpy as jnp
 
+from PyPIC3D.boundary_conditions.grid_and_stencil import (
+    BC_ABSORBING,
+    BC_PERIODIC,
+)
 from PyPIC3D.boundary_conditions.ghost_cells import make_field_mesh
 from PyPIC3D.evolve import (
     time_loop_electrodynamic,
@@ -228,7 +232,11 @@ class TestEvolveExternalFields(unittest.TestCase):
             "current_deposition": "direct",
             "current_filter": "none",
             "boundary_conditions": {"x": 0, "y": 0, "z": 0},
-            "particle_boundary_conditions": {"x": 2, "y": 0, "z": 0},
+            "particle_boundary_conditions": {
+                "x": BC_ABSORBING,
+                "y": BC_PERIODIC,
+                "z": BC_PERIODIC,
+            },
         }
         center_grid, vertex_grid = build_yee_grid(SimpleNamespace(**parameter_set))
         parameter_set["grids"] = {"center": center_grid, "vertex": vertex_grid}

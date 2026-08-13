@@ -8,7 +8,11 @@ import jax
 import jax.numpy as jnp
 from jax.sharding import Mesh, NamedSharding
 
-from PyPIC3D.boundary_conditions.grid_and_stencil import BC_CONDUCTING, BC_PERIODIC
+from PyPIC3D.boundary_conditions.grid_and_stencil import (
+    BC_ABSORBING,
+    BC_CONDUCTING,
+    BC_PERIODIC,
+)
 from PyPIC3D.boundary_conditions import ghost_cells
 
 
@@ -417,7 +421,7 @@ class TestDistributedGhostCells(unittest.TestCase):
         mesh_shape = (1, 1, 1)
         tile_shape = (3, 2, 2)
         field_bcs = (BC_PERIODIC, BC_PERIODIC, BC_PERIODIC)
-        particle_bcs = (2, BC_PERIODIC, BC_PERIODIC)
+        particle_bcs = (BC_ABSORBING, BC_PERIODIC, BC_PERIODIC)
         tiles = _coordinate_tiles(mesh_shape, tile_shape)
         static_parameters = _static_parameters(
             field_bcs,
@@ -439,7 +443,7 @@ class TestDistributedGhostCells(unittest.TestCase):
         mesh_shape = (1, 1, 1)
         tile_shape = (3, 2, 2)
         field_bcs = (BC_PERIODIC, BC_PERIODIC, BC_PERIODIC)
-        particle_bcs = (2, BC_PERIODIC, BC_PERIODIC)
+        particle_bcs = (BC_ABSORBING, BC_PERIODIC, BC_PERIODIC)
         tiles = jnp.zeros(mesh_shape + (5, 4, 4), dtype=jnp.float64)
         tiles = tiles.at[0, 0, 0, 0, 1:-1, 1:-1].set(3.0)
         tiles = tiles.at[0, 0, 0, -1, 1:-1, 1:-1].set(5.0)
@@ -465,7 +469,7 @@ class TestDistributedGhostCells(unittest.TestCase):
         mesh_shape = (1, 1, 1)
         tile_shape = (1, 2, 2)
         field_bcs = (BC_PERIODIC, BC_PERIODIC, BC_PERIODIC)
-        particle_bcs = (2, BC_PERIODIC, BC_PERIODIC)
+        particle_bcs = (BC_ABSORBING, BC_PERIODIC, BC_PERIODIC)
         tiles = _coordinate_tiles(mesh_shape, tile_shape)
         static_parameters = _static_parameters(
             field_bcs,
@@ -488,6 +492,43 @@ class TestDistributedGhostCells(unittest.TestCase):
         self.assert_allclose(folded[0, 0, 0, 1, :, :], 0.0)
         self.assert_allclose(folded[0, 0, 0, 0, :, :], 0.0)
         self.assert_allclose(folded[0, 0, 0, -1, :, :], 0.0)
+
+    def test_vector_refresh_absorbing_particle_axis_exchanges_internal_halos_and_zeros_walls(self):
+        mesh_shape = (2, 1, 1)
+        tile_shape = (2, 2, 2)
+        field_bcs = (BC_PERIODIC, BC_PERIODIC, BC_PERIODIC)
+        particle_bcs = (BC_ABSORBING, BC_PERIODIC, BC_PERIODIC)
+        tiles = _coordinate_tiles(mesh_shape, tile_shape)
+        stacked = jnp.stack((tiles, tiles + 1000.0, tiles + 2000.0), axis=0)
+        static_parameters = _static_parameters(
+            field_bcs,
+            tile_shape,
+            mesh_shape,
+            particle_boundary_conditions=particle_bcs,
+        )
+
+        refreshed = ghost_cells.update_tiled_vector_ghost_cells(
+            stacked,
+            static_parameters,
+            1,
+            bc_type=1,
+        )
+
+        for component in range(3):
+            self.assert_allclose(
+                refreshed[component],
+                _reference_update(stacked[component], particle_bcs, tile_shape),
+            )
+            self.assert_allclose(refreshed[component, 0, 0, 0, 0, :, :], 0.0)
+            self.assert_allclose(refreshed[component, -1, 0, 0, -1, :, :], 0.0)
+            self.assert_allclose(
+                refreshed[component, 0, 0, 0, -1, 1:-1, 1:-1],
+                stacked[component, 1, 0, 0, 1, 1:-1, 1:-1],
+            )
+            self.assert_allclose(
+                refreshed[component, 1, 0, 0, 0, 1:-1, 1:-1],
+                stacked[component, 0, 0, 0, -2, 1:-1, 1:-1],
+            )
 
     def test_stacked_and_tuple_vector_halo_refresh_preserve_layouts(self):
         mesh_shape = (2, 1, 1)
