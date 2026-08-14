@@ -16,7 +16,7 @@ from PyPIC3D.diagnostics.async_writer import (
     enqueue_openpmd_particle_output,
 )
 from PyPIC3D.diagnostics.output_adapters import build_field_output_map
-from PyPIC3D.utilities.diagnostic_quantities import (
+from PyPIC3D.diagnostics.diagnostic_quantities import (
     compute_energy,
     compute_total_momentum,
 )

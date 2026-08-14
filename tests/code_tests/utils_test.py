@@ -19,7 +19,7 @@ from tests.kernel_fixtures import (
 )
 from PyPIC3D.diagnostics import plotting
 from PyPIC3D.parameters import build_dynamic_parameters, build_static_parameters
-from PyPIC3D.utilities.diagnostic_quantities import compute_energy
+from PyPIC3D.diagnostics.diagnostic_quantities import compute_energy
 from PyPIC3D.utilities.field_helpers import add_external_fields
 from PyPIC3D.utilities.grids import build_collocated_grid, build_yee_grid
 from PyPIC3D.utilities.plasma_quantities import (

@@ -1,13 +1,6 @@
 import jax.numpy as jnp
 
 
-def mae(x, y):
-    """
-    Calculates the root mean squared error between two arrays.
-    """
-    return jnp.sqrt( jnp.mean( (x-y)**2 ) )
-
-
 def compute_energy(particles, E, B, static_parameters, dynamic_parameters, species_config=None):
     """
     Compute the electric, magnetic, and particle kinetic energies.

@@ -7,10 +7,17 @@ import os
 
 from PyPIC3D.pusher.boris import boris_single_particle, interpolate_field_to_particles
 from PyPIC3D.pusher.higuera_cary import higuera_cary_single_particle
-from PyPIC3D.utilities.diagnostic_quantities import mae
 from tests.kernel_fixtures import kernel_parameters
 
 jax.config.update("jax_enable_x64", True)
+
+
+def mae(x, y):
+    """
+    Calculates the root mean squared error between two arrays.
+    """
+    return jnp.sqrt( jnp.mean( (x-y)**2 ) )
+
 
 class TestBorisMethods(unittest.TestCase):
 
