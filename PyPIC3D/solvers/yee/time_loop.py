@@ -1,6 +1,5 @@
 import jax
 
-from PyPIC3D.boundary_conditions.ghost_cells import update_tiled_vector_ghost_cells
 from PyPIC3D.deposition.Esirkepov import Esirkepov_current
 from PyPIC3D.deposition.J_from_rhov import J_from_rhov
 from PyPIC3D.particles.particle_tile_communication import (
@@ -9,7 +8,7 @@ from PyPIC3D.particles.particle_tile_communication import (
 )
 from PyPIC3D.pusher.particle_push import particle_push
 from PyPIC3D.utilities.field_helpers import add_external_fields
-from PyPIC3D.utilities.filters import bilinear_filter_vector, digital_filter_vector
+from PyPIC3D.utilities.filters import tiled_bilinear_filter_vector, tiled_digital_filter_vector
 
 from .first_order_yee import update_B, update_E
 
@@ -21,17 +20,12 @@ def _filter_electric_field_for_particles(E, static_parameters, dynamic_parameter
     """Apply the direct-current coupling filter to the electric gather field."""
 
     current_filter = static_parameters.current_filter
-    g = int(static_parameters.guard_cells)
 
     def bilinear_filtered_field(E):
-        E = update_tiled_vector_ghost_cells(E, static_parameters, g)
-        E = bilinear_filter_vector(E, num_guard_cells=g)
-        return update_tiled_vector_ghost_cells(E, static_parameters, g)
+        return tiled_bilinear_filter_vector(E, static_parameters)
 
     def digital_filtered_field(E):
-        E = update_tiled_vector_ghost_cells(E, static_parameters, g)
-        E = digital_filter_vector(E, dynamic_parameters.alpha, num_guard_cells=g)
-        return update_tiled_vector_ghost_cells(E, static_parameters, g)
+        return tiled_digital_filter_vector(E, dynamic_parameters.alpha, static_parameters)
 
     return jax.lax.cond(
         current_filter == "bilinear",

@@ -41,6 +41,7 @@ from PyPIC3D.solvers.gr_static.static_metric import (
     compute_covariant_H,
     update_D_relativity,
 )
+from PyPIC3D.utilities.filters import tiled_bilinear_filter_vector, tiled_digital_filter_vector
 from tests.kernel_fixtures import active_interior, empty_tiled_vector, kernel_parameters
 
 
@@ -574,6 +575,81 @@ def test_GR_direct_deposition_uses_lapse_scaled_contravariant_three_velocity():
     assert jnp.allclose(J[0][interior], expected)
     assert jnp.allclose(J[1][interior], 0.0)
     assert jnp.allclose(J[2][interior], 0.0)
+
+
+def _assert_GR_direct_deposition_uses_distributed_filters():
+    static_parameters, dynamic_parameters = kernel_parameters(
+        Nx=8,
+        Ny=1,
+        Nz=1,
+        x_wind=8.0,
+        y_wind=1.0,
+        z_wind=1.0,
+        dt=0.1,
+        tile_shape=(4, 1, 1),
+        shape_factor=1,
+        current_filter="none",
+        solver="static_metric",
+        current_deposition="GR_direct",
+        particle_pusher="hybrid_boris_geodesic",
+    )
+    metric = initialize_flat_cartesian_metric(static_parameters, dynamic_parameters)
+
+    x = jnp.zeros((2, 1, 1, 1, 1, 3)).at[0, 0, 0, 0, 0, 0].set(-2.0)
+    u = jnp.zeros_like(x).at[0, 0, 0, 0, 0, 0].set(0.5)
+    active = jnp.zeros((2, 1, 1, 1, 1), dtype=bool).at[0, 0, 0, 0, 0].set(True)
+    particles = TiledParticles(x=x, u=u, active=active)
+    species = SpeciesConfig(
+        charge=jnp.asarray([1.0]),
+        mass=jnp.asarray([1.0]),
+        weight=jnp.asarray([1.0]),
+        update_x=jnp.asarray([[True, True, True]]),
+    )
+    J_template = empty_tiled_vector(static_parameters, dynamic_parameters)
+
+    raw_J = GR_direct_deposition(
+        particles,
+        species,
+        J_template,
+        metric,
+        static_parameters,
+        dynamic_parameters,
+    )
+
+    filter_cases = (
+        (
+            "digital",
+            lambda J, parameters: tiled_digital_filter_vector(
+                J,
+                dynamic_parameters.alpha,
+                parameters,
+                bc_type=1,
+            ),
+        ),
+        (
+            "bilinear",
+            lambda J, parameters: tiled_bilinear_filter_vector(J, parameters, bc_type=1),
+        ),
+    )
+    for filter_name, filter_function in filter_cases:
+        filtered_parameters = static_parameters._replace(current_filter=filter_name)
+        filtered_J = GR_direct_deposition(
+            particles,
+            species,
+            J_template,
+            metric,
+            filtered_parameters,
+            dynamic_parameters,
+        )
+        expected_J = filter_function(raw_J, filtered_parameters)
+
+        for actual_component, expected_component in zip(filtered_J, expected_J):
+            assert jnp.allclose(actual_component, expected_component)
+
+
+class TestDistributedGRFiltering(unittest.TestCase):
+    def test_GR_direct_deposition_uses_distributed_filters(self):
+        _assert_GR_direct_deposition_uses_distributed_filters()
 
 
 def test_GR_direct_deposition_returns_fpic_shifted_source_current():

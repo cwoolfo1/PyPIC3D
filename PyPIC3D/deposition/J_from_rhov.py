@@ -12,8 +12,8 @@ from PyPIC3D.boundary_conditions.ghost_cells import (
 )
 
 from PyPIC3D.utilities.filters import (
-    bilinear_filter_vector,
-    digital_filter_vector,
+    tiled_bilinear_filter_vector,
+    tiled_digital_filter_vector,
 )
 
 import jax
@@ -262,22 +262,18 @@ def J_from_rhov(
 
     J = fold_tiled_vector_ghost_cells((Jx, Jy, Jz), static_parameters, g, bc_type=1)
     # fold the ghost cells of the current density tiles to ensure continuity across tile boundaries
-    J = update_tiled_vector_ghost_cells(J, static_parameters, g, bc_type=1)
-    # update the ghost cells of the current density tiles to reflect the contributions from neighboring tiles
-
-
 
     ################# CURRENT FILTERING #################
     def bilinear_filtered_current(J):
-        J = bilinear_filter_vector(J, num_guard_cells=g)
-        J = update_tiled_vector_ghost_cells(J, static_parameters, num_guard_cells=g, bc_type=1)
-        return J
-    
-    def digital_filtered_current(J):
-        J = digital_filter_vector(J, dynamic_parameters.alpha, num_guard_cells=g)
-        J = update_tiled_vector_ghost_cells(J, static_parameters, num_guard_cells=g, bc_type=1)
-        return J
+        return tiled_bilinear_filter_vector(J, static_parameters, bc_type=1)
 
+    def digital_filtered_current(J):
+        return tiled_digital_filter_vector(
+            J,
+            dynamic_parameters.alpha,
+            static_parameters,
+            bc_type=1,
+        )
 
     J = jax.lax.cond(
         current_filter == "bilinear",
@@ -285,13 +281,11 @@ def J_from_rhov(
         lambda J: jax.lax.cond(
             current_filter == "digital",
             digital_filtered_current,
-            lambda J: J,
+            lambda J: update_tiled_vector_ghost_cells(J, static_parameters, g, bc_type=1),
             J,
         ),
         J,
     )
     # apply current filtering
 
-
-    
     return J

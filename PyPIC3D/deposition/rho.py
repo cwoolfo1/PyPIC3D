@@ -12,7 +12,7 @@ from PyPIC3D.boundary_conditions.grid_and_stencil import (
 from PyPIC3D.boundary_conditions.ghost_cells import fold_tiled_ghost_cells, update_tiled_ghost_cells
 from PyPIC3D.deposition.shapes import get_first_order_weights, get_second_order_weights
 from PyPIC3D.particles.particle_class import TiledParticles
-from PyPIC3D.utilities.filters import digital_filter
+from PyPIC3D.utilities.filters import tiled_digital_filter
 from PyPIC3D.boundary_conditions.grid_and_stencil import (
     collapse_axis_stencil,
     prepare_particle_axis_stencil,
@@ -174,19 +174,18 @@ def compute_rho(
     rho = fold_tiled_ghost_cells(rho, static_parameters, g, bc_type=1)
     # fold charge deposited into tile ghost cells back to the owner interiors
 
-    rho = update_tiled_ghost_cells(rho, static_parameters, g, bc_type=1)
-    # update the ghost cells of the charge density array to ensure proper boundary conditions
-    
-
     def filter(rho):
-        rho = digital_filter(rho, dynamic_parameters.alpha, num_guard_cells=g)
-        rho = update_tiled_ghost_cells(rho, static_parameters, g, bc_type=1)
-        return rho
+        return tiled_digital_filter(
+            rho,
+            dynamic_parameters.alpha,
+            static_parameters,
+            bc_type=1,
+        )
 
     rho = jax.lax.cond(
         static_parameters.current_filter == "digital",
         filter,
-        lambda rho: rho,
+        lambda rho: update_tiled_ghost_cells(rho, static_parameters, g, bc_type=1),
         rho,
     )
     # apply an additional digital filter to the charge density if specified in the static parameters

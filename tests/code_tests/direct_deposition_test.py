@@ -141,8 +141,9 @@ class TestDirectDeposition(unittest.TestCase):
         self.assertNotIn("bc_type=bc_type", source)
         self.assertNotIn("bc_type=0", source)
         self.assertIn("fold_tiled_vector_ghost_cells((Jx, Jy, Jz), static_parameters, g, bc_type=1)", source)
+        self.assertIn("tiled_bilinear_filter_vector(J, static_parameters, bc_type=1)", source)
+        self.assertIn("tiled_digital_filter_vector(", source)
         self.assertIn("update_tiled_vector_ghost_cells(J, static_parameters, g, bc_type=1)", source)
-        self.assertIn("update_tiled_vector_ghost_cells(J, static_parameters, num_guard_cells=g, bc_type=1)", source)
 
     def test_face_stencil_at_grid_node_is_independent_of_tile_origin(self):
         dx = 0.5
