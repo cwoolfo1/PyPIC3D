@@ -1,5 +1,4 @@
 import jax.numpy as jnp
-from scipy import stats
 
 
 def mae(x, y):
@@ -7,30 +6,6 @@ def mae(x, y):
     Calculates the root mean squared error between two arrays.
     """
     return jnp.sqrt( jnp.mean( (x-y)**2 ) )
-
-
-def convergence_test(func):
-    """
-    Compute the measured order of convergence over increasing grid resolutions.
-    """
-
-    nxs = [10*i + 30 for i in range(20)]
-
-    errors = []
-    dxs = []
-
-    for nx in nxs:
-        error, dx = func(nx)
-        errors.append(error)
-        dxs.append(dx)
-
-    dxs = jnp.asarray(dxs)
-    errors = jnp.asarray(errors)
-
-    res = stats.linregress( jnp.log(dxs), jnp.log(errors) + 3*jnp.log(dxs) )
-    slope = jnp.abs( res.slope )
-
-    return slope
 
 
 def compute_energy(particles, E, B, static_parameters, dynamic_parameters, species_config=None):
