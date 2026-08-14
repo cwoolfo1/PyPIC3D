@@ -2,7 +2,7 @@ import inspect
 from pathlib import Path
 import unittest
 
-from PyPIC3D import parameters
+from PyPIC3D.utilities import parameters
 from PyPIC3D.evolve import time_loop_electrodynamic, time_loop_electrostatic
 
 

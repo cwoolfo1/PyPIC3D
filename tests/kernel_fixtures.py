@@ -6,7 +6,7 @@ import numpy as np
 
 from PyPIC3D.boundary_conditions.ghost_cells import make_field_mesh, update_tiled_ghost_cells
 from PyPIC3D.boundary_conditions.grid_and_stencil import BC_PERIODIC
-from PyPIC3D.parameters import DynamicParameters, GridParameters, StaticParameters
+from PyPIC3D.utilities.parameters import DynamicParameters, GridParameters, StaticParameters
 from PyPIC3D.particles.particle_class import SpeciesConfig, TiledParticles
 from PyPIC3D.utilities.grids import build_collocated_grid, build_tiled_yee_grids, build_yee_grid, grid_domain_bounds
 

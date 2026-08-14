@@ -10,7 +10,7 @@ from PyPIC3D.boundary_conditions.grid_and_stencil import (
 from PyPIC3D.deposition.Esirkepov import Esirkepov_current
 from PyPIC3D.deposition.J_from_rhov import J_from_rhov
 from PyPIC3D.deposition.rho import compute_rho
-from PyPIC3D.parameters import (
+from PyPIC3D.utilities.parameters import (
     DynamicParameters,
     GridParameters,
     StaticParameters,

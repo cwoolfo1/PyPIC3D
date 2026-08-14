@@ -45,7 +45,7 @@ from PyPIC3D.boundary_conditions.grid_and_stencil import (
 )
 from PyPIC3D.boundary_conditions.PML import initialize_tiled_pml_state, load_pml_from_toml
 from PyPIC3D.boundary_conditions.supergaussian import load_supergaussian_from_toml
-from PyPIC3D.parameters import build_dynamic_parameters, build_static_parameters
+from PyPIC3D.utilities.parameters import build_dynamic_parameters, build_static_parameters
 from PyPIC3D.relativity.flat import (
     initialize_flat_cartesian_metric,
     initialize_flat_cylindrical_metric,

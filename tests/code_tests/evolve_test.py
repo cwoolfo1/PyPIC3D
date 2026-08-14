@@ -14,7 +14,7 @@ from PyPIC3D.evolve import (
     time_loop_electrostatic,
 )
 from PyPIC3D.initialization import initialize_fields
-from PyPIC3D.parameters import build_dynamic_parameters, build_static_parameters
+from PyPIC3D.utilities.parameters import build_dynamic_parameters, build_static_parameters
 from PyPIC3D.particles.particle_class import SpeciesConfig, TiledParticles
 from PyPIC3D.utilities.grids import build_tiled_yee_grids, build_yee_grid
 from tests.kernel_fixtures import kernel_parameters_from_values

@@ -9,7 +9,7 @@ import plotly
 import toml
 import tqdm
 
-from PyPIC3D.parameters import dynamic_parameters_for_output, static_parameters_for_output
+from PyPIC3D.utilities.parameters import dynamic_parameters_for_output, static_parameters_for_output
 
 
 def load_config_file():
