@@ -1,8 +1,8 @@
 import jax
 
 from PyPIC3D.boundary_conditions.PML import (
-    apply_tiled_pml_to_b_curl,
-    apply_tiled_pml_to_e_curl,
+    stretch_tiled_pml_b_derivatives,
+    stretch_tiled_pml_e_derivatives,
 )
 from PyPIC3D.boundary_conditions.supergaussian import apply_tiled_supergaussian_absorber
 from PyPIC3D.boundary_conditions import ghost_cells
@@ -15,52 +15,126 @@ def _active_vector(field_tiles, g):
     return tuple(component[:, :, :, active, active, active] for component in field_tiles)
 
 
-def yee_curl_e_to_b(E_tiles, static_parameters, dynamic_parameters):
-    """
-    Apply the linear ordinary Yee curl from centered E to staggered B.
+def _forward_difference_from_refreshed(field, axis, spacing, guard_cells):
+    """Take one forward Yee difference after the vector halo refresh."""
 
-    Halo refresh is part of this spatial operator.  The current field boundary
-    maps are linear: they copy neighboring/periodic values, copy the adjacent
-    interior for constant boundaries, or insert homogeneous zeros at conducting
-    boundaries.  No nonzero prescribed value is injected into this path.
-    """
-
-    g = int(static_parameters.guard_cells)
+    g = int(guard_cells)
     active = slice(g, -g)
     forward = slice(g + 1, None if g == 1 else -g + 1)
 
-    Ex, Ey, Ez = ghost_cells.update_tiled_vector_ghost_cells(E_tiles, static_parameters, g)
-    dx, dy, dz = dynamic_parameters.dx, dynamic_parameters.dy, dynamic_parameters.dz
+    current_slices = [active, active, active]
+    forward_slices = [active, active, active]
+    forward_slices[int(axis)] = forward
 
-    dEz_dy = (Ez[:, :, :, active, forward, active] - Ez[:, :, :, active, active, active]) / dy
-    dEy_dz = (Ey[:, :, :, active, active, forward] - Ey[:, :, :, active, active, active]) / dz
-    dEx_dz = (Ex[:, :, :, active, active, forward] - Ex[:, :, :, active, active, active]) / dz
-    dEx_dy = (Ex[:, :, :, active, forward, active] - Ex[:, :, :, active, active, active]) / dy
-    dEz_dx = (Ez[:, :, :, forward, active, active] - Ez[:, :, :, active, active, active]) / dx
-    dEy_dx = (Ey[:, :, :, forward, active, active] - Ey[:, :, :, active, active, active]) / dx
+    current_slices = (slice(None), slice(None), slice(None), *current_slices)
+    forward_slices = (slice(None), slice(None), slice(None), *forward_slices)
+    return (field[forward_slices] - field[current_slices]) / spacing
+
+
+def _yee_derivatives_from_refreshed_channels(channels, static_parameters, dynamic_parameters):
+    """Apply the six canonical forward differences to refreshed field channels."""
+
+    Ez_for_dy, Ey_for_dz, Ex_for_dz, Ez_for_dx, Ey_for_dx, Ex_for_dy = channels
+    g = int(static_parameters.guard_cells)
 
     return (
-        dEz_dy - dEy_dz,
-        dEx_dz - dEz_dx,
-        dEy_dx - dEx_dy,
+        _forward_difference_from_refreshed(Ez_for_dy, 1, dynamic_parameters.dy, g),
+        _forward_difference_from_refreshed(Ey_for_dz, 2, dynamic_parameters.dz, g),
+        _forward_difference_from_refreshed(Ex_for_dz, 2, dynamic_parameters.dz, g),
+        _forward_difference_from_refreshed(Ez_for_dx, 0, dynamic_parameters.dx, g),
+        _forward_difference_from_refreshed(Ey_for_dx, 0, dynamic_parameters.dx, g),
+        _forward_difference_from_refreshed(Ex_for_dy, 1, dynamic_parameters.dy, g),
     )
 
 
-def yee_curl_b_to_e(B_tiles, E_template, static_parameters, dynamic_parameters):
+def yee_derivatives_e_to_b(E_tiles, static_parameters, dynamic_parameters):
     """
-    Apply the algebraic transpose of ``yee_curl_e_to_b`` to active B.
+    Return the six forward Yee derivatives from centered E to staggered B.
 
-    Transposing the constant-copy halo map changes the two exterior wall
-    planes relative to the legacy independently refreshed backward stencil.
+    Halo refresh is part of this spatial operator.  The current field boundary
+    maps are linear and do not inject nonzero prescribed values.
+
+    Output order is
+    ``dEz_dy, dEy_dz, dEx_dz, dEz_dx, dEy_dx, dEx_dy``.
     """
 
     g = int(static_parameters.guard_cells)
-    transpose_curl = jax.linear_transpose(
-        lambda E: yee_curl_e_to_b(E, static_parameters, dynamic_parameters),
-        E_template,
+    Ex, Ey, Ez = ghost_cells.update_tiled_vector_ghost_cells(E_tiles, static_parameters, g)
+    channels = (Ez, Ey, Ex, Ez, Ey, Ex)
+    return _yee_derivatives_from_refreshed_channels(channels, static_parameters, dynamic_parameters)
+
+
+def _independent_yee_derivative_channels(channels, static_parameters, dynamic_parameters):
+    """
+    Apply the forward geometry to six independent channels for transposition.
+
+    Keeping the derivative channels independent lets the transpose return each
+    backward derivative separately.  The channels share one vector halo
+    exchange, so the reverse operator has one distributed transpose/fold phase.
+    """
+
+    g = int(static_parameters.guard_cells)
+    channels = ghost_cells.update_tiled_vector_ghost_cells(channels, static_parameters, g)
+    return _yee_derivatives_from_refreshed_channels(channels, static_parameters, dynamic_parameters)
+
+
+def yee_derivatives_b_to_e(B_tiles, E_template, static_parameters, dynamic_parameters):
+    """
+    Return the six backward Yee derivatives from staggered B to centered E.
+
+    The reverse geometry is ``D_backward = -D_forward.T``.  A single batched
+    transpose keeps the six derivative channels separate for PML stretching
+    while sharing the transpose of the distributed halo operation.
+
+    Output order is
+    ``dBz_dy, dBy_dz, dBx_dz, dBz_dx, dBy_dx, dBx_dy``.
+    """
+
+    g = int(static_parameters.guard_cells)
+    Ex, Ey, Ez = E_template
+    Bx, By, Bz = _active_vector(B_tiles, g)
+
+    channel_templates = (Ez, Ey, Ex, Ez, Ey, Ex)
+    derivative_cotangents = (Bx, Bx, By, By, Bz, Bz)
+    transpose_derivatives = jax.linear_transpose(
+        lambda channels: _independent_yee_derivative_channels(
+            channels,
+            static_parameters,
+            dynamic_parameters,
+        ),
+        channel_templates,
     )
-    curl_B, = transpose_curl(_active_vector(B_tiles, g))
-    return _active_vector(curl_B, g)
+    transposed_channels, = transpose_derivatives(derivative_cotangents)
+    backward_channels = tuple(-component for component in _active_vector(transposed_channels, g))
+
+    dBx_dy, dBx_dz, dBy_dz, dBy_dx, dBz_dx, dBz_dy = backward_channels
+    return dBz_dy, dBy_dz, dBx_dz, dBz_dx, dBy_dx, dBx_dy
+
+
+def assemble_yee_curl(derivatives):
+    """Assemble a Yee curl from its six directional derivatives."""
+
+    d1, d2, d3, d4, d5, d6 = derivatives
+    return d1 - d2, d3 - d4, d5 - d6
+
+
+def yee_curl_e_to_b(E_tiles, static_parameters, dynamic_parameters):
+    """Apply the canonical forward Yee curl from centered E to staggered B."""
+
+    derivatives = yee_derivatives_e_to_b(E_tiles, static_parameters, dynamic_parameters)
+    return assemble_yee_curl(derivatives)
+
+
+def yee_curl_b_to_e(B_tiles, E_template, static_parameters, dynamic_parameters):
+    """Apply the transpose-derived Yee curl from staggered B to centered E."""
+
+    derivatives = yee_derivatives_b_to_e(
+        B_tiles,
+        E_template,
+        static_parameters,
+        dynamic_parameters,
+    )
+    return assemble_yee_curl(derivatives)
 
 
 def update_E(E_tiles, B_tiles, J_tiles, static_parameters, dynamic_parameters, pml_state=None):
@@ -81,33 +155,20 @@ def update_E(E_tiles, B_tiles, J_tiles, static_parameters, dynamic_parameters, p
     C = dynamic_parameters.C
     eps = dynamic_parameters.eps
 
-    if pml_state is None:
-        curl_x, curl_y, curl_z = yee_curl_b_to_e(
-            B_tiles,
-            E_tiles,
-            static_parameters,
-            dynamic_parameters,
-        )
-    else:
-        backward = slice(g - 1, -g - 1)
-        Bx, By, Bz = ghost_cells.update_tiled_vector_ghost_cells(B_tiles, static_parameters, g)
-        dx, dy, dz = dynamic_parameters.dx, dynamic_parameters.dy, dynamic_parameters.dz
-
-        # PML evolves six split directional terms and cannot use the static
-        # transpose operator used by the ordinary Yee update.
-        dBz_dy = (Bz[:, :, :, active, active, active] - Bz[:, :, :, active, backward, active]) / dy
-        dBy_dz = (By[:, :, :, active, active, active] - By[:, :, :, active, active, backward]) / dz
-        dBx_dz = (Bx[:, :, :, active, active, active] - Bx[:, :, :, active, active, backward]) / dz
-        dBx_dy = (Bx[:, :, :, active, active, active] - Bx[:, :, :, active, backward, active]) / dy
-        dBz_dx = (Bz[:, :, :, active, active, active] - Bz[:, :, :, backward, active, active]) / dx
-        dBy_dx = (By[:, :, :, active, active, active] - By[:, :, :, backward, active, active]) / dx
-
-        (curl_x, curl_y, curl_z), pml_state = apply_tiled_pml_to_e_curl(
-            (dBz_dy, dBy_dz, dBx_dz, dBz_dx, dBy_dx, dBx_dy),
+    derivatives = yee_derivatives_b_to_e(
+        B_tiles,
+        E_tiles,
+        static_parameters,
+        dynamic_parameters,
+    )
+    if pml_state is not None:
+        derivatives, pml_state = stretch_tiled_pml_e_derivatives(
+            derivatives,
             static_parameters,
             dynamic_parameters,
             pml_state,
         )
+    curl_x, curl_y, curl_z = assemble_yee_curl(derivatives)
 
     Ex = Ex.at[:, :, :, active, active, active].set(
         Ex[:, :, :, active, active, active]
@@ -167,32 +228,19 @@ def update_B(E_tiles, B_tiles, static_parameters, dynamic_parameters, pml_state=
     # build interior slice for active axes
     dt = dynamic_parameters.dt / 2  # half timestep for B update
 
-    if pml_state is None:
-        curl_x, curl_y, curl_z = yee_curl_e_to_b(
-            E_tiles,
-            static_parameters,
-            dynamic_parameters,
-        )
-    else:
-        forward = slice(g + 1, None if g == 1 else -g + 1)
-        Ex, Ey, Ez = ghost_cells.update_tiled_vector_ghost_cells(E_tiles, static_parameters, g)
-        dx, dy, dz = dynamic_parameters.dx, dynamic_parameters.dy, dynamic_parameters.dz
-
-        # PML evolves six split directional terms and keeps the explicit
-        # forward derivatives needed by its auxiliary magnetic state.
-        dEz_dy = (Ez[:, :, :, active, forward, active] - Ez[:, :, :, active, active, active]) / dy
-        dEy_dz = (Ey[:, :, :, active, active, forward] - Ey[:, :, :, active, active, active]) / dz
-        dEx_dz = (Ex[:, :, :, active, active, forward] - Ex[:, :, :, active, active, active]) / dz
-        dEx_dy = (Ex[:, :, :, active, forward, active] - Ex[:, :, :, active, active, active]) / dy
-        dEz_dx = (Ez[:, :, :, forward, active, active] - Ez[:, :, :, active, active, active]) / dx
-        dEy_dx = (Ey[:, :, :, forward, active, active] - Ey[:, :, :, active, active, active]) / dx
-
-        (curl_x, curl_y, curl_z), pml_state = apply_tiled_pml_to_b_curl(
-            (dEz_dy, dEy_dz, dEx_dz, dEz_dx, dEy_dx, dEx_dy),
+    derivatives = yee_derivatives_e_to_b(
+        E_tiles,
+        static_parameters,
+        dynamic_parameters,
+    )
+    if pml_state is not None:
+        derivatives, pml_state = stretch_tiled_pml_b_derivatives(
+            derivatives,
             static_parameters,
             dynamic_parameters,
             pml_state,
         )
+    curl_x, curl_y, curl_z = assemble_yee_curl(derivatives)
 
     Bx = Bx.at[:, :, :, active, active, active].set(Bx[:, :, :, active, active, active] - dt * curl_x)
     By = By.at[:, :, :, active, active, active].set(By[:, :, :, active, active, active] - dt * curl_y)

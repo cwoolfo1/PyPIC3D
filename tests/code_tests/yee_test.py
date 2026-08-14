@@ -9,6 +9,8 @@ from PyPIC3D.solvers.first_order_yee import (
     update_E,
     yee_curl_b_to_e,
     yee_curl_e_to_b,
+    yee_derivatives_b_to_e,
+    yee_derivatives_e_to_b,
 )
 from PyPIC3D.diagnostics.output_adapters import assemble_tiled_vector_field
 from PyPIC3D.boundary_conditions import ghost_cells
@@ -113,7 +115,7 @@ def _update_ghost_cells(field, bc_x, bc_y, bc_z):
     return field
 
 
-def _legacy_yee_curl_e_to_b(E_tiles, static_parameters, dynamic_parameters):
+def _legacy_yee_derivatives_e_to_b(E_tiles, static_parameters, dynamic_parameters):
     g = int(static_parameters.guard_cells)
     active = slice(g, -g)
     forward = slice(g + 1, None if g == 1 else -g + 1)
@@ -128,14 +130,19 @@ def _legacy_yee_curl_e_to_b(E_tiles, static_parameters, dynamic_parameters):
     dEz_dx = (Ez[:, :, :, forward, active, active] - Ez[:, :, :, active, active, active]) / dx
     dEy_dx = (Ey[:, :, :, forward, active, active] - Ey[:, :, :, active, active, active]) / dx
 
-    return (
-        dEz_dy - dEy_dz,
-        dEx_dz - dEz_dx,
-        dEy_dx - dEx_dy,
+    return dEz_dy, dEy_dz, dEx_dz, dEz_dx, dEy_dx, dEx_dy
+
+
+def _legacy_yee_curl_e_to_b(E_tiles, static_parameters, dynamic_parameters):
+    dEz_dy, dEy_dz, dEx_dz, dEz_dx, dEy_dx, dEx_dy = _legacy_yee_derivatives_e_to_b(
+        E_tiles,
+        static_parameters,
+        dynamic_parameters,
     )
+    return dEz_dy - dEy_dz, dEx_dz - dEz_dx, dEy_dx - dEx_dy
 
 
-def _legacy_yee_curl_b_to_e(B_tiles, static_parameters, dynamic_parameters):
+def _legacy_yee_derivatives_b_to_e(B_tiles, static_parameters, dynamic_parameters):
     g = int(static_parameters.guard_cells)
     active = slice(g, -g)
     backward = slice(g - 1, -g - 1)
@@ -150,11 +157,16 @@ def _legacy_yee_curl_b_to_e(B_tiles, static_parameters, dynamic_parameters):
     dBz_dx = (Bz[:, :, :, active, active, active] - Bz[:, :, :, backward, active, active]) / dx
     dBy_dx = (By[:, :, :, active, active, active] - By[:, :, :, backward, active, active]) / dx
 
-    return (
-        dBz_dy - dBy_dz,
-        dBx_dz - dBz_dx,
-        dBy_dx - dBx_dy,
+    return dBz_dy, dBy_dz, dBx_dz, dBz_dx, dBy_dx, dBx_dy
+
+
+def _legacy_yee_curl_b_to_e(B_tiles, static_parameters, dynamic_parameters):
+    dBz_dy, dBy_dz, dBx_dz, dBz_dx, dBy_dx, dBx_dy = _legacy_yee_derivatives_b_to_e(
+        B_tiles,
+        static_parameters,
+        dynamic_parameters,
     )
+    return dBz_dy - dBy_dz, dBx_dz - dBz_dx, dBy_dx - dBx_dy
 
 
 def _field_dot(a, b):
@@ -549,6 +561,84 @@ class TestYeeTiled(unittest.TestCase):
         for actual, expected in zip(curl_E, reference):
             self.assertTrue(jnp.allclose(actual, expected, rtol=1.0e-12, atol=1.0e-12))
 
+    def test_yee_derivatives_match_legacy_stencils_for_one_and_multiple_tiles(self):
+        tile_shapes = ((8, 6, 4), (2, 3, 2))
+
+        for boundary_name, parameter_builder in (
+            ("periodic", self._build_parameter_values),
+            ("conducting", self._conducting_parameters),
+        ):
+            for tile_shape in tile_shapes:
+                with self.subTest(boundary=boundary_name, tile_shape=tile_shape):
+                    parameter_set = self._with_tile_metadata(parameter_builder(), tile_shape)
+                    static_parameters, dynamic_parameters = self._split_parameters(parameter_set, {})
+                    E_tiles = self._random_tiled_vector_field(parameter_set, tile_shape, seed=12)
+                    B_tiles = self._random_tiled_vector_field(parameter_set, tile_shape, seed=13)
+
+                    forward = yee_derivatives_e_to_b(
+                        E_tiles,
+                        static_parameters,
+                        dynamic_parameters,
+                    )
+                    forward_reference = _legacy_yee_derivatives_e_to_b(
+                        E_tiles,
+                        static_parameters,
+                        dynamic_parameters,
+                    )
+                    backward = yee_derivatives_b_to_e(
+                        B_tiles,
+                        E_tiles,
+                        static_parameters,
+                        dynamic_parameters,
+                    )
+                    backward_reference = _legacy_yee_derivatives_b_to_e(
+                        B_tiles,
+                        static_parameters,
+                        dynamic_parameters,
+                    )
+
+                    for actual, expected in zip(forward, forward_reference):
+                        self.assertTrue(jnp.allclose(actual, expected, rtol=1.0e-12, atol=1.0e-12))
+                    for actual, expected in zip(backward, backward_reference):
+                        self.assertTrue(jnp.allclose(actual, expected, rtol=1.0e-12, atol=1.0e-12))
+
+    def test_scalar_yee_derivatives_satisfy_adjoint_identity(self):
+        forward_to_backward = (5, 2, 1, 4, 3, 0)
+        source_components = (2, 1, 0, 2, 1, 0)
+        target_components = (0, 0, 1, 1, 2, 2)
+
+        for boundary_name, parameter_builder in (
+            ("periodic", self._build_parameter_values),
+            ("conducting", self._conducting_parameters),
+        ):
+            for tile_shape in ((8, 6, 4), (2, 3, 2)):
+                with self.subTest(boundary=boundary_name, tile_shape=tile_shape):
+                    parameter_set = self._with_tile_metadata(parameter_builder(), tile_shape)
+                    static_parameters, dynamic_parameters = self._split_parameters(parameter_set, {})
+                    E_tiles = self._random_tiled_vector_field(parameter_set, tile_shape, seed=14)
+                    B_tiles = self._random_tiled_vector_field(parameter_set, tile_shape, seed=15)
+                    forward = yee_derivatives_e_to_b(E_tiles, static_parameters, dynamic_parameters)
+                    backward = yee_derivatives_b_to_e(
+                        B_tiles,
+                        E_tiles,
+                        static_parameters,
+                        dynamic_parameters,
+                    )
+
+                    g = int(static_parameters.guard_cells)
+                    E_active = tuple(component[:, :, :, g:-g, g:-g, g:-g] for component in E_tiles)
+                    B_active = tuple(component[:, :, :, g:-g, g:-g, g:-g] for component in B_tiles)
+                    for forward_index, backward_index in enumerate(forward_to_backward):
+                        lhs = jnp.vdot(
+                            forward[forward_index],
+                            B_active[target_components[forward_index]],
+                        )
+                        rhs = -jnp.vdot(
+                            E_active[source_components[forward_index]],
+                            backward[backward_index],
+                        )
+                        self.assertTrue(jnp.allclose(lhs, rhs, rtol=1.0e-12, atol=1.0e-12))
+
     def test_yee_curl_b_to_e_matches_legacy_backward_curl_for_periodic_and_conducting_boundaries(self):
         tile_shape = (2, 3, 2)
 
@@ -573,35 +663,34 @@ class TestYeeTiled(unittest.TestCase):
                 for actual, expected in zip(curl_B, reference):
                     self.assertTrue(jnp.allclose(actual, expected, rtol=1.0e-12, atol=1.0e-12))
 
-    def test_yee_curl_transpose_satisfies_adjoint_identity_on_multiple_tiles(self):
-        tile_shape = (2, 3, 2)
-
+    def test_yee_curl_transpose_satisfies_adjoint_identity(self):
         for boundary_name, parameter_set in (
             ("periodic", self._build_parameter_values()),
             ("conducting", self._conducting_parameters()),
             ("constant_x", self._constant_x_parameters()),
         ):
-            with self.subTest(boundary=boundary_name):
-                parameter_set = self._with_tile_metadata(parameter_set, tile_shape)
-                static_parameters, dynamic_parameters = self._split_parameters(parameter_set, {})
-                E_tiles = self._random_tiled_vector_field(parameter_set, tile_shape, seed=31)
-                B_tiles = self._random_tiled_vector_field(parameter_set, tile_shape, seed=32)
+            for tile_shape in ((8, 6, 4), (2, 3, 2)):
+                with self.subTest(boundary=boundary_name, tile_shape=tile_shape):
+                    tiled_parameters = self._with_tile_metadata(parameter_set, tile_shape)
+                    static_parameters, dynamic_parameters = self._split_parameters(tiled_parameters, {})
+                    E_tiles = self._random_tiled_vector_field(tiled_parameters, tile_shape, seed=31)
+                    B_tiles = self._random_tiled_vector_field(tiled_parameters, tile_shape, seed=32)
 
-                curl_E = yee_curl_e_to_b(E_tiles, static_parameters, dynamic_parameters)
-                curl_B = yee_curl_b_to_e(
-                    B_tiles,
-                    E_tiles,
-                    static_parameters,
-                    dynamic_parameters,
-                )
+                    curl_E = yee_curl_e_to_b(E_tiles, static_parameters, dynamic_parameters)
+                    curl_B = yee_curl_b_to_e(
+                        B_tiles,
+                        E_tiles,
+                        static_parameters,
+                        dynamic_parameters,
+                    )
 
-                g = int(static_parameters.guard_cells)
-                E_active = tuple(component[:, :, :, g:-g, g:-g, g:-g] for component in E_tiles)
-                B_active = tuple(component[:, :, :, g:-g, g:-g, g:-g] for component in B_tiles)
-                lhs = _field_dot(curl_E, B_active)
-                rhs = _field_dot(E_active, curl_B)
+                    g = int(static_parameters.guard_cells)
+                    E_active = tuple(component[:, :, :, g:-g, g:-g, g:-g] for component in E_tiles)
+                    B_active = tuple(component[:, :, :, g:-g, g:-g, g:-g] for component in B_tiles)
+                    lhs = _field_dot(curl_E, B_active)
+                    rhs = _field_dot(E_active, curl_B)
 
-                self.assertTrue(jnp.allclose(lhs, rhs, rtol=1.0e-12, atol=1.0e-12))
+                    self.assertTrue(jnp.allclose(lhs, rhs, rtol=1.0e-12, atol=1.0e-12))
 
     def test_constant_boundary_legacy_difference_is_confined_to_exterior_walls(self):
         parameter_set = self._constant_x_parameters()

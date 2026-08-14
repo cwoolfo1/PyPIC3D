@@ -50,7 +50,7 @@ def _reduced_axes_from_tile_shape(tile_shape, mesh_shape):
 
 
 def _is_stacked_tiled_vector_field(field_tiles):
-    return hasattr(field_tiles, "ndim") and field_tiles.ndim == 7 and int(field_tiles.shape[0]) == 3
+    return hasattr(field_tiles, "ndim") and field_tiles.ndim == 7
 
 
 def _stack_tiled_vector_field(field_tiles):
@@ -60,7 +60,7 @@ def _stack_tiled_vector_field(field_tiles):
 
 
 def _unstack_tiled_vector_field(field_tiles):
-    return field_tiles[0], field_tiles[1], field_tiles[2]
+    return tuple(field_tiles[i] for i in range(int(field_tiles.shape[0])))
 
 
 def _restore_tiled_vector_layout(stacked_tiles, original_tiles):
@@ -639,7 +639,11 @@ def update_tiled_ghost_cells(field_tiles, static_parameters, num_guard_cells=2, 
 
 def update_tiled_vector_ghost_cells(field_tiles, static_parameters, num_guard_cells=2, bc_type=BC_TYPE_FIELD):
     """
-    Refresh tiled vector-field halos, preserving stacked or tuple layout.
+    Refresh tiled multi-component field halos, preserving stacked or tuple layout.
+
+    Production vector fields use three components.  The component axis remains
+    general so related spatial operators can batch several derivative channels
+    through the same distributed halo exchange.
     """
 
     tile_shape = tuple(int(width) for width in static_parameters.tile_shape)
