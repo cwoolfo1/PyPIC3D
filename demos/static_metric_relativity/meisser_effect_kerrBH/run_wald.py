@@ -24,7 +24,7 @@ from PyPIC3D.solvers.static_metric import (
     update_B_relativity,
     update_D_relativity,
 )
-from PyPIC3D.utils import setup_pmd_files
+from PyPIC3D.utilities.simulation_helpers import setup_pmd_files
 
 
 jax.config.update("jax_enable_x64", True)
@@ -350,4 +350,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

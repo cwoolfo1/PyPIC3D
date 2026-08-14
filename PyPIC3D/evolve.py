@@ -10,7 +10,7 @@ from PyPIC3D.pusher.hybrid_boris_geodesic import hybrid_boris_geodesic_push
 from PyPIC3D.solvers.electrostatic_yee import calculate_tiled_electrostatic_fields
 from PyPIC3D.solvers.first_order_yee import update_B, update_E
 from PyPIC3D.solvers.static_metric import update_B_relativity, update_D_relativity, compute_covariant_E, compute_covariant_H
-from PyPIC3D.utils import add_external_fields
+from PyPIC3D.utilities.field_helpers import add_external_fields
 
 
 __all__ = ["time_loop_electrodynamic", "time_loop_electrostatic", "time_loop_static_metric"]

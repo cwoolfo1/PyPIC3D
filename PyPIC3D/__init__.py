@@ -7,7 +7,6 @@ import matplotlib.pyplot as plt
 # import external libraries
 
 from . import initialization
-from . import utils
 from . import pusher
 from . import evolve
 

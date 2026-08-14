@@ -8,7 +8,7 @@ from functools import partial
 
 from PyPIC3D.pusher.boris import boris_single_particle, interpolate_field_to_particles
 from PyPIC3D.pusher.higuera_cary import higuera_cary_single_particle
-from PyPIC3D.utils import mae, convergence_test
+from PyPIC3D.utilities.diagnostic_quantities import convergence_test, mae
 from tests.kernel_fixtures import kernel_parameters
 
 jax.config.update("jax_enable_x64", True)

@@ -3,7 +3,7 @@ import jax
 import jax.numpy as jnp
 import math
 
-from PyPIC3D.utils import vth_to_T, T_to_vth
+from PyPIC3D.utilities.plasma_quantities import T_to_vth, vth_to_T
 from PyPIC3D.particles.particle_class import SpeciesConfig, TiledParticles
 from PyPIC3D.utilities.grids import grid_domain_bounds
 

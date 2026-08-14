@@ -18,7 +18,7 @@ from PyPIC3D.initialization import initialize_simulation
 from PyPIC3D.particles.particle_class import SpeciesConfig, TiledParticles
 from PyPIC3D.solvers.first_order_yee import update_B, update_E
 from PyPIC3D.utilities.grids import build_yee_grid
-from PyPIC3D.utils import compute_energy
+from PyPIC3D.utilities.diagnostic_quantities import compute_energy
 from tests.kernel_fixtures import kernel_parameters_from_values
 
 jax.config.update("jax_enable_x64", True)

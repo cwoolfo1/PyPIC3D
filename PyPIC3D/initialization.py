@@ -6,17 +6,19 @@ import jax.numpy as jnp
 
 from PyPIC3D.particles.particle_initialization import load_particles_from_toml
 from PyPIC3D.particles.particle_tile_communication import shard_tiled_particles
-from PyPIC3D.utils import (
-    add_external_fields,
-    build_plasma_parameters_dict,
-    compute_energy,
+from PyPIC3D.utilities.diagnostic_quantities import compute_energy
+from PyPIC3D.utilities.field_helpers import add_external_fields
+from PyPIC3D.utilities.plasma_quantities import build_plasma_parameters_dict
+from PyPIC3D.utilities.simulation_helpers import (
     convert_to_jax_compatible,
     courant_condition,
-    load_external_fields_from_toml,
-    load_previous_fields_from_toml,
     make_dir,
     particle_sanity_check,
     print_stats,
+)
+from PyPIC3D.utilities.toml_helpers import (
+    load_external_fields_from_toml,
+    load_previous_fields_from_toml,
     update_parameters_from_toml,
 )
 from PyPIC3D.utilities.grids import (
