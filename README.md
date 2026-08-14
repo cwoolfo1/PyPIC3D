@@ -118,7 +118,9 @@ python -m sphinx -b html -W --keep-going docs docs/_build/html
 - [ ] 3+1 Curvilinear PIC with static metrics.
 - [ ] 3+1 Curvilinear PIC with dynamic metrics using BSSN/Z4C.
 - [ ] Harris Current Sheet Demonstration.
-- [ ] Orszag-Tang Vortex Demonstration.
+- [X] Orszag-Tang Vortex Demonstration.
+- [ ] Refactoring deposition to use single stencil call for deposition and interpolation.
+- [ ] Fixed mesh refinement for both standard and 3+1 curvilinear PIC.
 
 
 
