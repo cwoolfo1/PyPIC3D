@@ -7,10 +7,10 @@ import jax.numpy as jnp
 import numpy as np
 import toml
 
-from PyPIC3D.evolve import time_loop_electrostatic
+from PyPIC3D.solvers.electrostatic.time_loop import time_loop_electrostatic
 from PyPIC3D.initialization import initialize_simulation
 from PyPIC3D.particles.particle_class import SpeciesConfig, TiledParticles
-from PyPIC3D.solvers.electrostatic_yee import (
+from PyPIC3D.solvers.electrostatic.electrostatic_yee import (
     solve_poisson_with_conjugate_gradient,
     calculate_electrostatic_fields,
     calculate_tiled_electrostatic_fields,

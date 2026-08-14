@@ -8,7 +8,7 @@ import jax.numpy as jnp
 from PyPIC3D.boundary_conditions.ghost_cells import make_field_mesh
 from PyPIC3D.boundary_conditions.grid_and_stencil import BC_PERIODIC
 from PyPIC3D.initialization import initialize_fields
-from PyPIC3D.solvers.first_order_yee import update_B
+from PyPIC3D.solvers.yee.first_order_yee import update_B
 from PyPIC3D.utilities.grids import build_tiled_yee_grids, build_yee_grid
 from tests.kernel_fixtures import kernel_parameters_from_values
 

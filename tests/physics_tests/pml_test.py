@@ -20,7 +20,7 @@ from PyPIC3D.boundary_conditions.grid_and_stencil import BC_CONDUCTING, BC_PERIO
 from PyPIC3D.diagnostics.output_adapters import assemble_tiled_vector_field
 from PyPIC3D.initialization import initialize_simulation
 from PyPIC3D.particles.particle_class import SpeciesConfig, TiledParticles
-from PyPIC3D.solvers.first_order_yee import (
+from PyPIC3D.solvers.yee.first_order_yee import (
     assemble_yee_curl,
     update_B,
     update_E,

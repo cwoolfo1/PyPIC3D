@@ -18,7 +18,7 @@ from PyPIC3D.diagnostics.async_writer import (
     create_async_tiled_openpmd_field_writer,
     enqueue_openpmd_field_output,
 )
-from PyPIC3D.solvers.static_metric import (
+from PyPIC3D.solvers.gr_static.static_metric import (
     compute_covariant_E,
     compute_covariant_H,
     update_B_relativity,

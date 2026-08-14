@@ -3,7 +3,8 @@ from pathlib import Path
 import unittest
 
 from PyPIC3D.utilities import parameters
-from PyPIC3D.evolve import time_loop_electrodynamic, time_loop_electrostatic
+from PyPIC3D.solvers.electrostatic.time_loop import time_loop_electrostatic
+from PyPIC3D.solvers.yee.time_loop import time_loop_electrodynamic
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]

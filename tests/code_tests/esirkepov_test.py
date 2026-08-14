@@ -27,7 +27,7 @@ from PyPIC3D.particles.particle_tile_communication import (
     update_tiled_particle_positions,
 )
 from PyPIC3D.particles.particle_class import SpeciesConfig, TiledParticles
-from PyPIC3D.solvers.first_order_yee import (
+from PyPIC3D.solvers.yee.first_order_yee import (
     update_E,
 )
 from PyPIC3D.utilities.grids import build_tiled_yee_grids

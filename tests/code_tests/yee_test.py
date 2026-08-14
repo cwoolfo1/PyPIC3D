@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import jax
 import jax.numpy as jnp
 
-from PyPIC3D.solvers.first_order_yee import (
+from PyPIC3D.solvers.yee.first_order_yee import (
     update_B,
     update_E,
     yee_curl_b_to_e,

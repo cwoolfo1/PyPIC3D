@@ -23,7 +23,7 @@ from PyPIC3D.relativity.kerr_schild import (
     initialize_kerr_schild_cartesian_metric,
     initialize_kerr_schild_spherical_metric,
 )
-from PyPIC3D.solvers.static_metric import update_B_relativity
+from PyPIC3D.solvers.gr_static.static_metric import update_B_relativity
 from tests.kernel_fixtures import empty_tiled_vector, kernel_parameters
 
 

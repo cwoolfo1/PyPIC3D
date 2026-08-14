@@ -8,9 +8,6 @@ import matplotlib.pyplot as plt
 
 from . import initialization
 from . import pusher
-from . import evolve
-
-from .solvers import electrostatic_yee
 
 from .particles import particle_initialization
 

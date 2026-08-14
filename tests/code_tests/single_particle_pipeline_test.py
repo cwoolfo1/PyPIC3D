@@ -20,7 +20,7 @@ from PyPIC3D.deposition.J_from_rhov import J_from_rhov
 from PyPIC3D.deposition.rho import compute_rho
 from PyPIC3D.deposition.shapes import get_first_order_weights, get_second_order_weights
 from PyPIC3D.diagnostics.output_adapters import assemble_tiled_scalar_field, assemble_tiled_vector_field
-from PyPIC3D.evolve import _filter_electric_field_for_particles, time_loop_electrodynamic
+from PyPIC3D.solvers.yee.time_loop import _filter_electric_field_for_particles, time_loop_electrodynamic
 from PyPIC3D.initialization import initialize_fields
 from PyPIC3D.particles.particle_tile_communication import refresh_tiled_particle_tiles, update_tiled_particle_positions
 from PyPIC3D.pusher.boris import interpolate_field_to_particles
