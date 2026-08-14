@@ -241,6 +241,10 @@ def default_parameters():
         "ds_per_debye": None,
         "shape_factor": 1,
         "guard_cells": 2,
+        "electrostatic_schwarz_tol": 1.0e-6,
+        "electrostatic_schwarz_max_iterations": 500,
+        "electrostatic_local_cg_tol": 1.0e-6,
+        "electrostatic_local_cg_max_iterations": 500,
         "particle_tile_nx": None,
         "particle_tile_ny": None,
         "particle_tile_nz": None,
@@ -349,12 +353,9 @@ def initialize_simulation(toml_file):
     if static_config["particle_tile_nz"] is None:
         static_config["particle_tile_nz"] = int(Nz)
 
-    if electrostatic:
-        static_config["particle_tile_nx"] = int(Nx)
-        static_config["particle_tile_ny"] = int(Ny)
-        static_config["particle_tile_nz"] = int(Nz)
-
-    guard_cells = max(int(static_config["guard_cells"]), 2)
+    guard_cells = int(static_config["guard_cells"])
+    if guard_cells < 1:
+        raise ValueError("Tiled fields require at least one guard cell.")
     static_config["guard_cells"] = guard_cells
     _validate_current_filter_contract(static_config)
 

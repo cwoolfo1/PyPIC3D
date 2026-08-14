@@ -4,7 +4,7 @@ from jax import lax
 from PyPIC3D.deposition.rho import compute_rho
 from PyPIC3D.utilities.filters import digital_filter
 from PyPIC3D.boundary_conditions import ghost_cells
-from PyPIC3D.boundary_conditions.grid_and_stencil import BC_CONDUCTING
+from PyPIC3D.boundary_conditions.grid_and_stencil import BC_CONDUCTING, BC_PERIODIC
 
 
 def _active_slice(g):
@@ -19,203 +19,367 @@ def _backward_slice(g):
     return slice(g - 1, -g - 1)
 
 
-def _as_single_tile(field):
-    return field[jnp.newaxis, jnp.newaxis, jnp.newaxis, :, :, :]
-
-
 def _apply_tiled_phi_constant_boundaries(field_tiles, static_parameters, g):
     bc_x, bc_y, bc_z = static_parameters.boundary_conditions
-    applied_bc = False
+    boundary_conditions = (bc_x, bc_y, bc_z)
 
-    if int(bc_x) == BC_CONDUCTING:
-        field_tiles = ghost_cells.apply_tiled_constant_boundary(field_tiles, static_parameters, axis=0, num_guard_cells=g)
-        applied_bc = True
-    if int(bc_y) == BC_CONDUCTING:
-        field_tiles = ghost_cells.apply_tiled_constant_boundary(field_tiles, static_parameters, axis=1, num_guard_cells=g)
-        applied_bc = True
-    if int(bc_z) == BC_CONDUCTING:
-        field_tiles = ghost_cells.apply_tiled_constant_boundary(field_tiles, static_parameters, axis=2, num_guard_cells=g)
-        applied_bc = True
-
-    if not applied_bc:
-        field_tiles = ghost_cells.update_tiled_ghost_cells(field_tiles, static_parameters, g)
+    field_tiles = ghost_cells.update_tiled_ghost_cells(
+        field_tiles,
+        static_parameters,
+        g,
+    )
+    # Refresh all neighbor halos once, then impose each physical constant wall.
+    # Calling apply_tiled_constant_boundary once per axis would refresh again
+    # between axes and erase an already-filled conducting face.
+    for axis, boundary_condition in enumerate(boundary_conditions):
+        if int(boundary_condition) == BC_CONDUCTING:
+            apply_boundary = ghost_cells.make_distributed_constant_boundary(
+                static_parameters.field_mesh,
+                static_parameters.tile_shape,
+                axis,
+                g,
+            )
+            field_tiles = apply_boundary(field_tiles)
 
     return field_tiles
 
 
-def _refresh_single_tile_scalar(field, static_parameters, g, apply_conducting=False):
-    field_tiles = _as_single_tile(field)
-    if apply_conducting:
-        field_tiles = _apply_tiled_phi_constant_boundaries(field_tiles, static_parameters, g)
-    else:
-        field_tiles = ghost_cells.update_tiled_ghost_cells(field_tiles, static_parameters, g)
-    return field_tiles[0, 0, 0]
+def _tiled_laplacian(field_tiles, dynamic_parameters, g):
+    """Apply the seven-point Laplacian to every tile owned interior."""
 
-
-def _centered_finite_difference_gradient(field, dx, dy, dz):
-    """
-    Compute the centered finite-difference gradient on a periodic scalar field.
-
-    This is the electrostatic single-tile post-processing stencil.  The tiled
-    electrostatic path below uses the same centered difference directly on
-    compact tile arrays with refreshed halos.
-    """
-
-    grad_x = (jnp.roll(field, shift=-1, axis=0) - jnp.roll(field, shift=1, axis=0)) / (2.0 * dx)
-    grad_y = (jnp.roll(field, shift=-1, axis=1) - jnp.roll(field, shift=1, axis=1)) / (2.0 * dy)
-    grad_z = (jnp.roll(field, shift=-1, axis=2) - jnp.roll(field, shift=1, axis=2)) / (2.0 * dz)
-
-    return grad_x, grad_y, grad_z
-
-
-def solve_poisson_with_conjugate_gradient(rho, phi, static_parameters, dynamic_parameters, tol=1e-12, max_iter=5000):
-    """
-    Solve Poisson's equation using matrix-free conjugate gradient.
-
-    Uses ghost-cell slicing for the Laplacian stencil instead of jnp.roll.
-
-    Args:
-        rho (ndarray): Charge density field with shape (Nx+2*g, Ny+2*g, Nz+2*g).
-        phi (ndarray): Initial guess for potential with shape (Nx+2*g, Ny+2*g, Nz+2*g).
-        dynamic_parameters (dict): Dynamic parameters with ``eps``, ``dx``, ``dy``, and ``dz``.
-        tol (float): Residual tolerance.
-        max_iter (int): Maximum number of CG iterations.
-
-    Returns:
-        ndarray: Electrostatic potential field with shape (Nx+2*g, Ny+2*g, Nz+2*g).
-    """
     dx = dynamic_parameters.dx
     dy = dynamic_parameters.dy
     dz = dynamic_parameters.dz
-    eps = dynamic_parameters.eps
-
-    g = static_parameters.guard_cells
     active = _active_slice(g)
     forward = _forward_slice(g)
     backward = _backward_slice(g)
-    # get the single-tile layout from the static parameter contract
 
-    def lapl(field):
-        # Laplacian using tile-local ghost-cell neighbors instead of jnp.roll.
-        dfdx2 = (field[forward, active, active] + field[backward, active, active] - 2.0 * field[active, active, active]) / (dx * dx)
-        dfdy2 = (field[active, forward, active] + field[active, backward, active] - 2.0 * field[active, active, active]) / (dy * dy)
-        dfdz2 = (field[active, active, forward] + field[active, active, backward] - 2.0 * field[active, active, active]) / (dz * dz)
-        return dfdx2 + dfdy2 + dfdz2
-    # compute the laplacian on the interior using ghost cell neighbors
+    dfdx2 = (
+        field_tiles[..., forward, active, active]
+        + field_tiles[..., backward, active, active]
+        - 2.0 * field_tiles[..., active, active, active]
+    ) / (dx * dx)
+    dfdy2 = (
+        field_tiles[..., active, forward, active]
+        + field_tiles[..., active, backward, active]
+        - 2.0 * field_tiles[..., active, active, active]
+    ) / (dy * dy)
+    dfdz2 = (
+        field_tiles[..., active, active, forward]
+        + field_tiles[..., active, active, backward]
+        - 2.0 * field_tiles[..., active, active, active]
+    ) / (dz * dz)
 
-    def apply_bc(field):
-        return _refresh_single_tile_scalar(field, static_parameters, g, apply_conducting=True)
-    # apply scalar conducting boundaries and refresh ghost cells through the tiled halo path
-
-    def body_fun(state):
-        phi, r, p, k = state
-
-        lapl_p = -lapl(p)
-        alpha = jnp.sum(r * r) / jnp.sum(p[active, active, active] * lapl_p)
-        # compute the optimal step size in the direction of the residual
-        phi_next = phi.at[active, active, active].add(alpha * p[active, active, active])
-        # update the potential guess
-        phi_next = apply_bc(phi_next)
-        # apply boundary conditions to the new potential guess
-
-        r_next = r - alpha * lapl_p
-        # compute the new residual after stepping in the direction of p
-        beta = jnp.sum(r_next * r_next) / jnp.sum(r * r)
-        # compute the optimal scaling for the new search direction
-        p_next = p.at[active, active, active].set(r_next + beta * p[active, active, active])
-        p_next = apply_bc(p_next)
-        # compute the new search direction
-
-        return phi_next, r_next, p_next, k + 1
-    # perform one iteration of the conjugate gradient method
-
-    def cond_fun(state):
-        phi, r, p, k = state
-
-        norm_r = jnp.sum(r * r)
-        # compute the squared L2 norm of the residual for convergence checking
-        return jnp.logical_and(k < max_iter, norm_r > tol**2)
-    # if the residual norm is above the tolerance and we haven't exceeded max iterations, continue iterating
-
-    phi = apply_bc(phi)
-    residual = rho[active, active, active] / eps + lapl(phi)
-    # compute the error in the Poisson equation with the current potential guess
-
-    p0 = jnp.zeros_like(phi)
-    p0 = p0.at[active, active, active].set(residual)
-    p0 = apply_bc(p0)
-    # initialize the search direction with ghost cells
-
-    phi, residual, p, iteration = lax.while_loop(
-        cond_fun,
-        body_fun,
-        (phi, residual, p0, 0),
-    )
-    # run the conjugate gradient iterations until convergence or max iterations reached
-
-    return apply_bc(phi)
+    return dfdx2 + dfdy2 + dfdz2
 
 
-def calculate_electrostatic_fields(static_parameters, dynamic_parameters, particles, rho, phi, solver, bc):
-    """
-    Compute electrostatic fields from charge deposition and Poisson solve.
+def _poisson_residual(rho_tiles, phi_tiles, dynamic_parameters, g):
+    """Return ``rho / eps + laplacian(phi)`` on each tile's owned cells."""
 
-    All field arrays have shape (Nx+2*g, Ny+2*g, Nz+2*g) with ghost cells.
-
-    Args:
-        static_parameters (dict): Static simulation parameters.
-        dynamic_parameters (dict): Dynamic simulation parameters.
-        particles (list): Particle species list.
-        rho (ndarray): Charge density array with shape (Nx+2*g, Ny+2*g, Nz+2*g).
-        phi (ndarray): Potential array with shape (Nx+2*g, Ny+2*g, Nz+2*g).
-        solver (str): Electrostatic solver mode.
-        bc (str): Boundary condition for finite-difference gradient.
-
-    Returns:
-        tuple: ``((Ex, Ey, Ez), phi, rho)``.
-    """
-    dx = dynamic_parameters.dx
-    dy = dynamic_parameters.dy
-    dz = dynamic_parameters.dz
-    g = static_parameters.guard_cells
     active = _active_slice(g)
+    rho_owned = rho_tiles[..., active, active, active]
+    return rho_owned / dynamic_parameters.eps + _tiled_laplacian(
+        phi_tiles,
+        dynamic_parameters,
+        g,
+    )
 
-    phi = solve_poisson_with_conjugate_gradient(rho, phi, static_parameters, dynamic_parameters)
 
-    phi = _refresh_single_tile_scalar(phi, static_parameters, g, apply_conducting=True)
-    # refresh phi ghost cells before any stencil-based post-processing
+def _local_tile_cg_solve(
+    rho_tiles,
+    phi_tiles,
+    dynamic_parameters,
+    g,
+    local_cg_tol,
+    local_cg_max_iterations,
+):
+    """Solve each tile with fixed Dirichlet halos and residual-controlled CG."""
 
-    alpha = dynamic_parameters.alpha
-    phi = digital_filter(phi, alpha, num_guard_cells=g)
-    phi = _refresh_single_tile_scalar(phi, static_parameters, g, apply_conducting=True)
-    # update ghost cells after filtering
+    active = _active_slice(g)
+    residual = _poisson_residual(
+        rho_tiles,
+        phi_tiles,
+        dynamic_parameters,
+        g,
+    )
+    search_direction = jnp.zeros_like(phi_tiles)
+    search_direction = search_direction.at[..., active, active, active].set(residual)
+    rr = jnp.sum(
+        residual * residual,
+        axis=(-3, -2, -1),
+    )
+    local_cg_tol_squared = jnp.asarray(local_cg_tol, dtype=rr.dtype) ** 2
+    tile_active = rr > local_cg_tol_squared
+    local_cg_iteration = jnp.asarray(0, dtype=jnp.int32)
 
-    del solver, bc
+    def cg_not_converged(state):
+        _, _, _, _, tile_active, local_cg_iteration = state
+        return jnp.any(tile_active) & (
+            local_cg_iteration < local_cg_max_iterations
+        )
 
-    Ex, Ey, Ez = _centered_finite_difference_gradient(-1.0 * phi[active, active, active], dx, dy, dz)
-    # compute gradient on the interior
+    def cg_iteration(state):
+        phi_tiles, residual, search_direction, rr, tile_active, local_cg_iteration = state
 
-    # Place the gradient results into ghost-celled arrays
-    Ex_full = jnp.zeros_like(phi)
-    Ey_full = jnp.zeros_like(phi)
-    Ez_full = jnp.zeros_like(phi)
-    Ex_full = Ex_full.at[active, active, active].set(Ex)
-    Ey_full = Ey_full.at[active, active, active].set(Ey)
-    Ez_full = Ez_full.at[active, active, active].set(Ez)
-    Ex_full = _refresh_single_tile_scalar(Ex_full, static_parameters, g)
-    Ey_full = _refresh_single_tile_scalar(Ey_full, static_parameters, g)
-    Ez_full = _refresh_single_tile_scalar(Ez_full, static_parameters, g)
+        search_owned = search_direction[..., active, active, active]
+        Ap = -_tiled_laplacian(
+            search_direction,
+            dynamic_parameters,
+            g,
+        )
+        pAp = jnp.sum(
+            search_owned * Ap,
+            axis=(-3, -2, -1),
+        )
+        valid_step = tile_active & (pAp > 0.0)
+        safe_pAp = jnp.where(valid_step, pAp, 1.0)
+        alpha = jnp.where(valid_step, rr / safe_pAp, 0.0)
+        alpha = alpha[..., jnp.newaxis, jnp.newaxis, jnp.newaxis]
 
-    return (Ex_full, Ey_full, Ez_full), phi, rho
+        phi_owned = phi_tiles[..., active, active, active]
+        phi_owned_next = phi_owned + alpha * search_owned
+        phi_tiles_next = phi_tiles.at[..., active, active, active].set(phi_owned_next)
+        residual_next = residual - alpha * Ap
+        rr_next = jnp.sum(
+            residual_next * residual_next,
+            axis=(-3, -2, -1),
+        )
+
+        tile_active_next = valid_step & (rr_next > local_cg_tol_squared)
+        safe_rr = jnp.where(tile_active_next, rr, 1.0)
+        beta = jnp.where(tile_active_next, rr_next / safe_rr, 0.0)
+        beta = beta[..., jnp.newaxis, jnp.newaxis, jnp.newaxis]
+        tile_active_owned = tile_active_next[
+            ..., jnp.newaxis, jnp.newaxis, jnp.newaxis
+        ]
+        search_owned_next = jnp.where(
+            tile_active_owned,
+            residual_next + beta * search_owned,
+            jnp.zeros_like(residual_next),
+        )
+        # Search directions remain zero in every guard cell. Neighbor values
+        # are fixed Dirichlet data until the next outer Schwarz halo refresh.
+        search_direction_next = jnp.zeros_like(search_direction)
+        search_direction_next = search_direction_next.at[
+            ..., active, active, active
+        ].set(search_owned_next)
+
+        return (
+            phi_tiles_next,
+            residual_next,
+            search_direction_next,
+            rr_next,
+            tile_active_next,
+            local_cg_iteration + 1,
+        )
+
+    phi_tiles, _, _, rr, _, _ = lax.while_loop(
+        cg_not_converged,
+        cg_iteration,
+        (
+            phi_tiles,
+            residual,
+            search_direction,
+            rr,
+            tile_active,
+            local_cg_iteration,
+        ),
+    )
+
+    local_cg_residual = jnp.sqrt(rr)
+    return phi_tiles, local_cg_residual
+
+
+def _schwarz_interface_mask(residual, static_parameters, g):
+    interface_mask = jnp.zeros_like(residual, dtype=bool)
+    boundary_conditions = tuple(
+        int(boundary_condition)
+        for boundary_condition in static_parameters.boundary_conditions
+    )
+    has_interface = False
+
+    for axis, boundary_condition in enumerate(boundary_conditions):
+        num_tiles = int(residual.shape[axis])
+        num_owned_cells = int(residual.shape[axis + 3])
+
+        tile_shape = [1] * residual.ndim
+        tile_shape[axis] = num_tiles
+        tile_index = jnp.arange(num_tiles).reshape(tile_shape)
+
+        cell_shape = [1] * residual.ndim
+        cell_shape[axis + 3] = num_owned_cells
+        cell_index = jnp.arange(num_owned_cells).reshape(cell_shape)
+
+        if boundary_condition == BC_PERIODIC:
+            lower_has_neighbor = jnp.ones(tile_shape, dtype=bool)
+            upper_has_neighbor = jnp.ones(tile_shape, dtype=bool)
+            has_interface = True
+        else:
+            lower_has_neighbor = tile_index > 0
+            upper_has_neighbor = tile_index < num_tiles - 1
+            has_interface = has_interface or num_tiles > 1
+
+        lower_interface = lower_has_neighbor & (cell_index < g)
+        upper_interface = upper_has_neighbor & (cell_index >= num_owned_cells - g)
+        interface_mask = interface_mask | lower_interface | upper_interface
+
+    return interface_mask, has_interface
+
+
+def _schwarz_interface_residual(residual, static_parameters, g):
+    """Return the maximum residual in the ``g``-cell inter-tile face slabs."""
+
+    interface_mask, has_interface = _schwarz_interface_mask(
+        residual,
+        static_parameters,
+        g,
+    )
+    if not has_interface:
+        # A single nonperiodic tile has no Schwarz interface. Its local domain
+        # residual still has to drive the one required solve and convergence.
+        return jnp.max(jnp.abs(residual))
+
+    return jnp.max(jnp.where(interface_mask, jnp.abs(residual), 0.0))
+
+
+def solve_poisson_with_tiled_local_schwarz(
+    rho_tiles,
+    phi_tiles,
+    static_parameters,
+    dynamic_parameters,
+    *,
+    schwarz_tol=1.0e-6,
+    schwarz_max_iterations=500,
+    local_cg_tol=1.0e-6,
+    local_cg_max_iterations=500,
+    return_diagnostics=False,
+):
+    """
+    Solve tiled Poisson equations with residual-controlled local Schwarz steps.
+
+    Each Schwarz iteration solves the owned cells of every tile with local CG
+    while holding that tile's ``g = guard_cells`` halo fixed as Dirichlet data.
+    Search directions are zero in the guard cells, and CG reductions cover only
+    the three owned spatial axes, so no global Krylov solve is formed.
+
+    After every local solve, the potential halos are refreshed and the true
+    Poisson residual is recomputed. ``schwarz_residual`` is the maximum absolute
+    residual in the ``g``-cell-wide owned slabs adjacent to tile interfaces.
+    ``phi_tiles`` remains the previous-timestep warm start, and neither the
+    potential nor a CG search direction is assembled into a global field.
+
+    If requested, diagnostics are returned as ``(local_cg_residual,
+    schwarz_residual, schwarz_iteration)``. The local residual contains one L2
+    norm per tile; the Schwarz residual and iteration count are scalars.
+    """
+
+    g = int(static_parameters.guard_cells)
+    phi_tiles = _apply_tiled_phi_constant_boundaries(
+        phi_tiles,
+        static_parameters,
+        g,
+    )
+    residual = _poisson_residual(
+        rho_tiles,
+        phi_tiles,
+        dynamic_parameters,
+        g,
+    )
+    local_cg_residual = jnp.sqrt(
+        jnp.sum(residual * residual, axis=(-3, -2, -1))
+    )
+    interface_mask, _ = _schwarz_interface_mask(
+        residual,
+        static_parameters,
+        g,
+    )
+    interior_residual = jnp.where(interface_mask, 0.0, residual)
+    initial_interior_rr = jnp.sum(
+        interior_residual * interior_residual,
+        axis=(-3, -2, -1),
+    )
+    initial_local_solve_needed = jnp.any(
+        initial_interior_rr > local_cg_tol**2
+    )
+    schwarz_residual = _schwarz_interface_residual(
+        residual,
+        static_parameters,
+        g,
+    )
+    schwarz_iteration = jnp.asarray(0, dtype=jnp.int32)
+
+    def schwarz_not_converged(state):
+        _, _, schwarz_residual, schwarz_iteration = state
+        initial_interior_not_converged = (
+            (schwarz_iteration == 0) & initial_local_solve_needed
+        )
+        return (
+            initial_interior_not_converged
+            | (schwarz_residual > schwarz_tol)
+        ) & (schwarz_iteration < schwarz_max_iterations)
+
+    def schwarz_sweep(state):
+        phi_tiles, _, _, schwarz_iteration = state
+        phi_tiles, local_cg_residual = _local_tile_cg_solve(
+            rho_tiles,
+            phi_tiles,
+            dynamic_parameters,
+            g,
+            local_cg_tol,
+            local_cg_max_iterations,
+        )
+        phi_tiles = _apply_tiled_phi_constant_boundaries(
+            phi_tiles,
+            static_parameters,
+            g,
+        )
+        residual = _poisson_residual(
+            rho_tiles,
+            phi_tiles,
+            dynamic_parameters,
+            g,
+        )
+        schwarz_residual = _schwarz_interface_residual(
+            residual,
+            static_parameters,
+            g,
+        )
+
+        return (
+            phi_tiles,
+            local_cg_residual,
+            schwarz_residual,
+            schwarz_iteration + 1,
+        )
+
+    phi_tiles, local_cg_residual, schwarz_residual, schwarz_iteration = lax.while_loop(
+        schwarz_not_converged,
+        schwarz_sweep,
+        (
+            phi_tiles,
+            local_cg_residual,
+            schwarz_residual,
+            schwarz_iteration,
+        ),
+    )
+
+    if not return_diagnostics:
+        return phi_tiles
+
+    diagnostics = (
+        local_cg_residual,
+        schwarz_residual,
+        schwarz_iteration,
+    )
+    return phi_tiles, diagnostics
 
 
 def _centered_tiled_electrostatic_gradient(phi_tiles, static_parameters, dynamic_parameters, g):
     """
     Compute ``E = -grad(phi)`` on compact scalar tiles.
 
-    The potential halos must already contain neighboring tile/global boundary
-    values.  This mirrors ``centered_finite_difference_gradient`` on the
-    assembled physical interior, then refreshes vector halos for particle
+    The potential halos must already contain neighboring tile and physical
+    boundary values. The returned vector halos are refreshed for particle
     interpolation.
     """
 
@@ -246,30 +410,40 @@ def _centered_tiled_electrostatic_gradient(phi_tiles, static_parameters, dynamic
     return ghost_cells.update_tiled_vector_ghost_cells((Ex, Ey, Ez), static_parameters, g)
 
 
-def calculate_tiled_electrostatic_fields(static_parameters, dynamic_parameters, particles, species_config, rho_tiles, phi_tiles):
+def calculate_electrostatic_fields(
+    static_parameters,
+    dynamic_parameters,
+    particles,
+    species_config,
+    rho_tiles,
+    phi_tiles,
+):
     """
-    Compute electrostatic fields from single-tile rho deposition and a Poisson solve.
+    Deposit charge and solve Poisson directly in compact tiled field storage.
 
-    Electrostatic runs use one tile covering the whole physical domain.  The
-    leading tile axes remain singleton axes, so the Poisson solve acts directly
-    on ``rho_tiles[0, 0, 0]`` and ``phi_tiles[0, 0, 0]`` without assembling a
-    separate global representation.
+    The supplied potential is the previous-timestep warm start. The local
+    Schwarz solver exchanges only halos and never assembles a global field or
+    forms a CG reduction across tiles.
     """
 
     g = static_parameters.guard_cells
     rho_tiles = compute_rho(particles, species_config, rho_tiles, static_parameters, dynamic_parameters)
-    rho = rho_tiles[0, 0, 0]
-    phi = phi_tiles[0, 0, 0]
-
-    phi = solve_poisson_with_conjugate_gradient(rho, phi, static_parameters, dynamic_parameters)
-    phi_tiles = phi_tiles.at[0, 0, 0].set(phi)
-    phi_tiles = _apply_tiled_phi_constant_boundaries(phi_tiles, static_parameters, g)
-    # refresh ghost cells before filtering and tiled differentiation
+    phi_tiles = solve_poisson_with_tiled_local_schwarz(
+        rho_tiles,
+        phi_tiles,
+        static_parameters,
+        dynamic_parameters,
+        schwarz_tol=static_parameters.electrostatic_schwarz_tol,
+        schwarz_max_iterations=static_parameters.electrostatic_schwarz_max_iterations,
+        local_cg_tol=static_parameters.electrostatic_local_cg_tol,
+        local_cg_max_iterations=static_parameters.electrostatic_local_cg_max_iterations,
+    )
+    # The final Schwarz sweep returns refreshed halos for post-solve filtering.
 
     alpha = dynamic_parameters.alpha
     phi_tiles = digital_filter(phi_tiles, alpha, num_guard_cells=g)
     phi_tiles = _apply_tiled_phi_constant_boundaries(phi_tiles, static_parameters, g)
-    # keep the same phi post-processing order as the previous electrostatic solver
+    # preserve the established solve -> filter -> halo refresh ordering
 
     E_tiles = _centered_tiled_electrostatic_gradient(phi_tiles, static_parameters, dynamic_parameters, g)
 

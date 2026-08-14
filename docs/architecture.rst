@@ -1,10 +1,10 @@
 Architecture
 ============
 
-.. PyPIC3D separates compile-time numerical choices from dynamic scalar and array
-.. state. The production timestep operates on tile-major fields and particles;
-.. global arrays are constructed only at explicit diagnostic or electrostatic
-.. solver boundaries.
+PyPIC3D separates compile-time numerical choices from dynamic scalar and array
+state. The production timestep operates on tile-major fields and particles;
+global arrays are constructed only at explicit diagnostic and output
+boundaries.
 
 PyPIC3D contains a single run loop that advances the simulation timestep,
 the intermittently copies tile-local snapshots to asynchronous openPMD 

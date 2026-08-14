@@ -1,3 +1,4 @@
+import inspect
 import unittest
 import os
 import tempfile
@@ -10,15 +11,15 @@ import toml
 from PyPIC3D.solvers.electrostatic.time_loop import time_loop_electrostatic
 from PyPIC3D.initialization import initialize_simulation
 from PyPIC3D.particles.particle_class import SpeciesConfig, TiledParticles
+from PyPIC3D.solvers.electrostatic import electrostatic_yee
 from PyPIC3D.solvers.electrostatic.electrostatic_yee import (
-    solve_poisson_with_conjugate_gradient,
+    _apply_tiled_phi_constant_boundaries,
+    _poisson_residual,
     calculate_electrostatic_fields,
-    calculate_tiled_electrostatic_fields,
-    _centered_finite_difference_gradient,
-    _refresh_single_tile_scalar,
+    solve_poisson_with_tiled_local_schwarz,
 )
 from PyPIC3D.boundary_conditions.grid_and_stencil import BC_CONDUCTING, BC_PERIODIC
-from tests.kernel_fixtures import empty_tiled_scalar, kernel_parameters, particle_species
+from tests.kernel_fixtures import empty_tiled_scalar, kernel_parameters
 
 jax.config.update("jax_enable_x64", True)
 
@@ -70,82 +71,56 @@ class TestElectrostaticYeeMethods(unittest.TestCase):
 
         self.g = int(self.static_parameters.guard_cells)
         self.active = slice(self.g, -self.g)
-        # Single tile-local fields: shape (Nx+2*g, Ny+2*g, Nz+2*g).
-        self.initial_rho = jnp.zeros((self.Nx + 2 * self.g, self.Ny + 2 * self.g, self.Nz + 2 * self.g))
-        self.initial_phi = jnp.zeros((self.Nx + 2 * self.g, self.Ny + 2 * self.g, self.Nz + 2 * self.g))
+        tile_field_shape = (
+            1,
+            1,
+            1,
+            self.Nx + 2 * self.g,
+            self.Ny + 2 * self.g,
+            self.Nz + 2 * self.g,
+        )
+        self.initial_rho = jnp.zeros(tile_field_shape)
+        self.initial_phi = jnp.zeros(tile_field_shape)
 
-        self.particles = [
-            particle_species(
-                name="test",
-                charge=1.0,
-                mass=1.0,
-                v1=jnp.zeros(1),
-                v2=jnp.zeros(1),
-                v3=jnp.zeros(1),
-                x1=jnp.array([0.1]),
-                x2=jnp.array([0.2]),
-                x3=jnp.array([0.3]),
-                weight=1.0,
-            )
-        ]
-
-    def test_solve_poisson_with_conjugate_gradient_single_mode(self):
+    def test_tiled_schwarz_poisson_single_mode(self):
         phi_true_interior = jnp.sin(self.X + self.Y + self.Z)
         rhs = apply_negative_laplacian(phi_true_interior, self.dx, self.dy, self.dz)
         rho_interior = rhs * self.dynamic_parameters.eps
 
-        # Place rho into ghost-celled array
-        rho = jnp.zeros_like(self.initial_rho)
-        rho = rho.at[self.active, self.active, self.active].set(rho_interior)
+        rho_tiles = self.initial_rho.at[
+            0,
+            0,
+            0,
+            self.active,
+            self.active,
+            self.active,
+        ].set(rho_interior)
 
-        phi = solve_poisson_with_conjugate_gradient(
-            rho,
+        phi_tiles = solve_poisson_with_tiled_local_schwarz(
+            rho_tiles,
             self.initial_phi,
             self.static_parameters,
             self.dynamic_parameters,
-            tol=1e-10,
-            max_iter=4000,
+            schwarz_tol=1.0e-10,
+            schwarz_max_iterations=1000,
+            local_cg_tol=1.0e-10,
+            local_cg_max_iterations=1000,
         )
 
-        # Compare on interior
-        phi_num = phi[self.active, self.active, self.active]
+        phi_num = phi_tiles[0, 0, 0, self.active, self.active, self.active]
         phi_num = phi_num - jnp.mean(phi_num)
         phi_true = phi_true_interior - jnp.mean(phi_true_interior)
 
         self.assertEqual(phi_num.shape, phi_true.shape)
         self.assertTrue(jnp.allclose(phi_num, phi_true, atol=1e-7, rtol=1e-6))
 
-        residual = apply_negative_laplacian(phi_num, self.dx, self.dy, self.dz) - rho_interior / self.dynamic_parameters.eps
-        self.assertLess(jnp.max(jnp.abs(residual)), 1e-6)
-
-    def test_electrostatic_field_solve_uses_local_centered_gradient(self):
-        E, phi, rho = calculate_electrostatic_fields(
-            self.static_parameters,
+        residual = _poisson_residual(
+            rho_tiles,
+            phi_tiles,
             self.dynamic_parameters,
-            self.particles,
-            self.initial_rho,
-            self.initial_phi,
-            "electrostatic",
-            "periodic",
+            self.g,
         )
-
-        expected_phi = solve_poisson_with_conjugate_gradient(
-            rho,
-            self.initial_phi,
-            self.static_parameters,
-            self.dynamic_parameters,
-        )
-        expected_Ex, expected_Ey, expected_Ez = _centered_finite_difference_gradient(
-            -1.0 * expected_phi[self.active, self.active, self.active],
-            self.dx,
-            self.dy,
-            self.dz,
-        )
-
-        self.assertTrue(jnp.allclose(phi[self.active, self.active, self.active], expected_phi[self.active, self.active, self.active], atol=1e-6, rtol=1e-6))
-        self.assertTrue(jnp.allclose(E[0][self.active, self.active, self.active], expected_Ex, atol=1e-6, rtol=1e-6))
-        self.assertTrue(jnp.allclose(E[1][self.active, self.active, self.active], expected_Ey, atol=1e-6, rtol=1e-6))
-        self.assertTrue(jnp.allclose(E[2][self.active, self.active, self.active], expected_Ez, atol=1e-6, rtol=1e-6))
+        self.assertLess(float(jnp.max(jnp.abs(residual))), 1.0e-9)
 
     def test_phi_refresh_uses_shared_constant_boundary_for_conducting_axis(self):
         static_parameters, dynamic_parameters = kernel_parameters(
@@ -163,11 +138,15 @@ class TestElectrostaticYeeMethods(unittest.TestCase):
             solver="electrostatic",
         )
         g = int(static_parameters.guard_cells)
-        phi = jnp.zeros((8 + 2 * g, 4 + 2 * g, 4 + 2 * g))
+        phi = jnp.zeros((1, 1, 1, 8 + 2 * g, 4 + 2 * g, 4 + 2 * g))
         interior = jnp.arange(8 * 4 * 4, dtype=float).reshape((8, 4, 4))
-        phi = phi.at[g:-g, g:-g, g:-g].set(interior)
+        phi = phi.at[0, 0, 0, g:-g, g:-g, g:-g].set(interior)
 
-        refreshed_phi = _refresh_single_tile_scalar(phi, static_parameters, g, apply_conducting=True)
+        refreshed_phi = _apply_tiled_phi_constant_boundaries(
+            phi,
+            static_parameters,
+            g,
+        )[0, 0, 0]
 
         self.assertTrue(jnp.allclose(refreshed_phi[:g, :, :], refreshed_phi[g:g + 1, :, :]))
         self.assertTrue(jnp.allclose(refreshed_phi[-g:, :, :], refreshed_phi[-g - 1:-g, :, :]))
@@ -205,7 +184,7 @@ class TestElectrostaticYeeMethods(unittest.TestCase):
         phi_tiles = empty_tiled_scalar(static_parameters, dynamic_parameters)
         phi_tiles = phi_tiles.at[0, 0, 0, active, active, active].set(3.0)
 
-        E_tiles, phi_tiles, rho_tiles = calculate_tiled_electrostatic_fields(
+        E_tiles, phi_tiles, rho_tiles = calculate_electrostatic_fields(
             static_parameters,
             dynamic_parameters,
             particles,
@@ -223,7 +202,26 @@ class TestElectrostaticYeeMethods(unittest.TestCase):
         for component in E_tiles:
             self.assertTrue(jnp.allclose(component, 0.0, rtol=1.0e-12, atol=1.0e-12))
 
-    def test_initialize_simulation_accepts_single_tile_electrostatic(self):
+    def test_untiled_electrostatic_api_is_removed(self):
+        solver_names = {
+            name
+            for name in vars(electrostatic_yee)
+            if name.startswith("solve_poisson")
+        }
+        field_pipeline_names = {
+            name
+            for name in vars(electrostatic_yee)
+            if name.startswith("calculate") and name.endswith("electrostatic_fields")
+        }
+
+        self.assertEqual(solver_names, {"solve_poisson_with_tiled_local_schwarz"})
+        self.assertEqual(field_pipeline_names, {"calculate_electrostatic_fields"})
+        self.assertNotIn("single_tile", inspect.getsource(electrostatic_yee))
+
+    def test_initialize_simulation_preserves_requested_electrostatic_tiles(self):
+        if jax.device_count() < 4:
+            self.skipTest(f"Need 4 JAX devices, got {jax.device_count()}")
+
         with tempfile.TemporaryDirectory() as tmpdir:
             x_path = os.path.join(tmpdir, "x.npy")
             zeros_path = os.path.join(tmpdir, "zeros.npy")
@@ -246,6 +244,7 @@ class TestElectrostaticYeeMethods(unittest.TestCase):
                     "dt": 0.01,
                     "Nt": 1,
                     "shape_factor": 1,
+                    "guard_cells": 1,
                     "particle_tile_nx": 2,
                     "particle_tile_ny": 1,
                     "particle_tile_nz": 1,
@@ -271,11 +270,21 @@ class TestElectrostaticYeeMethods(unittest.TestCase):
                 },
             }
 
-            loop, particles, fields, static_parameters, dynamic_parameters, *_ = initialize_simulation(toml.loads(toml.dumps(config)))
+            (
+                loop,
+                particles,
+                fields,
+                static_parameters,
+                dynamic_parameters,
+                _,
+                _,
+                species_config,
+            ) = initialize_simulation(toml.loads(toml.dumps(config)))
 
             self.assertIs(loop, time_loop_electrostatic)
             self.assertIsInstance(particles, TiledParticles)
-            self.assertEqual(tuple(static_parameters.tile_shape), (8, 1, 1))
+            self.assertEqual(tuple(static_parameters.tile_shape), (2, 1, 1))
+            self.assertEqual(static_parameters.guard_cells, 1)
             for vertex_axis, center_axis in zip(dynamic_parameters.grids.vertex, dynamic_parameters.grids.center):
                 self.assertTrue(jnp.allclose(vertex_axis, center_axis))
             for tiled_vertex_axis, tiled_center_axis in zip(
@@ -283,9 +292,24 @@ class TestElectrostaticYeeMethods(unittest.TestCase):
                 dynamic_parameters.grids.tiled_center_grid,
             ):
                 self.assertTrue(jnp.allclose(tiled_vertex_axis, tiled_center_axis))
-            self.assertEqual(fields[0][0].shape[:3], (1, 1, 1))
-            self.assertEqual(fields[3].shape[:3], (1, 1, 1))
-            self.assertEqual(fields[4].shape[:3], (1, 1, 1))
+            self.assertEqual(fields[0][0].shape[:3], (4, 1, 1))
+            self.assertEqual(fields[3].shape[:3], (4, 1, 1))
+            self.assertEqual(fields[4].shape[:3], (4, 1, 1))
+
+            zero_charge_config = species_config._replace(
+                charge=jnp.zeros_like(species_config.charge)
+            )
+            jitted_step = jax.jit(
+                lambda particle_state, field_state: loop(
+                    particle_state,
+                    zero_charge_config,
+                    field_state,
+                    static_parameters,
+                    dynamic_parameters,
+                )
+            )
+            _, stepped_fields = jitted_step(particles, fields)
+            self.assertTrue(jnp.all(jnp.isfinite(stepped_fields[4])))
 
 
 if __name__ == "__main__":

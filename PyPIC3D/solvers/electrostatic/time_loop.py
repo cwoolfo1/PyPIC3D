@@ -5,7 +5,7 @@ from PyPIC3D.particles.particle_tile_communication import (
 from PyPIC3D.pusher.particle_push import particle_push
 from PyPIC3D.utilities.field_helpers import add_external_fields
 
-from .electrostatic_yee import calculate_tiled_electrostatic_fields
+from .electrostatic_yee import calculate_electrostatic_fields
 
 
 __all__ = ["time_loop_electrostatic"]
@@ -21,10 +21,8 @@ def time_loop_electrostatic(
     """
     Advance a tiled electrostatic PIC system by one time step.
 
-    The particle push and retile use tile-local fields. Charge density is
-    deposited into tiled scalar storage, assembled for the existing global
-    Poisson solve, then the solved potential is tiled again before computing
-    tile-local electrostatic E.
+    The particle push, charge deposition, local Schwarz Poisson solve, and
+    electrostatic gradient all remain in tiled storage.
     """
 
     E_tiles, B_tiles, J_tiles, rho_tiles, phi_tiles, external_fields, pml_state, overflow_previous = fields
@@ -53,7 +51,7 @@ def time_loop_electrostatic(
     overflow = overflow_previous | overflow
     # keep fixed-capacity tile overflow visible to the Python driver
 
-    E_tiles, phi_tiles, rho_tiles = calculate_tiled_electrostatic_fields(
+    E_tiles, phi_tiles, rho_tiles = calculate_electrostatic_fields(
         static_parameters,
         dynamic_parameters,
         particles,

@@ -53,14 +53,24 @@ The electrostatic timestep:
 1. Pushes particle velocity from fields.
 2. Advances position by ``dt``.
 3. Deposits charge density ``rho``.
-4. Assembles global ``rho`` for the finite-difference conjugate-gradient
-   Poisson solve.
+4. Solves Poisson in tiled storage with residual-controlled parallel Schwarz iterations.
 5. Computes ``E = -grad(phi)``.
 
-The electrostatic runtime therefore uses tiled particles, ``rho``, ``phi``,
-and ``E``, but the Poisson solve remains a deliberate global bridge. Thus,
-initialization forces one tile covering the complete domain until a domain 
-decomposition can be implemented for the Poisson solver.
+Each Schwarz iteration solves the owned potential on every tile with
+tile-local conjugate gradient while holding ghost cells fixed.
+Converged tiles stop updating through an active mask while other tile solves
+continue. CG exits at ``electrostatic_local_cg_tol`` or
+``electrostatic_local_cg_max_iterations`` and reduces only over each tile's
+three owned spatial axes.
+
+After each local solve, neighboring ``phi`` halos and physical conducting
+boundaries are refreshed. The true Poisson residual is then evaluated in the
+``guard_cells``-wide owned slabs next to tile interfaces. Schwarz exits at
+``electrostatic_schwarz_tol`` or
+``electrostatic_schwarz_max_iterations``. The previous timestep's potential is
+the warm start, and an already-converged state performs no unnecessary solve.
+No global potential, charge field, or Krylov reduction is assembled. The 
+existing guard depth is the Schwarz overlap width.
 
 Particle Pushers
 ----------------
