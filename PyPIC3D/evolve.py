@@ -1,3 +1,6 @@
+import jax
+
+from PyPIC3D.boundary_conditions.ghost_cells import update_tiled_vector_ghost_cells
 from PyPIC3D.deposition.Esirkepov import Esirkepov_current
 from PyPIC3D.deposition.GR_direct_deposition import GR_direct_deposition
 from PyPIC3D.deposition.J_from_rhov import J_from_rhov
@@ -11,9 +14,39 @@ from PyPIC3D.solvers.electrostatic_yee import calculate_tiled_electrostatic_fiel
 from PyPIC3D.solvers.first_order_yee import update_B, update_E
 from PyPIC3D.solvers.static_metric import update_B_relativity, update_D_relativity, compute_covariant_E, compute_covariant_H
 from PyPIC3D.utilities.field_helpers import add_external_fields
+from PyPIC3D.utilities.filters import bilinear_filter_vector, digital_filter_vector
 
 
 __all__ = ["time_loop_electrodynamic", "time_loop_electrostatic", "time_loop_static_metric"]
+
+
+def _filter_electric_field_for_particles(E, static_parameters, dynamic_parameters):
+    """Apply the direct-current coupling filter to the electric gather field."""
+
+    current_filter = static_parameters.current_filter
+    g = int(static_parameters.guard_cells)
+
+    def bilinear_filtered_field(E):
+        E = update_tiled_vector_ghost_cells(E, static_parameters, g)
+        E = bilinear_filter_vector(E, num_guard_cells=g)
+        return update_tiled_vector_ghost_cells(E, static_parameters, g)
+
+    def digital_filtered_field(E):
+        E = update_tiled_vector_ghost_cells(E, static_parameters, g)
+        E = digital_filter_vector(E, dynamic_parameters.alpha, num_guard_cells=g)
+        return update_tiled_vector_ghost_cells(E, static_parameters, g)
+
+    return jax.lax.cond(
+        current_filter == "bilinear",
+        bilinear_filtered_field,
+        lambda E: jax.lax.cond(
+            current_filter == "digital",
+            digital_filtered_field,
+            lambda E: E,
+            E,
+        ),
+        E,
+    )
 
 
 def time_loop_electrodynamic(
@@ -33,8 +66,12 @@ def time_loop_electrodynamic(
     dt = dynamic_parameters.dt
     # get the dynamic timestep used by the tiled push/deposition sequence
 
-    push_E, push_B = add_external_fields(E, B, external_fields)
-    # particles see evolved fields plus external-only fields
+    coupling_E = _filter_electric_field_for_particles(E, static_parameters, dynamic_parameters)
+    # pair filtered direct current with the adjoint-filtered electric gather;
+    # the symmetric digital and bilinear filters satisfy F.T = F.
+
+    push_E, push_B = add_external_fields(coupling_E, B, external_fields)
+    # prescribed external fields and the magnetic gather remain unfiltered
 
     particles = particle_push(
         particles,
@@ -88,7 +125,7 @@ def time_loop_electrodynamic(
         particles, J, overflow = direct_deposition_step((particles, J, overflow_previous))
     # deposit current into the tiled J arrays using the selected deposition method
 
-    B, pml_state = update_B(E, B, static_parameters, dynamic_parameters, pml_state, do_filter=False)
+    B, pml_state = update_B(E, B, static_parameters, dynamic_parameters, pml_state)
     # update magnetic field from the previous electric field by half a timestep
     # for no pml, the pml_state is None, and the update_B function returns None for the pml_state
 
@@ -96,7 +133,7 @@ def time_loop_electrodynamic(
     # update electric field from B and the supplied current
     # for no pml, the pml_state is None, and the update_E function returns None for the pml_state
 
-    B, pml_state = update_B(E, B, static_parameters, dynamic_parameters, pml_state, do_filter=True)
+    B, pml_state = update_B(E, B, static_parameters, dynamic_parameters, pml_state)
     # update magnetic field from the newly updated electric field by half a timestep
     # for no pml, the pml_state is None, and the update_B function returns None for the pml_state
 

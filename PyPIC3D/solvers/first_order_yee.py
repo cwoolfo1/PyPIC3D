@@ -7,7 +7,6 @@ from PyPIC3D.boundary_conditions.PML import (
 from PyPIC3D.boundary_conditions.supergaussian import apply_tiled_supergaussian_absorber
 from PyPIC3D.boundary_conditions import ghost_cells
 from PyPIC3D.boundary_conditions.grid_and_stencil import BC_CONDUCTING
-from PyPIC3D.utilities.filters import digital_filter_vector
 
 
 def _active_vector(field_tiles, g):
@@ -183,12 +182,6 @@ def update_E(E_tiles, B_tiles, J_tiles, static_parameters, dynamic_parameters, p
         + (C**2 * curl_z - Jz[:, :, :, active, active, active] / eps) * dt
     )
 
-    Ex, Ey, Ez = ghost_cells.update_tiled_vector_ghost_cells((Ex, Ey, Ez), static_parameters, g)
-    # refresh tile halos before the digital field filter, matching the global
-    # ghost-cell order in the standard Yee solver.
-
-    Ex, Ey, Ez = digital_filter_vector((Ex, Ey, Ez), dynamic_parameters.alpha, num_guard_cells=g)
-
     bc_x, bc_y, bc_z = static_parameters.boundary_conditions
     if int(bc_x) == BC_CONDUCTING:
         Ey = ghost_cells.apply_tiled_zero_boundary(Ey, static_parameters, axis=0, num_guard_cells=g)
@@ -214,7 +207,7 @@ def update_E(E_tiles, B_tiles, J_tiles, static_parameters, dynamic_parameters, p
     return ghost_cells.update_tiled_vector_ghost_cells(E_tiles, static_parameters, g), pml_state
 
 
-def update_B(E_tiles, B_tiles, static_parameters, dynamic_parameters, pml_state=None, do_filter=False):
+def update_B(E_tiles, B_tiles, static_parameters, dynamic_parameters, pml_state=None):
     """
     Update compact tiled magnetic fields without assembling a global field.
 
@@ -254,22 +247,5 @@ def update_B(E_tiles, B_tiles, static_parameters, dynamic_parameters, pml_state=
     )
     # The B update is split into half steps, so the sponge uses the same half
     # timestep as Faraday's-law update here.
-
-    def apply_filter(Bx, By, Bz):
-        Bx, By, Bz = ghost_cells.update_tiled_vector_ghost_cells((Bx, By, Bz), static_parameters, g)
-        # refresh tile halos before the digital field filter, matching the global
-        # ghost-cell order in the standard Yee solver.
-        Bx, By, Bz = digital_filter_vector((Bx, By, Bz), dynamic_parameters.alpha, num_guard_cells=g)
-        # apply the digital filter to the updated B fields
-        return (Bx, By, Bz) 
-
-
-    Bx, By, Bz = jax.lax.cond(
-        do_filter,
-        lambda _: apply_filter(Bx, By, Bz),
-        lambda _: (Bx, By, Bz),
-        operand=None,
-    )
-    # if requested, apply the digital filter to the updated B fields, matching the global ghost-cell order in the standard Yee solver.
 
     return ghost_cells.update_tiled_vector_ghost_cells((Bx, By, Bz), static_parameters, g), pml_state

@@ -726,7 +726,6 @@ class TestPMLFDTDBehavior(unittest.TestCase):
                 static_parameters,
                 dynamic_parameters,
                 tiled_pml_state,
-                do_filter=False,
             )
             E_tiles, tiled_pml_state = update_E(
                 E_tiles,
@@ -742,7 +741,6 @@ class TestPMLFDTDBehavior(unittest.TestCase):
                 static_parameters,
                 dynamic_parameters,
                 tiled_pml_state,
-                do_filter=True,
             )
             return E_tiles, B_tiles, tiled_pml_state
 

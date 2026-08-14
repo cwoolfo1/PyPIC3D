@@ -771,6 +771,31 @@ class TestYeeTiled(unittest.TestCase):
         for reference, tiled in zip(E_reference, E_from_tiles):
             self.assertTrue(jnp.allclose(tiled, reference, rtol=1.0e-12, atol=1.0e-12))
 
+    def test_field_updates_do_not_use_coupling_filter_alpha(self):
+        parameter_set = self._build_parameter_values()
+        tile_shape = (2, 3, 2)
+        parameter_set = self._with_tile_metadata(parameter_set, tile_shape)
+        E = tile_vector_field(self._deterministic_vector_field(parameter_set, scale=1.0), parameter_set, tile_shape)
+        B = tile_vector_field(self._deterministic_vector_field(parameter_set, scale=0.2), parameter_set, tile_shape)
+        J = tile_vector_field(self._deterministic_vector_field(parameter_set, scale=0.05), parameter_set, tile_shape)
+
+        static_06, dynamic_06 = self._split_parameters(
+            parameter_set,
+            {"C": 1.0, "eps": 1.0, "mu": 1.0, "alpha": 0.6},
+        )
+        static_10, dynamic_10 = self._split_parameters(
+            parameter_set,
+            {"C": 1.0, "eps": 1.0, "mu": 1.0, "alpha": 1.0},
+        )
+
+        E_06, _ = update_E(E, B, J, static_06, dynamic_06)
+        E_10, _ = update_E(E, B, J, static_10, dynamic_10)
+        B_06, _ = update_B(E, B, static_06, dynamic_06)
+        B_10, _ = update_B(E, B, static_10, dynamic_10)
+
+        for field_06, field_10 in zip(E_06 + B_06, E_10 + B_10):
+            self.assertTrue(jnp.array_equal(field_06, field_10))
+
     def test_update_E_is_the_public_tiled_update(self):
         parameter_set = self._build_parameter_values()
         dynamic_values = {"C": 1.0, "eps": 1.0, "mu": 1.0, "alpha": 1.0}

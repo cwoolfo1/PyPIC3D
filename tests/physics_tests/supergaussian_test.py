@@ -325,9 +325,9 @@ class TestSupergaussianFDTDBehavior(unittest.TestCase):
         )
 
         def step(E_tiles, B_tiles):
-            B_tiles, pml_state = update_B(E_tiles, B_tiles, static_parameters, dynamic_parameters, None, do_filter=False)
+            B_tiles, pml_state = update_B(E_tiles, B_tiles, static_parameters, dynamic_parameters, None)
             E_tiles, pml_state = update_E(E_tiles, B_tiles, J_tiles, static_parameters, dynamic_parameters, pml_state)
-            B_tiles, pml_state = update_B(E_tiles, B_tiles, static_parameters, dynamic_parameters, pml_state, do_filter=True)
+            B_tiles, pml_state = update_B(E_tiles, B_tiles, static_parameters, dynamic_parameters, pml_state)
             return E_tiles, B_tiles
 
         step = jax.jit(step)

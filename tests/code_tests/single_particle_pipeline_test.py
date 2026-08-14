@@ -20,10 +20,11 @@ from PyPIC3D.deposition.J_from_rhov import J_from_rhov
 from PyPIC3D.deposition.rho import compute_rho
 from PyPIC3D.deposition.shapes import get_first_order_weights, get_second_order_weights
 from PyPIC3D.diagnostics.output_adapters import assemble_tiled_scalar_field, assemble_tiled_vector_field
-from PyPIC3D.evolve import time_loop_electrodynamic
+from PyPIC3D.evolve import _filter_electric_field_for_particles, time_loop_electrodynamic
 from PyPIC3D.initialization import initialize_fields
 from PyPIC3D.particles.particle_tile_communication import refresh_tiled_particle_tiles, update_tiled_particle_positions
 from PyPIC3D.pusher.boris import interpolate_field_to_particles
+from PyPIC3D.utilities.field_helpers import add_external_fields
 from PyPIC3D.utilities.filters import digital_filter, digital_filter_vector
 from tests.kernel_fixtures import build_tiled_particles, empty_tiled_scalar, empty_tiled_vector, kernel_parameters, particle_species
 
@@ -366,32 +367,55 @@ def _periodic_test_electric_field(static_parameters, dynamic_parameters):
         + 0.61 * jnp.sin(4.0 * jnp.pi * (iz + 0.29) / Nz)
     )
 
-    E = empty_tiled_vector(static_parameters, dynamic_parameters)
-    E = tuple(
-        component.at[0, 0, 0, g:-g, g:-g, g:-g].set(interior)
-        for component, interior in zip(E, (Ex_interior, Ey_interior, Ez_interior))
-    )
+    tile_nx, tile_ny, tile_nz = [int(width) for width in static_parameters.tile_shape]
+    ntx, nty, ntz = static_parameters.field_mesh.devices.shape
+
+    E = list(empty_tiled_vector(static_parameters, dynamic_parameters))
+    for component_index, interior in enumerate((Ex_interior, Ey_interior, Ez_interior)):
+        for tx in range(int(ntx)):
+            for ty in range(int(nty)):
+                for tz in range(int(ntz)):
+                    ix = tx * tile_nx
+                    iy = ty * tile_ny
+                    iz = tz * tile_nz
+                    tile_interior = interior[
+                        ix:ix + tile_nx,
+                        iy:iy + tile_ny,
+                        iz:iz + tile_nz,
+                    ]
+                    E[component_index] = E[component_index].at[
+                        tx, ty, tz, g:-g, g:-g, g:-g
+                    ].set(tile_interior)
 
     return update_tiled_vector_ghost_cells(
-        E,
+        tuple(E),
         static_parameters,
         num_guard_cells=g,
         bc_type=0,
     )
 
 
-def _gather_electric_field(E, position, static_parameters, dynamic_parameters):
+def _gather_electric_field(E, tile, position, static_parameters, dynamic_parameters):
     x = jnp.asarray([position[0]], dtype=float)
     y = jnp.asarray([position[1]], dtype=float)
     z = jnp.asarray([position[2]], dtype=float)
     g = int(static_parameters.guard_cells)
 
-    center_x = dynamic_parameters.grids.tiled_center_grid[0][0, 0, 0]
-    center_y = dynamic_parameters.grids.tiled_center_grid[1][0, 0, 0]
-    center_z = dynamic_parameters.grids.tiled_center_grid[2][0, 0, 0]
-    vertex_x = dynamic_parameters.grids.tiled_vertex_grid[0][0, 0, 0]
-    vertex_y = dynamic_parameters.grids.tiled_vertex_grid[1][0, 0, 0]
-    vertex_z = dynamic_parameters.grids.tiled_vertex_grid[2][0, 0, 0]
+    tx, ty, tz = tile
+    center_x = dynamic_parameters.grids.tiled_center_grid[0][tx, ty, tz]
+    center_y = dynamic_parameters.grids.tiled_center_grid[1][tx, ty, tz]
+    center_z = dynamic_parameters.grids.tiled_center_grid[2][tx, ty, tz]
+    vertex_x = dynamic_parameters.grids.tiled_vertex_grid[0][tx, ty, tz]
+    vertex_y = dynamic_parameters.grids.tiled_vertex_grid[1][tx, ty, tz]
+    vertex_z = dynamic_parameters.grids.tiled_vertex_grid[2][tx, ty, tz]
+
+    ntx, nty, ntz = static_parameters.field_mesh.devices.shape
+    tile_nx, tile_ny, tile_nz = [int(width) for width in static_parameters.tile_shape]
+    active_axes = (
+        int(ntx) * tile_nx > 1,
+        int(nty) * tile_ny > 1,
+        int(ntz) * tile_nz > 1,
+    )
 
     component_grids = (
         (vertex_x, center_y, center_z),
@@ -402,14 +426,14 @@ def _gather_electric_field(E, position, static_parameters, dynamic_parameters):
     gathered = []
     for component, component_grid in zip(E, component_grids):
         value = interpolate_field_to_particles(
-            component[0, 0, 0],
+            component[tx, ty, tz],
             x,
             y,
             z,
             component_grid,
             static_parameters.shape_factor,
             ghost_cells=True,
-            active_axes=(True, True, True),
+            active_axes=active_axes,
             inactive_axis_indices=(g, g, g),
         )
         gathered.append(value[0])
@@ -424,8 +448,8 @@ def _grid_current_work(E, J, static_parameters, dynamic_parameters):
     work = 0.0
     for electric_component, current_component in zip(E, J):
         work += jnp.sum(
-            electric_component[0, 0, 0, g:-g, g:-g, g:-g]
-            * current_component[0, 0, 0, g:-g, g:-g, g:-g]
+            electric_component[:, :, :, g:-g, g:-g, g:-g]
+            * current_component[:, :, :, g:-g, g:-g, g:-g]
         ) * cell_volume
 
     return work
@@ -533,6 +557,54 @@ def _expected_Bz_after_split_update(Ey_before, Ey_after, dynamic_parameters):
 
 
 class TestSingleParticleStencils(unittest.TestCase):
+    def test_coupling_filter_leaves_none_external_and_magnetic_fields_unchanged(self):
+        static_none_06, dynamic_none_06 = _runtime_parameters(current_filter="none", alpha=0.6)
+        static_none_10, dynamic_none_10 = _runtime_parameters(current_filter="none", alpha=1.0)
+        static_digital, dynamic_digital = _runtime_parameters(current_filter="digital", alpha=0.6)
+
+        E = _periodic_test_electric_field(static_none_06, dynamic_none_06)
+        B = tuple(0.3 * component for component in E)
+        external_E = tuple(0.2 * component for component in E)
+        external_B = tuple(-0.4 * component for component in B)
+
+        coupling_none_06 = _filter_electric_field_for_particles(
+            E,
+            static_none_06,
+            dynamic_none_06,
+        )
+        coupling_none_10 = _filter_electric_field_for_particles(
+            E,
+            static_none_10,
+            dynamic_none_10,
+        )
+        coupling_digital = _filter_electric_field_for_particles(
+            E,
+            static_digital,
+            dynamic_digital,
+        )
+        push_E, push_B = add_external_fields(
+            coupling_digital,
+            B,
+            (external_E, external_B),
+        )
+
+        _assert_vector_close(self, coupling_none_06, E)
+        _assert_vector_close(self, coupling_none_10, E)
+        self.assertTrue(any(
+            not jnp.allclose(filtered, unfiltered, rtol=1.0e-12, atol=1.0e-12)
+            for filtered, unfiltered in zip(coupling_digital, E)
+        ))
+        _assert_vector_close(
+            self,
+            tuple(total - filtered for total, filtered in zip(push_E, coupling_digital)),
+            external_E,
+        )
+        _assert_vector_close(
+            self,
+            push_B,
+            tuple(field + external for field, external in zip(B, external_B)),
+        )
+
     def test_compute_rho_filter_selector_uses_static_current_filter(self):
         x = (1.97, 0.0, 0.0)
         u = (0.0, 0.2, 0.0)
@@ -620,70 +692,106 @@ class TestSingleParticleStencils(unittest.TestCase):
                     _assert_vector_close(self, J, expected)
 
     def test_direct_current_scatter_is_adjoint_to_production_yee_gather(self):
-        positions = {
-            "lower_cell_half": (-3.75, -2.75, -1.75),
-            "upper_cell_half": (-3.25, -2.25, -1.25),
-            "lower_periodic_seam": (-3.99, -3.91, -3.83),
-            "upper_periodic_seam": (3.99, 3.91, 3.83),
-        }
         velocity = jnp.asarray((0.71, -0.43, 0.29))
         charge = -1.3
         weight = 0.6
 
-        for shape_factor in (1, 2):
-            static_parameters, dynamic_parameters = kernel_parameters(
-                Nx=8,
-                Ny=8,
-                Nz=8,
-                x_wind=8.0,
-                y_wind=8.0,
-                z_wind=8.0,
-                tile_shape=(8, 8, 8),
-                guard_cells=2,
-                shape_factor=shape_factor,
-                current_deposition="direct",
-                current_filter="none",
-                relativistic=False,
-                dt=0.1,
-            )
-            E = _periodic_test_electric_field(static_parameters, dynamic_parameters)
+        configurations = {
+            "one_tile_3d": {
+                "grid_shape": (8, 8, 8),
+                "tile_shape": (8, 8, 8),
+                "wind": (8.0, 8.0, 8.0),
+                "positions": {
+                    "lower_cell_half": (-3.75, -2.75, -1.75),
+                    "upper_cell_half": (-3.25, -2.25, -1.25),
+                    "lower_periodic_seam": (-3.99, -3.91, -3.83),
+                    "upper_periodic_seam": (3.99, 3.91, 3.83),
+                },
+            },
+            "two_tile_reduced": {
+                "grid_shape": (8, 1, 1),
+                "tile_shape": (4, 1, 1),
+                "wind": (8.0, 1.0, 1.0),
+                "positions": {
+                    "lower_tile_interface": (-0.01, 0.0, 0.0),
+                    "upper_tile_interface": (0.01, 0.0, 0.0),
+                    "lower_periodic_seam": (-3.99, 0.0, 0.0),
+                    "upper_periodic_seam": (3.99, 0.0, 0.0),
+                },
+            },
+        }
 
-            for phase, position in positions.items():
-                with self.subTest(shape_factor=shape_factor, phase=phase):
-                    particles, species_config = _one_particle(
-                        static_parameters,
-                        dynamic_parameters,
-                        position,
-                        velocity,
-                        charge=charge,
-                        weight=weight,
+        for configuration, values in configurations.items():
+            Nx, Ny, Nz = values["grid_shape"]
+            x_wind, y_wind, z_wind = values["wind"]
+            for shape_factor in (1, 2):
+                for current_filter in ("none", "digital", "bilinear"):
+                    static_parameters, dynamic_parameters = kernel_parameters(
+                        Nx=Nx,
+                        Ny=Ny,
+                        Nz=Nz,
+                        x_wind=x_wind,
+                        y_wind=y_wind,
+                        z_wind=z_wind,
+                        tile_shape=values["tile_shape"],
+                        guard_cells=2,
+                        shape_factor=shape_factor,
+                        current_deposition="direct",
+                        current_filter=current_filter,
+                        relativistic=False,
+                        alpha=0.6,
+                        dt=0.1,
                     )
-                    J = J_from_rhov(
-                        particles,
-                        species_config,
-                        empty_tiled_vector(static_parameters, dynamic_parameters),
-                        static_parameters,
-                        dynamic_parameters,
-                    )
-
-                    grid_work = _grid_current_work(
+                    E = _periodic_test_electric_field(static_parameters, dynamic_parameters)
+                    coupling_E = _filter_electric_field_for_particles(
                         E,
-                        J,
                         static_parameters,
                         dynamic_parameters,
                     )
-                    particle_field = _gather_electric_field(
-                        E,
-                        position,
-                        static_parameters,
-                        dynamic_parameters,
-                    )
-                    particle_work = charge * weight * jnp.dot(velocity, particle_field)
 
-                    work_scale = max(abs(float(grid_work)), abs(float(particle_work)), 1.0e-30)
-                    relative_residual = abs(float(grid_work - particle_work)) / work_scale
+                    for phase, position in values["positions"].items():
+                        with self.subTest(
+                            configuration=configuration,
+                            shape_factor=shape_factor,
+                            current_filter=current_filter,
+                            phase=phase,
+                        ):
+                            particles, species_config = _one_particle(
+                                static_parameters,
+                                dynamic_parameters,
+                                position,
+                                velocity,
+                                charge=charge,
+                                weight=weight,
+                            )
+                            tile, _, _ = _particle_state(particles)
+                            J = J_from_rhov(
+                                particles,
+                                species_config,
+                                empty_tiled_vector(static_parameters, dynamic_parameters),
+                                static_parameters,
+                                dynamic_parameters,
+                            )
 
-                    self.assertLessEqual(relative_residual, 1.0e-12)
+                            grid_work = _grid_current_work(
+                                E,
+                                J,
+                                static_parameters,
+                                dynamic_parameters,
+                            )
+                            particle_field = _gather_electric_field(
+                                coupling_E,
+                                tile,
+                                position,
+                                static_parameters,
+                                dynamic_parameters,
+                            )
+                            particle_work = charge * weight * jnp.dot(velocity, particle_field)
+
+                            work_scale = max(abs(float(grid_work)), abs(float(particle_work)), 1.0e-30)
+                            relative_residual = abs(float(grid_work - particle_work)) / work_scale
+
+                            self.assertLessEqual(relative_residual, 1.0e-12)
 
     def test_single_particle_esirkepov_current_matches_exact_1d_shape_stencils(self):
         positions = {

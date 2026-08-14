@@ -115,9 +115,11 @@ Numerical Choices
 - ``shape_factor`` is ``1`` or ``2``.
 - ``current_calculation`` is ``j_from_rhov`` or ``esirkepov``.
 - ``filter_j`` is ``none``, ``digital``, or ``bilinear`` for direct current.
-  Esirkepov requires ``filter_j = "none"``.
-- ``alpha`` is the digital-filter coefficient and belongs in a recognized
-  simulation or dynamic parameter section.
+  The selected filter is applied to deposited current and to an evolved electric
+  copy used for particle interpolation. Esirkepov requires
+  ``filter_j = "none"``.
+- ``alpha`` is the digital filter coefficient and belongs in a
+  recognized simulation or dynamic parameter section.
 
 Boundary Conditions and PML
 ---------------------------

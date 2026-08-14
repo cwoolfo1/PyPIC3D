@@ -27,8 +27,10 @@ Supported filters are:
 - ``digital``: nearest-neighbor digital filtering with coefficient ``alpha``.
 
 The filter runs after ghost cell updates. Current ghosts are refreshed before and
-after smoothing so each tile reads completed neighboring values. Charge
-density uses the same digital filter when ``filter_j = "digital"``.
+after smoothing so each tile reads completed neighboring values. The same filter 
+is applied to the evolved electric field used for interpolation so that the deposition 
+and interpolation methods use the same stencil and remain consistent. Charge density 
+uses the same digital filter when ``filter_j = "digital"``.
 
 Esirkepov
 ---------

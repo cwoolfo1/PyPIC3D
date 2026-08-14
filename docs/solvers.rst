@@ -45,10 +45,6 @@ The field equations are:
    \mathbf{B}^{n+1/2}
    - \frac{\Delta t}{2}\nabla\times\mathbf{E}^{n+1}.
 
-``E`` is digitally filtered after its update, and ``B`` is 
-filtered only after the second half-step, preserving the 
-current field time-centering. The filter coefficient is ``alpha``.
-
 Electrostatic Step
 ------------------
 
