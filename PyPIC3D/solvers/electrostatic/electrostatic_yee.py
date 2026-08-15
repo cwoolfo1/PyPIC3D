@@ -262,15 +262,18 @@ def solve_poisson_with_tiled_local_schwarz(
     Search directions are zero in the guard cells, and CG reductions cover only
     the three owned spatial axes, so no global Krylov solve is formed.
 
-    After every local solve, the potential halos are refreshed and the true
-    Poisson residual is recomputed. ``schwarz_residual`` is the maximum absolute
+    Each parallel Schwarz update is averaged with the previous iterate before
+    the potential halos are refreshed. This fixed under-relaxation damps the
+    interface two-cycle of an undamped parallel update without changing the
+    converged Poisson solution. ``schwarz_residual`` is the maximum absolute
     residual in the ``g``-cell-wide owned slabs adjacent to tile interfaces.
     ``phi_tiles`` remains the previous-timestep warm start, and neither the
     potential nor a CG search direction is assembled into a global field.
 
     If requested, diagnostics are returned as ``(local_cg_residual,
     schwarz_residual, schwarz_iteration)``. The local residual contains one L2
-    norm per tile; the Schwarz residual and iteration count are scalars.
+    norm per tile for the undamped local solve; the Schwarz residual describes
+    the accepted relaxed iterate, and it and the iteration count are scalars.
     """
 
     g = int(static_parameters.guard_cells)
@@ -307,6 +310,7 @@ def solve_poisson_with_tiled_local_schwarz(
         g,
     )
     schwarz_iteration = jnp.asarray(0, dtype=jnp.int32)
+    schwarz_relaxation = 0.5
 
     def schwarz_not_converged(state):
         _, _, schwarz_residual, schwarz_iteration = state
@@ -320,13 +324,19 @@ def solve_poisson_with_tiled_local_schwarz(
 
     def schwarz_sweep(state):
         phi_tiles, _, _, schwarz_iteration = state
-        phi_tiles, local_cg_residual = _local_tile_cg_solve(
+        local_phi_tiles, local_cg_residual = _local_tile_cg_solve(
             rho_tiles,
             phi_tiles,
             dynamic_parameters,
             g,
             local_cg_tol,
             local_cg_max_iterations,
+        )
+        # Parallel Dirichlet tile solves can alternate between two interface
+        # states. Average old and new potentials to damp that mode while
+        # preserving the fixed point of the discrete Poisson equation.
+        phi_tiles = phi_tiles + schwarz_relaxation * (
+            local_phi_tiles - phi_tiles
         )
         phi_tiles = _apply_tiled_phi_constant_boundaries(
             phi_tiles,
