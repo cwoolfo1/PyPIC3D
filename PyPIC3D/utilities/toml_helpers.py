@@ -221,6 +221,20 @@ def dump_parameters_to_toml(simulation_stats, static_parameters, dynamic_paramet
         "particles": []
     }
 
+    if static_parameters.fmr_enabled:
+        config["fmr"] = {
+            "enabled": True,
+            "levels": [
+                {
+                    "parent": int(level.parent),
+                    "refinement_ratio": int(level.refinement_ratio),
+                    "coarse_start": [int(index) for index in level.parent_start],
+                    "coarse_stop": [int(index) for index in level.parent_stop],
+                }
+                for level in static_parameters.fmr_levels[1:]
+            ],
+        }
+
     n_species = particles.active.shape[3]
     species_names = plotting_parameters.get("particle_species_names")
     species_metadata = plotting_parameters.get("particle_species_metadata")

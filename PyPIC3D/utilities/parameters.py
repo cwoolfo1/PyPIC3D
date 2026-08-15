@@ -37,6 +37,8 @@ class StaticParameters(NamedTuple):
     boundary_conditions: tuple
     particle_boundary_conditions: tuple
     field_mesh: object
+    fmr_enabled: bool = False
+    fmr_levels: tuple = ()
 
 
 class DynamicParameters(NamedTuple):
@@ -56,6 +58,7 @@ class DynamicParameters(NamedTuple):
     kb: jnp.ndarray
     alpha: jnp.ndarray
     grids: GridParameters
+    fmr: object = None
 
 
 def _axis_tuple(axis_values):
@@ -130,6 +133,8 @@ def build_static_parameters(static_config):
             static_config.get("particle_boundary_conditions", {"x": 0, "y": 0, "z": 0})
         ),
         field_mesh=_field_mesh(static_config, tile_shape),
+        fmr_enabled=bool(static_config.get("fmr_enabled", False)),
+        fmr_levels=tuple(static_config.get("fmr_levels", ())),
     )
 
 
@@ -168,6 +173,7 @@ def build_dynamic_parameters(dynamic_config, extra_dynamic_config=None):
         kb=jnp.asarray(dynamic_config.get("kb", extra_dynamic_config.get("kb", 1.0))),
         alpha=jnp.asarray(dynamic_config.get("alpha", extra_dynamic_config.get("alpha", 1.0))),
         grids=grids,
+        fmr=dynamic_config.get("fmr", extra_dynamic_config.get("fmr")),
     )
 
 
@@ -184,7 +190,7 @@ def _output_value(value):
 
 
 def static_parameters_for_output(static_parameters):
-    skip = {"field_mesh"}
+    skip = {"field_mesh", "fmr_levels"}
     static_items = static_parameters._asdict()
     return {
         key: _output_value(value)
@@ -194,7 +200,7 @@ def static_parameters_for_output(static_parameters):
 
 
 def dynamic_parameters_for_output(dynamic_parameters):
-    skip = {"grids"}
+    skip = {"grids", "fmr"}
     dynamic_items = dynamic_parameters._asdict()
     return {
         key: _output_value(value)

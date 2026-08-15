@@ -55,6 +55,7 @@ def run_PyPIC3D(config_file):
     output_dir = static_parameters.output_dir
     particle_species_names = plotting_parameters.get("particle_species_names")
     static_metric = static_parameters.solver == "static_metric"
+    fmr_enabled = static_parameters.fmr_enabled
 
     def loop_with_static_parameters(
         particles,
@@ -73,7 +74,7 @@ def run_PyPIC3D(config_file):
     jit_loop = jax.jit(loop_with_static_parameters)
 
     initial_energy = None
-    if not static_metric:
+    if not static_metric and not fmr_enabled:
         E, B, J, rho, phi, external_fields, *rest = fields
         total_E, total_B = add_external_fields(E, B, external_fields)
         e_energy, b_energy, kinetic_energy = compute_energy(
@@ -115,7 +116,7 @@ def run_PyPIC3D(config_file):
             if t % plotting_parameters["plotting_interval"] == 0:
                 plot_num = t // plotting_parameters["plotting_interval"]
 
-                if not static_metric:
+                if not static_metric and not fmr_enabled:
                     E, B, J, rho, phi, external_fields, *rest = fields
                     total_E, total_B = add_external_fields(E, B, external_fields)
                     e_energy, b_energy, kinetic_energy = compute_energy(
@@ -219,6 +220,8 @@ def main():
 
     if static_parameters.solver == "static_metric":
         print("Skipping final flat-space energy diagnostics for static_metric fields and covariant particle u_i\n")
+    elif static_parameters.fmr_enabled:
+        print("Skipping flat-grid energy diagnostics for multiresolution FMR fields\n")
     else:
         E, B, J, rho, phi, external_fields, *rest = fields
         total_E, total_B = add_external_fields(E, B, external_fields)

@@ -17,6 +17,7 @@ from PyPIC3D.initialization import (
 )
 from PyPIC3D.solvers.electrostatic.time_loop import time_loop_electrostatic
 from PyPIC3D.solvers.gr_static.time_loop import time_loop_static_metric
+from PyPIC3D.solvers.yee.fmr import time_loop_electrodynamic_fmr_fields
 from PyPIC3D.solvers.yee.time_loop import time_loop_electrodynamic
 from PyPIC3D.boundary_conditions.grid_and_stencil import (
     BC_ABSORBING,
@@ -34,6 +35,36 @@ class TestInitializationFunctions(unittest.TestCase):
         self.plotting_parameters, self.simulation_parameters, self.dynamic_values = default_parameters()
         self.simulation_parameters['output_dir'] = 'test_output'
         # check the  default parameters are set correctly
+
+    def _fmr_config(self, output_dir):
+        return {
+            "simulation_parameters": {
+                "name": "field-only FMR initialization test",
+                "output_dir": output_dir,
+                "solver": "electrodynamic_yee",
+                "Nx": 8,
+                "Ny": 8,
+                "Nz": 8,
+                "x_wind": 8.0,
+                "y_wind": 8.0,
+                "z_wind": 8.0,
+                "Nt": 1,
+                "C": 1.0,
+                "cfl": 1.0,
+                "filter_j": "none",
+            },
+            "fmr": {
+                "enabled": True,
+                "levels": [
+                    {
+                        "parent": 0,
+                        "refinement_ratio": 2,
+                        "coarse_start": [2, 2, 2],
+                        "coarse_stop": [5, 5, 5],
+                    }
+                ],
+            },
+        }
 
     def test_setup_write_dir(self):
         # Should not raise
@@ -196,6 +227,136 @@ class TestInitializationFunctions(unittest.TestCase):
             self.assertFalse(bool(overflow))
             # dump a dummy config file to tmp directory and confirm it can be read
             # in correctly
+
+    def test_initialize_simulation_builds_field_only_fmr_levels(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = self._fmr_config(tmpdir)
+            config["simulation_parameters"]["dt"] = 0.05
+
+            (
+                loop,
+                particles,
+                fields,
+                static_parameters,
+                dynamic_parameters,
+                plotting_parameters,
+                *_rest,
+            ) = initialize_simulation(config)
+
+        self.assertIs(loop, time_loop_electrodynamic_fmr_fields)
+        self.assertTrue(static_parameters.fmr_enabled)
+        self.assertEqual(len(static_parameters.fmr_levels), 2)
+        self.assertEqual(len(dynamic_parameters.fmr.levels), 2)
+        self.assertEqual(particles.active.shape[3], 0)
+
+        fine_level = static_parameters.fmr_levels[1]
+        self.assertEqual((fine_level.Nx, fine_level.Ny, fine_level.Nz), (6, 6, 6))
+        self.assertEqual(fine_level.spacing, (0.5, 0.5, 0.5))
+        self.assertEqual(
+            (fine_level.x_min, fine_level.x_max),
+            (-2.0, 1.0),
+        )
+
+        E, B, J, rho, phi, external_fields, pml_state, overflow = fields
+        for field_levels in (E, B, J):
+            self.assertEqual(len(field_levels), 2)
+            self.assertTrue(all(len(level) == 3 for level in field_levels))
+
+        self.assertEqual(E[0][0].shape, (1, 1, 1, 12, 12, 12))
+        self.assertEqual(E[1][0].shape, (1, 1, 1, 10, 10, 10))
+        self.assertEqual(B[1][0].shape, E[1][0].shape)
+        self.assertEqual(J[1][0].shape, E[1][0].shape)
+        self.assertTrue(all(jnp.allclose(component, 0.0) for component in J[1]))
+
+        external_E, external_B = external_fields
+        self.assertEqual(len(external_E), 2)
+        self.assertEqual(len(external_B), 2)
+        self.assertTrue(all(jnp.allclose(component, 0.0) for level in external_E for component in level))
+        self.assertTrue(all(jnp.allclose(component, 0.0) for level in external_B for component in level))
+        self.assertEqual(rho.ndim, 6)
+        self.assertEqual(phi.ndim, 6)
+        self.assertIsNone(pml_state)
+        self.assertFalse(bool(overflow))
+
+        field_map = plotting_parameters["field_map"]
+        self.assertEqual(tuple(field_map), ("E", "B", "J"))
+        self.assertIs(field_map["E"], E)
+        self.assertIs(field_map["B"], B)
+        self.assertIs(field_map["J"], J)
+
+    def test_initialize_simulation_uses_finest_fmr_spacing_for_automatic_dt(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = self._fmr_config(tmpdir)
+
+            result = initialize_simulation(config)
+
+        dynamic_parameters = result[4]
+        self.assertAlmostEqual(float(dynamic_parameters.dx), 1.0)
+        self.assertAlmostEqual(float(dynamic_parameters.dt), 1.0 / 6.0)
+
+    def test_initialize_simulation_preserves_explicit_dt_with_fmr(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = self._fmr_config(tmpdir)
+            config["simulation_parameters"]["dt"] = 0.125
+
+            with patch("PyPIC3D.initialization.courant_condition") as courant_condition_mock:
+                result = initialize_simulation(config)
+
+        courant_condition_mock.assert_not_called()
+        self.assertAlmostEqual(float(result[4].dt), 0.125)
+
+    def test_initialize_simulation_rejects_unsupported_fmr_features(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = self._fmr_config(tmpdir)
+            config["simulation_parameters"]["solver"] = "electrostatic"
+            with self.assertRaisesRegex(NotImplementedError, "only solver"):
+                initialize_simulation(config)
+
+            config = self._fmr_config(tmpdir)
+            config["particle1"] = {}
+            with self.assertRaisesRegex(NotImplementedError, "Particle species"):
+                initialize_simulation(config)
+
+            config = self._fmr_config(tmpdir)
+            config["plotting"] = {"plot_openpmd_fields": True}
+            with self.assertRaisesRegex(NotImplementedError, "not level-aware"):
+                initialize_simulation(config)
+
+            config = self._fmr_config(tmpdir)
+            config["fmr"]["subcycling"] = True
+            with self.assertRaisesRegex(NotImplementedError, "subcycling"):
+                initialize_simulation(config)
+
+    def test_initialize_simulation_rejects_invalid_fmr_geometry(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = self._fmr_config(tmpdir)
+            config["fmr"]["levels"][0]["refinement_ratio"] = 3
+            with self.assertRaisesRegex(ValueError, "even integer"):
+                initialize_simulation(config)
+
+            for enabled in (1, "false"):
+                with self.subTest(enabled=enabled):
+                    config = self._fmr_config(tmpdir)
+                    config["fmr"]["enabled"] = enabled
+                    with self.assertRaisesRegex(ValueError, "true or false"):
+                        initialize_simulation(config)
+
+            config = self._fmr_config(tmpdir)
+            config["fmr"]["levels"][0]["coarse_start"] = [0, 2, 2]
+            with self.assertRaisesRegex(ValueError, "strictly interior"):
+                initialize_simulation(config)
+
+            config = self._fmr_config(tmpdir)
+            config["simulation_parameters"]["particle_tile_nx"] = 4
+            with self.assertRaisesRegex(NotImplementedError, "root tile grid"):
+                initialize_simulation(config)
+
+            for parent in (0.5, -0.5, "0", True):
+                with self.subTest(parent=parent):
+                    config = self._fmr_config(tmpdir)
+                    config["fmr"]["levels"][0]["parent"] = parent
+                    with self.assertRaisesRegex(ValueError, "integer parent"):
+                        initialize_simulation(config)
 
     def test_initialize_static_metric_loads_previous_fields_from_npy(self):
         with tempfile.TemporaryDirectory() as tmpdir:

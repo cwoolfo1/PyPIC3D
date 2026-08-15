@@ -30,20 +30,34 @@ def _forward_difference_from_refreshed(field, axis, spacing, guard_cells):
     return (field[forward_slices] - field[current_slices]) / spacing
 
 
-def _yee_derivatives_from_refreshed_channels(channels, static_parameters, dynamic_parameters):
+def _yee_derivatives_from_refreshed_channels(channels, spacing, guard_cells):
     """Apply the six canonical forward differences to refreshed field channels."""
 
     Ez_for_dy, Ey_for_dz, Ex_for_dz, Ez_for_dx, Ey_for_dx, Ex_for_dy = channels
-    g = int(static_parameters.guard_cells)
+    dx, dy, dz = spacing
+    g = int(guard_cells)
 
     return (
-        _forward_difference_from_refreshed(Ez_for_dy, 1, dynamic_parameters.dy, g),
-        _forward_difference_from_refreshed(Ey_for_dz, 2, dynamic_parameters.dz, g),
-        _forward_difference_from_refreshed(Ex_for_dz, 2, dynamic_parameters.dz, g),
-        _forward_difference_from_refreshed(Ez_for_dx, 0, dynamic_parameters.dx, g),
-        _forward_difference_from_refreshed(Ey_for_dx, 0, dynamic_parameters.dx, g),
-        _forward_difference_from_refreshed(Ex_for_dy, 1, dynamic_parameters.dy, g),
+        _forward_difference_from_refreshed(Ez_for_dy, 1, dy, g),
+        _forward_difference_from_refreshed(Ey_for_dz, 2, dz, g),
+        _forward_difference_from_refreshed(Ex_for_dz, 2, dz, g),
+        _forward_difference_from_refreshed(Ez_for_dx, 0, dx, g),
+        _forward_difference_from_refreshed(Ey_for_dx, 0, dx, g),
+        _forward_difference_from_refreshed(Ex_for_dy, 1, dy, g),
     )
+
+
+def yee_derivatives_e_to_b_refreshed(E_tiles, spacing, guard_cells):
+    """
+    Return the six forward Yee derivatives after halos are already populated.
+
+    Output order is
+    ``dEz_dy, dEy_dz, dEx_dz, dEz_dx, dEy_dx, dEx_dy``.
+    """
+
+    Ex, Ey, Ez = E_tiles
+    channels = (Ez, Ey, Ex, Ez, Ey, Ex)
+    return _yee_derivatives_from_refreshed_channels(channels, spacing, guard_cells)
 
 
 def yee_derivatives_e_to_b(E_tiles, static_parameters, dynamic_parameters):
@@ -58,9 +72,9 @@ def yee_derivatives_e_to_b(E_tiles, static_parameters, dynamic_parameters):
     """
 
     g = int(static_parameters.guard_cells)
-    Ex, Ey, Ez = ghost_cells.update_tiled_vector_ghost_cells(E_tiles, static_parameters, g)
-    channels = (Ez, Ey, Ex, Ez, Ey, Ex)
-    return _yee_derivatives_from_refreshed_channels(channels, static_parameters, dynamic_parameters)
+    E_tiles = ghost_cells.update_tiled_vector_ghost_cells(E_tiles, static_parameters, g)
+    spacing = (dynamic_parameters.dx, dynamic_parameters.dy, dynamic_parameters.dz)
+    return yee_derivatives_e_to_b_refreshed(E_tiles, spacing, g)
 
 
 def _independent_yee_derivative_channels(channels, static_parameters, dynamic_parameters):
@@ -74,7 +88,8 @@ def _independent_yee_derivative_channels(channels, static_parameters, dynamic_pa
 
     g = int(static_parameters.guard_cells)
     channels = ghost_cells.update_tiled_vector_ghost_cells(channels, static_parameters, g)
-    return _yee_derivatives_from_refreshed_channels(channels, static_parameters, dynamic_parameters)
+    spacing = (dynamic_parameters.dx, dynamic_parameters.dy, dynamic_parameters.dz)
+    return _yee_derivatives_from_refreshed_channels(channels, spacing, g)
 
 
 def yee_derivatives_b_to_e(B_tiles, E_template, static_parameters, dynamic_parameters):

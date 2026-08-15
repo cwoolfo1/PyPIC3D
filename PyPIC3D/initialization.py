@@ -38,6 +38,13 @@ from PyPIC3D.boundary_conditions.ghost_cells import (
 )
 from PyPIC3D.solvers.electrostatic.time_loop import time_loop_electrostatic
 from PyPIC3D.solvers.gr_static.time_loop import time_loop_static_metric
+from PyPIC3D.solvers.yee.fmr import (
+    build_fmr_fields,
+    build_fmr_parameters,
+    load_fmr_from_toml,
+    time_loop_electrodynamic_fmr_fields,
+    validate_fmr_configuration,
+)
 from PyPIC3D.solvers.yee.time_loop import time_loop_electrodynamic
 from PyPIC3D.boundary_conditions.grid_and_stencil import (
     BC_ABSORBING,
@@ -325,6 +332,8 @@ def initialize_simulation(toml_file):
             plotting_parameters,
         )
 
+    validate_fmr_configuration(config, static_config, plotting_parameters)
+
     print(f"Initializing Simulation: { static_config['name'] }\n")
     print(f"Using boundary conditions: x: {static_config['x_bc']}, y: {static_config['y_bc']}, z: {static_config['z_bc']}\n")
 
@@ -365,11 +374,18 @@ def initialize_simulation(toml_file):
     dynamic_config["dy"] = dy
     dynamic_config["dz"] = dz
 
+    root_tile_shape = _tile_shape_from_static_config(static_config)
+    fmr_levels = load_fmr_from_toml(config, dynamic_config, root_tile_shape)
+    fmr_enabled = bool(fmr_levels)
+    static_config["fmr_enabled"] = fmr_enabled
+    static_config["fmr_levels"] = fmr_levels
+
     if dynamic_config["dt"] is not None:
         print(f"Using user defined dt: {dynamic_config['dt']}")
         dt = dynamic_config["dt"]
     else:
-        dt = courant_condition(static_config["cfl"], dx, dy, dz, SimpleNamespace(**dynamic_config))
+        cfl_spacing = fmr_levels[-1].spacing if fmr_enabled else (dx, dy, dz)
+        dt = courant_condition(static_config["cfl"], *cfl_spacing, SimpleNamespace(**dynamic_config))
         dynamic_config["dt"] = dt
 
     if static_config["Nt"] is not None:
@@ -432,7 +448,7 @@ def initialize_simulation(toml_file):
         "center": center_grid,
     }
 
-    tile_shape = _tile_shape_from_static_config(static_config)
+    tile_shape = root_tile_shape
     static_config["tile_shape"] = tile_shape
     static_config["Nx"] = int(Nx)
     static_config["Ny"] = int(Ny)
@@ -458,6 +474,9 @@ def initialize_simulation(toml_file):
 
     static_parameters = build_static_parameters(static_config)
     dynamic_parameters = build_dynamic_parameters(dynamic_config)
+    dynamic_parameters = dynamic_parameters._replace(
+        fmr=build_fmr_parameters(static_parameters, dynamic_parameters)
+    )
     plotting_parameters = convert_to_jax_compatible(plotting_parameters)
     metric = (
         build_static_metric_state(static_parameters, dynamic_parameters)
@@ -535,6 +554,13 @@ def initialize_simulation(toml_file):
     external_B = update_tiled_vector_ghost_cells(external_B, static_parameters, num_guard_cells=guard_cells)
     external_fields = (external_E, external_B)
 
+    if fmr_enabled:
+        E, B, J = build_fmr_fields(E, B, J, static_parameters, dynamic_parameters)
+        external_fields = (
+            tuple(tuple(jnp.zeros_like(component) for component in level) for level in E),
+            tuple(tuple(jnp.zeros_like(component) for component in level) for level in B),
+        )
+
     static_metric_state = None
     if static_metric:
         static_metric_state = E, B
@@ -549,6 +575,8 @@ def initialize_simulation(toml_file):
         B_previous = update_tiled_vector_ghost_cells(B_previous, static_parameters, num_guard_cells=guard_cells)
         static_metric_state = D_previous, B_previous
         print("Skipping flat-space energy diagnostics for static_metric fields and covariant particle u_i\n")
+    elif fmr_enabled:
+        print("Skipping single-resolution energy diagnostics for field-only FMR\n")
     else:
         total_E, total_B = add_external_fields(E, B, external_fields)
         e_energy, b_energy, kinetic_energy = compute_energy(
@@ -576,6 +604,9 @@ def initialize_simulation(toml_file):
     elif electrostatic:
         print("Using electrostatic solver")
         evolve_loop = time_loop_electrostatic
+    elif fmr_enabled:
+        print("Using field-only electrodynamic Yee FMR solver")
+        evolve_loop = time_loop_electrodynamic_fmr_fields
     else:
         print("Using electrodynamic Yee solver")
         evolve_loop = time_loop_electrodynamic
@@ -606,15 +637,18 @@ def initialize_simulation(toml_file):
             )
         fields = (E, B, J, rho, phi, external_fields, pml_state, overflow)
 
-    field_map = build_field_output_map(
-        fields,
-        particles,
-        species_config,
-        static_parameters,
-        dynamic_parameters,
-        include_fluid_velocity=bool(plotting_parameters["plotvelocities"]),
-        include_charge_density=bool(plotting_parameters["plotchargedensity"]),
-    )
+    if fmr_enabled:
+        field_map = {"E": E, "B": B, "J": J}
+    else:
+        field_map = build_field_output_map(
+            fields,
+            particles,
+            species_config,
+            static_parameters,
+            dynamic_parameters,
+            include_fluid_velocity=bool(plotting_parameters["plotvelocities"]),
+            include_charge_density=bool(plotting_parameters["plotchargedensity"]),
+        )
     plotting_parameters = {
         **plotting_parameters,
         "field_map": field_map,

@@ -410,7 +410,7 @@ class TestUtilsFunctions(unittest.TestCase):
 
         self.assertTrue(jnp.allclose(kinetic_energy, 0.0))
 
-    def test_dump_parameters_to_toml_writes_tiled_species_summaries(self):
+    def test_dump_parameters_to_toml_writes_species_summaries_and_fmr_geometry(self):
         active = jnp.array([[[[[True, False, True], [False, True, False]]]]])
         zeros3 = jnp.zeros(active.shape + (3,))
         particles = TiledParticles(
@@ -430,6 +430,16 @@ class TestUtilsFunctions(unittest.TestCase):
                 "boundary_conditions": {"x": 0, "y": 0, "z": 0},
                 "particle_boundary_conditions": {"x": 0, "y": 0, "z": 0},
                 "field_mesh": object(),
+                "fmr_enabled": True,
+                "fmr_levels": (
+                    None,
+                    SimpleNamespace(
+                        parent=0,
+                        refinement_ratio=4,
+                        parent_start=(2, 3, 4),
+                        parent_stop=(6, 7, 8),
+                    ),
+                ),
             })
             dynamic_parameters = build_dynamic_parameters(
                 {
@@ -490,6 +500,20 @@ class TestUtilsFunctions(unittest.TestCase):
         self.assertEqual(config["particles"][1]["storage"], "tiled")
         self.assertEqual(config["particles"][1]["active_particles"], 1)
         self.assertEqual(config["particles"][0]["tile_shape"], [2, 1, 1])
+        self.assertEqual(
+            config["fmr"],
+            {
+                "enabled": True,
+                "levels": [
+                    {
+                        "parent": 0,
+                        "refinement_ratio": 4,
+                        "coarse_start": [2, 3, 4],
+                        "coarse_stop": [6, 7, 8],
+                    }
+                ],
+            },
+        )
 
     def test_package_does_not_export_vtk_diagnostics(self):
         self.assertFalse(hasattr(PyPIC3D, "vtk"))

@@ -11,6 +11,7 @@ from PyPIC3D.solvers.yee.first_order_yee import (
     yee_curl_e_to_b,
     yee_derivatives_b_to_e,
     yee_derivatives_e_to_b,
+    yee_derivatives_e_to_b_refreshed,
 )
 from PyPIC3D.diagnostics.output_adapters import assemble_tiled_vector_field
 from PyPIC3D.boundary_conditions import ghost_cells
@@ -560,6 +561,23 @@ class TestYeeTiled(unittest.TestCase):
 
         for actual, expected in zip(curl_E, reference):
             self.assertTrue(jnp.allclose(actual, expected, rtol=1.0e-12, atol=1.0e-12))
+
+    def test_refreshed_e_to_b_derivatives_equal_public_periodic_one_tile(self):
+        parameter_set = self._build_parameter_values()
+        tile_shape = (8, 6, 4)
+        parameter_set = self._with_tile_metadata(parameter_set, tile_shape)
+        static_parameters, dynamic_parameters = self._split_parameters(parameter_set, {})
+        E_tiles = self._random_tiled_vector_field(parameter_set, tile_shape, seed=12)
+
+        g = int(static_parameters.guard_cells)
+        E_refreshed = ghost_cells.update_tiled_vector_ghost_cells(E_tiles, static_parameters, g)
+        spacing = (dynamic_parameters.dx, dynamic_parameters.dy, dynamic_parameters.dz)
+
+        ordinary = yee_derivatives_e_to_b(E_tiles, static_parameters, dynamic_parameters)
+        from_refreshed = yee_derivatives_e_to_b_refreshed(E_refreshed, spacing, g)
+
+        for actual, expected in zip(from_refreshed, ordinary):
+            self.assertTrue(jnp.array_equal(actual, expected))
 
     def test_yee_derivatives_match_legacy_stencils_for_one_and_multiple_tiles(self):
         tile_shapes = ((8, 6, 4), (2, 3, 2))
