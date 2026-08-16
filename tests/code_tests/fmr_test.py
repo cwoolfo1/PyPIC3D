@@ -178,6 +178,38 @@ def _random_levels_like(levels, seed):
     )
 
 
+def _random_physical_levels_like(levels, active_masks, seed, guard_cells):
+    g = int(guard_cells)
+    active = slice(g, -g)
+    leaves = [component for level in levels for component in level]
+    keys = iter(jax.random.split(jax.random.key(seed), len(leaves)))
+
+    random_levels = []
+    for level, level_masks in zip(levels, active_masks):
+        random_components = []
+        for component, mask in zip(level, level_masks):
+            values = jax.random.normal(next(keys), mask.shape, dtype=component.dtype)
+            random_component = jnp.zeros_like(component)
+            random_component = random_component.at[:, :, :, active, active, active].set(
+                values * mask
+            )
+            random_components.append(random_component)
+        random_levels.append(tuple(random_components))
+    return tuple(random_levels)
+
+
+def _weighted_field_dot_levels(left, right, weights):
+    return sum(
+        jnp.vdot(left_component, weight * right_component)
+        for left_level, right_level, level_weights in zip(left, right, weights)
+        for left_component, right_component, weight in zip(
+            left_level,
+            right_level,
+            level_weights,
+        )
+    )
+
+
 def _expected_b_mask(grids, locations, level, fine_level, guard_cells, active_inside):
     g = int(guard_cells)
     axes = _component_axes(grids, locations)
@@ -198,6 +230,49 @@ def _expected_b_mask(grids, locations, level, fine_level, guard_cells, active_in
 
     mask = inside if active_inside else ~inside
     return jnp.asarray(mask[jnp.newaxis, jnp.newaxis, jnp.newaxis])
+
+
+def _independent_e_masks(static_parameters, dynamic_parameters):
+    parent_level, fine_level = static_parameters.fmr_levels
+    parent_data, fine_data = dynamic_parameters.fmr.levels
+    g = int(static_parameters.guard_cells)
+
+    parent_masks = tuple(
+        _expected_b_mask(
+            parent_data.grids,
+            locations,
+            parent_level,
+            fine_level,
+            g,
+            active_inside=False,
+        )
+        for locations in E_FIELD_LOCATIONS
+    )
+
+    fine_masks = []
+    for interpolation_map in fine_data.e_interface_maps:
+        mask = jnp.ones(
+            (1, 1, 1, fine_level.Nx, fine_level.Ny, fine_level.Nz),
+            dtype=bool,
+        )
+        target = np.asarray(interpolation_map.target_indices) - g
+        physical = np.all(
+            (target >= 0)
+            & (target < np.asarray((fine_level.Nx, fine_level.Ny, fine_level.Nz))),
+            axis=1,
+        )
+        target = target[physical]
+        mask = mask.at[
+            0,
+            0,
+            0,
+            target[:, 0],
+            target[:, 1],
+            target[:, 2],
+        ].set(False, unique_indices=True)
+        fine_masks.append(mask)
+
+    return parent_masks, tuple(fine_masks)
 
 
 def _fine_raw_curl(E_levels, static_parameters, dynamic_parameters):
@@ -569,6 +644,96 @@ class TestFMRCurl(unittest.TestCase):
         rhs = _field_dot_levels(E_active, curl_B)
         scale = max(1.0, float(jnp.abs(lhs)), float(jnp.abs(rhs)))
         self.assertLess(float(jnp.abs(lhs - rhs)) / scale, 5.0e-12)
+
+    def test_discrete_electromagnetic_power_balance(self):
+        static_parameters, dynamic_parameters, E, B, *_ = _fmr_case(2)
+        g = int(static_parameters.guard_cells)
+
+        e_active_masks = _independent_e_masks(static_parameters, dynamic_parameters)
+        b_active_masks = tuple(
+            level_data.b_active_masks
+            for level_data in dynamic_parameters.fmr.levels
+        )
+        E_levels = _random_physical_levels_like(
+            E,
+            e_active_masks,
+            seed=211,
+            guard_cells=g,
+        )
+        B_levels = _random_physical_levels_like(
+            B,
+            b_active_masks,
+            seed=212,
+            guard_cells=g,
+        )
+
+        curl_E = fmr_curl_e_to_b(E_levels, static_parameters, dynamic_parameters)
+        curl_B = fmr_curl_b_to_e(
+            B_levels,
+            E_levels,
+            static_parameters,
+            dynamic_parameters,
+        )
+        E_active = tuple(_active_vector(level, g) for level in E_levels)
+        B_active = tuple(_active_vector(level, g) for level in B_levels)
+
+        algebraic_left = _weighted_field_dot_levels(
+            curl_E,
+            B_active,
+            b_active_masks,
+        )
+        algebraic_right = _weighted_field_dot_levels(
+            E_active,
+            curl_B,
+            e_active_masks,
+        )
+        algebraic_residual = algebraic_left - algebraic_right
+        algebraic_relative_residual = jnp.abs(algebraic_residual) / jnp.maximum(
+            jnp.abs(algebraic_left) + jnp.abs(algebraic_right),
+            1.0e-30,
+        )
+
+        cell_volumes = tuple(
+            np.prod(level.spacing)
+            for level in static_parameters.fmr_levels
+        )
+        e_weights = tuple(
+            tuple(cell_volume * mask for mask in level_masks)
+            for cell_volume, level_masks in zip(cell_volumes, e_active_masks)
+        )
+        b_weights = tuple(
+            tuple(cell_volume * mask for mask in level_masks)
+            for cell_volume, level_masks in zip(cell_volumes, b_active_masks)
+        )
+        electric_power = _weighted_field_dot_levels(E_active, curl_B, e_weights)
+        magnetic_power = _weighted_field_dot_levels(curl_E, B_active, b_weights)
+        weighted_residual = electric_power - magnetic_power
+        weighted_relative_residual = jnp.abs(weighted_residual) / jnp.maximum(
+            jnp.abs(electric_power) + jnp.abs(magnetic_power),
+            1.0e-30,
+        )
+
+        print(
+            "\nFMR algebraic transpose:\n"
+            f"    lhs = {float(algebraic_left):.16e}\n"
+            f"    rhs = {float(algebraic_right):.16e}\n"
+            f"    relative residual = {float(algebraic_relative_residual):.16e}\n\n"
+            "FMR weighted power balance:\n"
+            f"    electric power = {float(electric_power):.16e}\n"
+            f"    magnetic power = {float(magnetic_power):.16e}\n"
+            f"    relative residual = {float(weighted_relative_residual):.16e}\n\n"
+            f"coarse cell volume = {cell_volumes[0]:.16e}\n"
+            f"fine cell volume = {cell_volumes[1]:.16e}"
+        )
+
+        self.assertTrue(jnp.allclose(
+            algebraic_left,
+            algebraic_right,
+            rtol=1.0e-11,
+            atol=1.0e-12,
+        ))
+        self.assertTrue(jnp.isfinite(weighted_residual))
+        self.assertTrue(jnp.isfinite(weighted_relative_residual))
 
 
 class TestFMRFieldUpdates(unittest.TestCase):
