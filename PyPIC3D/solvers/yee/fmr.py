@@ -53,6 +53,8 @@ class FMRLevelData(NamedTuple):
     grids: GridParameters
     e_interface_maps: tuple
     b_active_masks: tuple
+    e_weights: tuple
+    b_weights: tuple
 
 
 class FMRParameters(NamedTuple):
@@ -413,8 +415,55 @@ def build_b_active_masks(parent_level, fine_level, parent_grids, fine_grids, gua
     return tuple(parent_masks), tuple(fine_masks)
 
 
+def build_fmr_metric_weights(
+    parent_level,
+    fine_level,
+    e_interface_maps,
+    parent_b_masks,
+    fine_b_masks,
+    guard_cells,
+):
+    """Build active-grid Cartesian volume weights for the FMR fields."""
+
+    parent_volume = np.prod(parent_level.spacing)
+    fine_volume = np.prod(fine_level.spacing)
+
+    parent_e_weights = tuple(
+        jnp.full(mask.shape, parent_volume)
+        for mask in parent_b_masks
+    )
+
+    g = int(guard_cells)
+    fine_shape = np.asarray((fine_level.Nx, fine_level.Ny, fine_level.Nz))
+    fine_e_weights = []
+    for interpolation_map, mask in zip(e_interface_maps, fine_b_masks):
+        weight = jnp.full(mask.shape, fine_volume)
+        target = np.asarray(interpolation_map.target_indices) - g
+        physical = np.all((target >= 0) & (target < fine_shape), axis=1)
+        target = target[physical]
+        weight = weight.at[
+            0,
+            0,
+            0,
+            target[:, 0],
+            target[:, 1],
+            target[:, 2],
+        ].set(0.0, unique_indices=True)
+        fine_e_weights.append(weight)
+
+    parent_b_weights = tuple(parent_volume * mask for mask in parent_b_masks)
+    fine_b_weights = tuple(fine_volume * mask for mask in fine_b_masks)
+
+    return (
+        parent_e_weights,
+        parent_b_weights,
+        tuple(fine_e_weights),
+        fine_b_weights,
+    )
+
+
 def build_fmr_parameters(static_parameters, dynamic_parameters):
-    """Build fine coordinates, interface maps, and B activity masks once."""
+    """Build the static FMR interpolation, activity, and metric data once."""
 
     if not static_parameters.fmr_enabled:
         return None
@@ -437,16 +486,33 @@ def build_fmr_parameters(static_parameters, dynamic_parameters):
         fine_grids,
         static_parameters.guard_cells,
     )
+    (
+        parent_e_weights,
+        parent_b_weights,
+        fine_e_weights,
+        fine_b_weights,
+    ) = build_fmr_metric_weights(
+        parent_level,
+        fine_level,
+        e_interface_maps,
+        parent_b_masks,
+        fine_b_masks,
+        static_parameters.guard_cells,
+    )
 
     parent_data = FMRLevelData(
         grids=dynamic_parameters.grids,
         e_interface_maps=(),
         b_active_masks=parent_b_masks,
+        e_weights=parent_e_weights,
+        b_weights=parent_b_weights,
     )
     fine_data = FMRLevelData(
         grids=fine_grids,
         e_interface_maps=e_interface_maps,
         b_active_masks=fine_b_masks,
+        e_weights=fine_e_weights,
+        b_weights=fine_b_weights,
     )
     return FMRParameters(levels=(parent_data, fine_data))
 
@@ -511,6 +577,18 @@ def _active_vector(field_tiles, guard_cells):
     return tuple(component[:, :, :, active, active, active] for component in field_tiles)
 
 
+def _apply_weights(values, weights):
+    return tuple(value * weight for value, weight in zip(values, weights))
+
+
+def _apply_inverse_weights(values, weights):
+    weighted_values = []
+    for value, weight in zip(values, weights):
+        safe_weight = jnp.where(weight != 0.0, weight, 1.0)
+        weighted_values.append(jnp.where(weight != 0.0, value / safe_weight, 0.0))
+    return tuple(weighted_values)
+
+
 def _fine_static_view(static_parameters):
     fine_level = static_parameters.fmr_levels[1]
     return static_parameters._replace(
@@ -548,16 +626,24 @@ def fmr_curl_e_to_b(E_levels, static_parameters, dynamic_parameters):
 
 
 def fmr_curl_b_to_e(B_levels, E_template, static_parameters, dynamic_parameters):
-    """Transpose the complete forward multiresolution curl."""
+    """Apply the metric-weighted FMR adjoint M_E^-1 C.T M_B."""
 
     g = int(static_parameters.guard_cells)
     B_active_levels = tuple(_active_vector(B_level, g) for B_level in B_levels)
+    B_weighted_levels = tuple(
+        _apply_weights(B_level, level_data.b_weights)
+        for B_level, level_data in zip(B_active_levels, dynamic_parameters.fmr.levels)
+    )
     transpose = jax.linear_transpose(
         lambda E: fmr_curl_e_to_b(E, static_parameters, dynamic_parameters),
         E_template,
     )
-    transposed_E, = transpose(B_active_levels)
-    return tuple(_active_vector(E_level, g) for E_level in transposed_E)
+    transposed_E, = transpose(B_weighted_levels)
+    transposed_E_active = tuple(_active_vector(E_level, g) for E_level in transposed_E)
+    return tuple(
+        _apply_inverse_weights(E_level, level_data.e_weights)
+        for E_level, level_data in zip(transposed_E_active, dynamic_parameters.fmr.levels)
+    )
 
 
 def update_B_fmr(E_levels, B_levels, static_parameters, dynamic_parameters):
@@ -657,6 +743,7 @@ __all__ = [
     "build_b_active_masks",
     "build_e_interface_maps",
     "build_fmr_fields",
+    "build_fmr_metric_weights",
     "build_fmr_parameters",
     "fmr_curl_b_to_e",
     "fmr_curl_e_to_b",

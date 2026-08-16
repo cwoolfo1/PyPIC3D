@@ -210,6 +210,17 @@ def _weighted_field_dot_levels(left, right, weights):
     )
 
 
+def _raw_fmr_curl_b_to_e(B_levels, E_template, static_parameters, dynamic_parameters):
+    g = int(static_parameters.guard_cells)
+    B_active = tuple(_active_vector(level, g) for level in B_levels)
+    transpose = jax.linear_transpose(
+        lambda E: fmr_curl_e_to_b(E, static_parameters, dynamic_parameters),
+        E_template,
+    )
+    transposed_E, = transpose(B_active)
+    return tuple(_active_vector(level, g) for level in transposed_E)
+
+
 def _expected_b_mask(grids, locations, level, fine_level, guard_cells, active_inside):
     g = int(guard_cells)
     axes = _component_axes(grids, locations)
@@ -230,49 +241,6 @@ def _expected_b_mask(grids, locations, level, fine_level, guard_cells, active_in
 
     mask = inside if active_inside else ~inside
     return jnp.asarray(mask[jnp.newaxis, jnp.newaxis, jnp.newaxis])
-
-
-def _independent_e_masks(static_parameters, dynamic_parameters):
-    parent_level, fine_level = static_parameters.fmr_levels
-    parent_data, fine_data = dynamic_parameters.fmr.levels
-    g = int(static_parameters.guard_cells)
-
-    parent_masks = tuple(
-        _expected_b_mask(
-            parent_data.grids,
-            locations,
-            parent_level,
-            fine_level,
-            g,
-            active_inside=False,
-        )
-        for locations in E_FIELD_LOCATIONS
-    )
-
-    fine_masks = []
-    for interpolation_map in fine_data.e_interface_maps:
-        mask = jnp.ones(
-            (1, 1, 1, fine_level.Nx, fine_level.Ny, fine_level.Nz),
-            dtype=bool,
-        )
-        target = np.asarray(interpolation_map.target_indices) - g
-        physical = np.all(
-            (target >= 0)
-            & (target < np.asarray((fine_level.Nx, fine_level.Ny, fine_level.Nz))),
-            axis=1,
-        )
-        target = target[physical]
-        mask = mask.at[
-            0,
-            0,
-            0,
-            target[:, 0],
-            target[:, 1],
-            target[:, 2],
-        ].set(False, unique_indices=True)
-        fine_masks.append(mask)
-
-    return parent_masks, tuple(fine_masks)
 
 
 def _fine_raw_curl(E_levels, static_parameters, dynamic_parameters):
@@ -527,6 +495,52 @@ class TestFMRGeometryAndInterpolation(unittest.TestCase):
                 self.assertGreater(int(jnp.sum(~expected_parent)), 0)
                 self.assertGreater(int(jnp.sum(~expected_fine)), 0)
 
+    def test_metric_weights_use_level_volumes_and_zero_constrained_dofs(self):
+        static_parameters, dynamic_parameters, *_ = _fmr_case(2)
+        parent_level, fine_level = static_parameters.fmr_levels
+        parent_data, fine_data = dynamic_parameters.fmr.levels
+        g = int(static_parameters.guard_cells)
+
+        parent_volume = np.prod(parent_level.spacing)
+        fine_volume = np.prod(fine_level.spacing)
+        self.assertAlmostEqual(parent_volume / fine_volume, 8.0, places=14)
+
+        for weight in parent_data.e_weights:
+            self.assertTrue(jnp.all(jnp.isfinite(weight)))
+            self.assertTrue(jnp.all(weight == parent_volume))
+
+        fine_shape = np.asarray((fine_level.Nx, fine_level.Ny, fine_level.Nz))
+        for weight, interpolation_map in zip(
+            fine_data.e_weights,
+            fine_data.e_interface_maps,
+        ):
+            target = np.asarray(interpolation_map.target_indices) - g
+            physical = np.all((target >= 0) & (target < fine_shape), axis=1)
+            target = target[physical]
+            interface_weights = weight[
+                0,
+                0,
+                0,
+                target[:, 0],
+                target[:, 1],
+                target[:, 2],
+            ]
+            self.assertTrue(jnp.all(interface_weights == 0.0))
+            self.assertTrue(jnp.all(jnp.isfinite(weight)))
+            self.assertTrue(jnp.all(weight[weight != 0.0] == fine_volume))
+
+        for level_data, volume in (
+            (parent_data, parent_volume),
+            (fine_data, fine_volume),
+        ):
+            for weight, active_mask in zip(
+                level_data.b_weights,
+                level_data.b_active_masks,
+            ):
+                self.assertTrue(jnp.all(weight[~active_mask] == 0.0))
+                self.assertTrue(jnp.all(jnp.isfinite(weight[active_mask])))
+                self.assertTrue(jnp.all(weight[active_mask] == volume))
+
 
 class TestFMRCurl(unittest.TestCase):
     def test_constant_field_has_zero_fine_and_composite_curl(self):
@@ -631,7 +645,7 @@ class TestFMRCurl(unittest.TestCase):
         g = int(static_parameters.guard_cells)
 
         curl_E = fmr_curl_e_to_b(E_levels, static_parameters, dynamic_parameters)
-        curl_B = fmr_curl_b_to_e(
+        raw_curl_B = _raw_fmr_curl_b_to_e(
             B_levels,
             E_levels,
             static_parameters,
@@ -641,7 +655,7 @@ class TestFMRCurl(unittest.TestCase):
         B_active = tuple(_active_vector(level, g) for level in B_levels)
 
         lhs = _field_dot_levels(curl_E, B_active)
-        rhs = _field_dot_levels(E_active, curl_B)
+        rhs = _field_dot_levels(E_active, raw_curl_B)
         scale = max(1.0, float(jnp.abs(lhs)), float(jnp.abs(rhs)))
         self.assertLess(float(jnp.abs(lhs - rhs)) / scale, 5.0e-12)
 
@@ -649,10 +663,21 @@ class TestFMRCurl(unittest.TestCase):
         static_parameters, dynamic_parameters, E, B, *_ = _fmr_case(2)
         g = int(static_parameters.guard_cells)
 
-        e_active_masks = _independent_e_masks(static_parameters, dynamic_parameters)
-        b_active_masks = tuple(
-            level_data.b_active_masks
+        e_weights = tuple(
+            level_data.e_weights
             for level_data in dynamic_parameters.fmr.levels
+        )
+        b_weights = tuple(
+            level_data.b_weights
+            for level_data in dynamic_parameters.fmr.levels
+        )
+        e_active_masks = tuple(
+            tuple(weight != 0.0 for weight in level_weights)
+            for level_weights in e_weights
+        )
+        b_active_masks = tuple(
+            tuple(weight != 0.0 for weight in level_weights)
+            for level_weights in b_weights
         )
         E_levels = _random_physical_levels_like(
             E,
@@ -668,6 +693,12 @@ class TestFMRCurl(unittest.TestCase):
         )
 
         curl_E = fmr_curl_e_to_b(E_levels, static_parameters, dynamic_parameters)
+        raw_curl_B = _raw_fmr_curl_b_to_e(
+            B_levels,
+            E_levels,
+            static_parameters,
+            dynamic_parameters,
+        )
         curl_B = fmr_curl_b_to_e(
             B_levels,
             E_levels,
@@ -684,7 +715,7 @@ class TestFMRCurl(unittest.TestCase):
         )
         algebraic_right = _weighted_field_dot_levels(
             E_active,
-            curl_B,
+            raw_curl_B,
             e_active_masks,
         )
         algebraic_residual = algebraic_left - algebraic_right
@@ -693,18 +724,6 @@ class TestFMRCurl(unittest.TestCase):
             1.0e-30,
         )
 
-        cell_volumes = tuple(
-            np.prod(level.spacing)
-            for level in static_parameters.fmr_levels
-        )
-        e_weights = tuple(
-            tuple(cell_volume * mask for mask in level_masks)
-            for cell_volume, level_masks in zip(cell_volumes, e_active_masks)
-        )
-        b_weights = tuple(
-            tuple(cell_volume * mask for mask in level_masks)
-            for cell_volume, level_masks in zip(cell_volumes, b_active_masks)
-        )
         electric_power = _weighted_field_dot_levels(E_active, curl_B, e_weights)
         magnetic_power = _weighted_field_dot_levels(curl_E, B_active, b_weights)
         weighted_residual = electric_power - magnetic_power
@@ -722,8 +741,8 @@ class TestFMRCurl(unittest.TestCase):
             f"    electric power = {float(electric_power):.16e}\n"
             f"    magnetic power = {float(magnetic_power):.16e}\n"
             f"    relative residual = {float(weighted_relative_residual):.16e}\n\n"
-            f"coarse cell volume = {cell_volumes[0]:.16e}\n"
-            f"fine cell volume = {cell_volumes[1]:.16e}"
+            f"coarse cell volume = {np.prod(static_parameters.fmr_levels[0].spacing):.16e}\n"
+            f"fine cell volume = {np.prod(static_parameters.fmr_levels[1].spacing):.16e}"
         )
 
         self.assertTrue(jnp.allclose(
@@ -732,8 +751,12 @@ class TestFMRCurl(unittest.TestCase):
             rtol=1.0e-11,
             atol=1.0e-12,
         ))
-        self.assertTrue(jnp.isfinite(weighted_residual))
-        self.assertTrue(jnp.isfinite(weighted_relative_residual))
+        self.assertTrue(jnp.allclose(
+            electric_power,
+            magnetic_power,
+            rtol=1.0e-11,
+            atol=1.0e-12,
+        ))
 
 
 class TestFMRFieldUpdates(unittest.TestCase):
