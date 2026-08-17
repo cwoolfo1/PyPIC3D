@@ -9,12 +9,10 @@ from PyPIC3D.boundary_conditions.grid_and_stencil import (
     BC_PERIODIC,
 )
 from PyPIC3D.boundary_conditions.ghost_cells import make_field_mesh
-from PyPIC3D.evolve import (
-    time_loop_electrodynamic,
-    time_loop_electrostatic,
-)
+from PyPIC3D.solvers.electrostatic.time_loop import time_loop_electrostatic
+from PyPIC3D.solvers.yee.time_loop import time_loop_electrodynamic
 from PyPIC3D.initialization import initialize_fields
-from PyPIC3D.parameters import build_dynamic_parameters, build_static_parameters
+from PyPIC3D.utilities.parameters import build_dynamic_parameters, build_static_parameters
 from PyPIC3D.particles.particle_class import SpeciesConfig, TiledParticles
 from PyPIC3D.utilities.grids import build_tiled_yee_grids, build_yee_grid
 from tests.kernel_fixtures import kernel_parameters_from_values
@@ -70,8 +68,8 @@ def one_slot_tiled_particles(
 
 class TestEvolveExternalFields(unittest.TestCase):
     def test_public_loop_names_own_tiled_contracts(self):
-        self.assertEqual(time_loop_electrodynamic.__module__, "PyPIC3D.evolve")
-        self.assertEqual(time_loop_electrostatic.__module__, "PyPIC3D.evolve")
+        self.assertEqual(time_loop_electrodynamic.__module__, "PyPIC3D.solvers.yee.time_loop")
+        self.assertEqual(time_loop_electrostatic.__module__, "PyPIC3D.solvers.electrostatic.time_loop")
         # test that both these methods exist in the public API and are not private methods
 
     def test_external_electric_field_pushes_particles_without_evolving_maxwell_fields(self):

@@ -10,7 +10,7 @@ from PyPIC3D.boundary_conditions.grid_and_stencil import (
 from PyPIC3D.deposition.Esirkepov import Esirkepov_current
 from PyPIC3D.deposition.J_from_rhov import J_from_rhov
 from PyPIC3D.deposition.rho import compute_rho
-from PyPIC3D.parameters import (
+from PyPIC3D.utilities.parameters import (
     DynamicParameters,
     GridParameters,
     StaticParameters,
@@ -36,6 +36,10 @@ class TestKernelParameters(unittest.TestCase):
             tile_shape=(4, 2, 1),
             current_deposition="direct",
             current_filter="none",
+            electrostatic_schwarz_tol=2.0e-6,
+            electrostatic_schwarz_max_iterations=250,
+            electrostatic_local_cg_tol=3.0e-7,
+            electrostatic_local_cg_max_iterations=750,
             particle_boundary_conditions=(BC_PERIODIC, BC_CONDUCTING, BC_ABSORBING),
             relativistic=False,
             C=1.0,
@@ -50,6 +54,24 @@ class TestKernelParameters(unittest.TestCase):
         self.assertEqual(static_parameters.current_filter, "none")
         self.assertEqual(static_parameters.particle_pusher, "boris")
         self.assertEqual(static_parameters.tile_shape, (4, 2, 1))
+        self.assertEqual(static_parameters.electrostatic_schwarz_tol, 2.0e-6)
+        self.assertEqual(static_parameters.electrostatic_schwarz_max_iterations, 250)
+        self.assertEqual(static_parameters.electrostatic_local_cg_tol, 3.0e-7)
+        self.assertEqual(static_parameters.electrostatic_local_cg_max_iterations, 750)
+        electrostatic_controls = {
+            name
+            for name in static_parameters._asdict()
+            if name.startswith("electrostatic_")
+        }
+        self.assertEqual(
+            electrostatic_controls,
+            {
+                "electrostatic_schwarz_tol",
+                "electrostatic_schwarz_max_iterations",
+                "electrostatic_local_cg_tol",
+                "electrostatic_local_cg_max_iterations",
+            },
+        )
         self.assertEqual(static_parameters.boundary_conditions, (0, 0, 0))
         self.assertEqual(
             static_parameters.particle_boundary_conditions,

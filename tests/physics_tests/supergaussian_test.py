@@ -16,9 +16,9 @@ from PyPIC3D.boundary_conditions.grid_and_stencil import BC_CONDUCTING, BC_CONST
 from PyPIC3D.diagnostics.output_adapters import assemble_tiled_vector_field
 from PyPIC3D.initialization import initialize_simulation
 from PyPIC3D.particles.particle_class import SpeciesConfig, TiledParticles
-from PyPIC3D.solvers.first_order_yee import update_B, update_E
+from PyPIC3D.solvers.yee.first_order_yee import update_B, update_E
 from PyPIC3D.utilities.grids import build_yee_grid
-from PyPIC3D.utils import compute_energy
+from PyPIC3D.diagnostics.diagnostic_quantities import compute_energy
 from tests.kernel_fixtures import kernel_parameters_from_values
 
 jax.config.update("jax_enable_x64", True)
@@ -325,9 +325,9 @@ class TestSupergaussianFDTDBehavior(unittest.TestCase):
         )
 
         def step(E_tiles, B_tiles):
-            B_tiles, pml_state = update_B(E_tiles, B_tiles, static_parameters, dynamic_parameters, None, do_filter=False)
+            B_tiles, pml_state = update_B(E_tiles, B_tiles, static_parameters, dynamic_parameters, None)
             E_tiles, pml_state = update_E(E_tiles, B_tiles, J_tiles, static_parameters, dynamic_parameters, pml_state)
-            B_tiles, pml_state = update_B(E_tiles, B_tiles, static_parameters, dynamic_parameters, pml_state, do_filter=True)
+            B_tiles, pml_state = update_B(E_tiles, B_tiles, static_parameters, dynamic_parameters, pml_state)
             return E_tiles, B_tiles
 
         step = jax.jit(step)

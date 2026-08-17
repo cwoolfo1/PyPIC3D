@@ -3,15 +3,21 @@ import jax
 import jax.numpy as jnp
 import sys
 import os
-from functools import partial
 
 
 from PyPIC3D.pusher.boris import boris_single_particle, interpolate_field_to_particles
 from PyPIC3D.pusher.higuera_cary import higuera_cary_single_particle
-from PyPIC3D.utils import mae, convergence_test
 from tests.kernel_fixtures import kernel_parameters
 
 jax.config.update("jax_enable_x64", True)
+
+
+def mae(x, y):
+    """
+    Calculates the root mean squared error between two arrays.
+    """
+    return jnp.sqrt( jnp.mean( (x-y)**2 ) )
+
 
 class TestBorisMethods(unittest.TestCase):
 
@@ -299,51 +305,42 @@ class TestBorisMethods(unittest.TestCase):
 
 
     def test_trilinear_convergence(self):
+        convergence_cases = (
+            interpolation_wave_test,
+            interpolation_polynomial_test,
+            interpolation_oscillatory_test,
+        )
 
-        # Run convergence tests for each interpolation method
-        ################### BASIC TRIGONOMETRIC TEST #############################
-        slope = convergence_test(partial(interpolation_wave_test, shape_factor=1))
-        # measure the convergence rate of the trilinear interpolation
-        self.assertTrue(slope > 1.9)
-        # assert that the order of the error is at least 2nd order
-        ############################################################################
+        for convergence_case in convergence_cases:
+            with self.subTest(convergence_case=convergence_case.__name__):
+                coarse_error, _ = convergence_case(33, shape_factor=1)
+                fine_error, _ = convergence_case(65, shape_factor=1)
+                order = jnp.log2(coarse_error / fine_error)
 
-        ################### POLYNOMIAL TEST #######################################
-        slope = convergence_test(partial(interpolation_polynomial_test, shape_factor=1))
-        # measure the convergence rate of the trilinear interpolation
-        self.assertTrue(slope > 1.9)
-        # assert that the order of the error is at least 2nd order
-        ############################################################################
-
-        ################### HIGH-FREQUENCY TEST ###################################
-        slope = convergence_test(partial(interpolation_oscillatory_test, shape_factor=1))
-        # measure the convergence rate of the trilinear interpolation
-        self.assertTrue(slope > 1.9)
-        # assert that the order of the error is at least 2nd order
-        ############################################################################
+                message = (
+                    f"coarse_error={float(coarse_error)}, "
+                    f"fine_error={float(fine_error)}, order={float(order)}"
+                )
+                self.assertGreater(order, 1.9, message)
 
     def test_quadratic_convergence(self):
+        convergence_cases = (
+            interpolation_wave_test,
+            interpolation_polynomial_test,
+            interpolation_oscillatory_test,
+        )
 
-        ################### BASIC TRIGONOMETRIC TEST ###############################
-        slope = convergence_test(partial(interpolation_wave_test, shape_factor=2))
-        # measure the convergence rate of the second-order shape interpolation
-        self.assertTrue(slope > 1.9)
-        # assert that the order of the error is at least 2nd order
-        ############################################################################
+        for convergence_case in convergence_cases:
+            with self.subTest(convergence_case=convergence_case.__name__):
+                coarse_error, _ = convergence_case(33, shape_factor=2)
+                fine_error, _ = convergence_case(65, shape_factor=2)
+                order = jnp.log2(coarse_error / fine_error)
 
-        ################### POLYNOMIAL TEST ########################################
-        slope = convergence_test(partial(interpolation_polynomial_test, shape_factor=2))
-        # measure the convergence rate of the second-order shape interpolation
-        self.assertTrue(slope > 1.9)
-        # assert that the order of the error is at least 2nd order
-        ############################################################################
-
-        ################### HIGH-FREQUENCY TEST ####################################
-        slope = convergence_test(partial(interpolation_oscillatory_test, shape_factor=2))
-        # measure the convergence rate of the second-order shape interpolation
-        self.assertTrue(slope > 1.9)
-        # assert that the order of the error is at least 2nd order
-        ############################################################################
+                message = (
+                    f"coarse_error={float(coarse_error)}, "
+                    f"fine_error={float(fine_error)}, order={float(order)}"
+                )
+                self.assertGreater(order, 1.9, message)
 
 
 def interpolation_wave_test(nx, shape_factor):

@@ -6,17 +6,19 @@ import jax.numpy as jnp
 
 from PyPIC3D.particles.particle_initialization import load_particles_from_toml
 from PyPIC3D.particles.particle_tile_communication import shard_tiled_particles
-from PyPIC3D.utils import (
-    add_external_fields,
-    build_plasma_parameters_dict,
-    compute_energy,
+from PyPIC3D.diagnostics.diagnostic_quantities import compute_energy
+from PyPIC3D.utilities.field_helpers import add_external_fields
+from PyPIC3D.utilities.plasma_quantities import build_plasma_parameters_dict
+from PyPIC3D.utilities.simulation_helpers import (
     convert_to_jax_compatible,
     courant_condition,
-    load_external_fields_from_toml,
-    load_previous_fields_from_toml,
     make_dir,
     particle_sanity_check,
     print_stats,
+)
+from PyPIC3D.utilities.toml_helpers import (
+    load_external_fields_from_toml,
+    load_previous_fields_from_toml,
     update_parameters_from_toml,
 )
 from PyPIC3D.utilities.grids import (
@@ -34,7 +36,9 @@ from PyPIC3D.boundary_conditions.ghost_cells import (
     make_field_mesh,
     update_tiled_vector_ghost_cells,
 )
-from PyPIC3D.evolve import time_loop_electrodynamic, time_loop_electrostatic, time_loop_static_metric
+from PyPIC3D.solvers.electrostatic.time_loop import time_loop_electrostatic
+from PyPIC3D.solvers.gr_static.time_loop import time_loop_static_metric
+from PyPIC3D.solvers.yee.time_loop import time_loop_electrodynamic
 from PyPIC3D.boundary_conditions.grid_and_stencil import (
     BC_ABSORBING,
     BC_CONDUCTING,
@@ -43,7 +47,7 @@ from PyPIC3D.boundary_conditions.grid_and_stencil import (
 )
 from PyPIC3D.boundary_conditions.PML import initialize_tiled_pml_state, load_pml_from_toml
 from PyPIC3D.boundary_conditions.supergaussian import load_supergaussian_from_toml
-from PyPIC3D.parameters import build_dynamic_parameters, build_static_parameters
+from PyPIC3D.utilities.parameters import build_dynamic_parameters, build_static_parameters
 from PyPIC3D.relativity.flat import (
     initialize_flat_cartesian_metric,
     initialize_flat_cylindrical_metric,
@@ -237,6 +241,10 @@ def default_parameters():
         "ds_per_debye": None,
         "shape_factor": 1,
         "guard_cells": 2,
+        "electrostatic_schwarz_tol": 1.0e-6,
+        "electrostatic_schwarz_max_iterations": 500,
+        "electrostatic_local_cg_tol": 1.0e-6,
+        "electrostatic_local_cg_max_iterations": 500,
         "particle_tile_nx": None,
         "particle_tile_ny": None,
         "particle_tile_nz": None,
@@ -345,12 +353,9 @@ def initialize_simulation(toml_file):
     if static_config["particle_tile_nz"] is None:
         static_config["particle_tile_nz"] = int(Nz)
 
-    if electrostatic:
-        static_config["particle_tile_nx"] = int(Nx)
-        static_config["particle_tile_ny"] = int(Ny)
-        static_config["particle_tile_nz"] = int(Nz)
-
-    guard_cells = max(int(static_config["guard_cells"]), 2)
+    guard_cells = int(static_config["guard_cells"])
+    if guard_cells < 1:
+        raise ValueError("Tiled fields require at least one guard cell.")
     static_config["guard_cells"] = guard_cells
     _validate_current_filter_contract(static_config)
 

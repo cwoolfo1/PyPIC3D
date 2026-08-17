@@ -30,6 +30,10 @@ class StaticParameters(NamedTuple):
     shape_factor: int
     guard_cells: int
     tile_shape: tuple
+    electrostatic_schwarz_tol: float
+    electrostatic_schwarz_max_iterations: int
+    electrostatic_local_cg_tol: float
+    electrostatic_local_cg_max_iterations: int
     particle_tile_capacity_factor: float
     pml_active: bool
     supergaussian_active: bool
@@ -121,6 +125,10 @@ def build_static_parameters(static_config):
         shape_factor=int(static_config["shape_factor"]),
         guard_cells=int(static_config["guard_cells"]),
         tile_shape=tile_shape,
+        electrostatic_schwarz_tol=float(static_config.get("electrostatic_schwarz_tol", 1.0e-6)),
+        electrostatic_schwarz_max_iterations=int(static_config.get("electrostatic_schwarz_max_iterations", 500)),
+        electrostatic_local_cg_tol=float(static_config.get("electrostatic_local_cg_tol", 1.0e-6)),
+        electrostatic_local_cg_max_iterations=int(static_config.get("electrostatic_local_cg_max_iterations", 500)),
         particle_tile_capacity_factor=float(static_config.get("particle_tile_capacity_factor", 1.0)),
         pml_active=bool(static_config.get("pml_active", False)),
         supergaussian_active=bool(static_config.get("supergaussian_active", False)),

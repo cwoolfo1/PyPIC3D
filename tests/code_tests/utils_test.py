@@ -18,12 +18,24 @@ from tests.kernel_fixtures import (
     particle_species,
 )
 from PyPIC3D.diagnostics import plotting
-from PyPIC3D.parameters import build_dynamic_parameters, build_static_parameters
+from PyPIC3D.utilities.parameters import build_dynamic_parameters, build_static_parameters
+from PyPIC3D.diagnostics.diagnostic_quantities import compute_energy
+from PyPIC3D.utilities.field_helpers import add_external_fields
 from PyPIC3D.utilities.grids import build_collocated_grid, build_yee_grid
-from PyPIC3D.utils import (
-    print_stats, check_stability,
-    particle_sanity_check, load_external_fields_from_toml, add_external_fields,
-    compute_energy, dump_parameters_to_toml,
+from PyPIC3D.utilities.plasma_quantities import (
+    T_to_vth,
+    build_plasma_parameters_dict,
+    check_stability,
+    vth_to_T,
+)
+from PyPIC3D.utilities.simulation_helpers import (
+    courant_condition,
+    particle_sanity_check,
+    print_stats,
+)
+from PyPIC3D.utilities.toml_helpers import (
+    dump_parameters_to_toml,
+    load_external_fields_from_toml,
 )
 from tests.kernel_fixtures import kernel_parameters_from_values
 
@@ -173,6 +185,61 @@ class TestUtilsFunctions(unittest.TestCase):
         # Should not raise
         check_stability(self.plasma_parameters, 0.01)
         # Check that the stability check does not raise an error
+
+    def test_temperature_thermal_velocity_conversion_round_trip(self):
+        temperature = 8.0
+        mass = 2.0
+        kb = 4.0
+
+        thermal_velocity = T_to_vth(temperature, mass, kb)
+
+        self.assertTrue(jnp.allclose(thermal_velocity, 4.0))
+        self.assertTrue(jnp.allclose(vth_to_T(thermal_velocity, mass, kb), temperature))
+
+    def test_build_plasma_parameters_dict(self):
+        dynamic_parameters = SimpleNamespace(
+            kb=3.0,
+            eps=2.0,
+            dx=0.5,
+            dy=1.0,
+            dz=1.0,
+            grids=SimpleNamespace(
+                center=(
+                    jnp.asarray([-1.0, 0.0, 1.0, 2.0]),
+                    jnp.asarray([-1.0, 0.0, 1.0]),
+                    jnp.asarray([-1.0, 0.0, 1.0]),
+                ),
+            ),
+        )
+        electrons = {
+            "mass": 2.0,
+            "temperature": 4.0,
+            "N_particles": 10,
+            "charge": -2.0,
+            "weight": 0.5,
+        }
+
+        plasma_parameters = build_plasma_parameters_dict(
+            SimpleNamespace(),
+            dynamic_parameters,
+            electrons,
+        )
+
+        self.assertTrue(
+            jnp.allclose(plasma_parameters["Theoretical Plasma Frequency"], jnp.sqrt(2.5))
+        )
+        self.assertTrue(jnp.allclose(plasma_parameters["Debye Length"], jnp.sqrt(2.4)))
+        self.assertTrue(jnp.allclose(plasma_parameters["Thermal Velocity"], jnp.sqrt(18.0)))
+        self.assertTrue(
+            jnp.allclose(plasma_parameters["dx per debye length"], 2.0 * jnp.sqrt(2.4))
+        )
+
+    def test_courant_condition_uses_only_active_dimensions(self):
+        dynamic_parameters = SimpleNamespace(C=2.0, Nx=4, Ny=1, Nz=1)
+
+        dt = courant_condition(0.8, 0.5, 1.0, 1.0, dynamic_parameters)
+
+        self.assertAlmostEqual(dt, 0.2)
 
     def test_particle_sanity_check(self):
         particles = TiledParticles(

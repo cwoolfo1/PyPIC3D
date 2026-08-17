@@ -7,11 +7,12 @@ import jax.numpy as jnp
 
 from PyPIC3D.boundary_conditions.PML import (
     PML_WALLS,
-    apply_tiled_pml_to_b_curl,
     build_pml,
     initialize_pml_state,
     initialize_tiled_pml_state,
     load_pml_from_toml,
+    stretch_tiled_pml_b_derivatives,
+    stretch_tiled_pml_e_derivatives,
     tile_pml_profiles,
 )
 from PyPIC3D.boundary_conditions import ghost_cells
@@ -19,12 +20,13 @@ from PyPIC3D.boundary_conditions.grid_and_stencil import BC_CONDUCTING, BC_PERIO
 from PyPIC3D.diagnostics.output_adapters import assemble_tiled_vector_field
 from PyPIC3D.initialization import initialize_simulation
 from PyPIC3D.particles.particle_class import SpeciesConfig, TiledParticles
-from PyPIC3D.solvers.first_order_yee import (
+from PyPIC3D.solvers.yee.first_order_yee import (
+    assemble_yee_curl,
     update_B,
     update_E,
 )
 from PyPIC3D.utilities.grids import build_yee_grid
-from PyPIC3D.utils import compute_energy
+from PyPIC3D.diagnostics.diagnostic_quantities import compute_energy
 from tests.kernel_fixtures import kernel_parameters_from_values
 
 jax.config.update("jax_enable_x64", True)
@@ -114,6 +116,17 @@ def _empty_global_fields(parameter_set):
     B = (jnp.zeros(shape), jnp.zeros(shape), jnp.zeros(shape))
     J = (jnp.zeros(shape), jnp.zeros(shape), jnp.zeros(shape))
     return E, B, J
+
+
+def _legacy_stretch_derivatives(derivatives, memory, sigma, dt, derivative_axes):
+    stretched = []
+    memory_new = []
+    for derivative, previous, axis in zip(derivatives, memory, derivative_axes):
+        b = jnp.exp(-sigma[axis] * dt)
+        updated = b * previous + (b - 1.0) * derivative
+        stretched.append(derivative + updated)
+        memory_new.append(updated)
+    return tuple(stretched), tuple(memory_new)
 
 
 def _base_parameter_values(nx=24, ny=1, nz=1):
@@ -398,6 +411,95 @@ class TestPMLInitialization(unittest.TestCase):
 
 
 class TestPMLFDTDBehavior(unittest.TestCase):
+    def test_pml_curl_and_memory_match_legacy_trajectory(self):
+        parameter_set = _base_parameter_values(nx=4, ny=4, nz=4)
+        dynamic_values = {"C": 1.0, "eps": 1.0, "mu": 1.0, "alpha": 1.0}
+        parameter_set["pml"] = _load_pml(
+            [
+                {"wall": "+x", "thickness": 2, "sigma_max": 3.0},
+                {"wall": "+y", "thickness": 2, "sigma_max": 4.0},
+                {"wall": "+z", "thickness": 2, "sigma_max": 5.0},
+            ],
+            parameter_set,
+            dynamic_values,
+        )
+        tile_shape = (2, 2, 2)
+        parameter_set["tile_shape"] = tile_shape
+        parameter_set["field_mesh"] = ghost_cells.make_field_mesh((2, 2, 2))
+        static_parameters, dynamic_parameters = kernel_parameters_from_values(parameter_set, dynamic_values)
+        initial_state = initialize_tiled_pml_state(
+            static_parameters,
+            dynamic_parameters,
+            parameter_set["pml"][-1],
+            tile_shape,
+        )
+
+        g = int(static_parameters.guard_cells)
+        profiles = tuple(profile[:, :, :, g:-g, g:-g, g:-g] for profile in initial_state[2])
+        derivative_axes = (1, 2, 2, 0, 0, 1)
+
+        for memory_name in ("zero", "random"):
+            for side_name, stretch, memory_index, dt in (
+                ("electric", stretch_tiled_pml_e_derivatives, 0, dynamic_parameters.dt),
+                ("magnetic", stretch_tiled_pml_b_derivatives, 1, dynamic_parameters.dt / 2),
+            ):
+                with self.subTest(memory=memory_name, side=side_name):
+                    if memory_name == "zero":
+                        state = initial_state
+                    else:
+                        keys = jax.random.split(jax.random.key(51), 12)
+                        e_memory = tuple(
+                            jax.random.normal(key, memory.shape, dtype=memory.dtype)
+                            for key, memory in zip(keys[:6], initial_state[0])
+                        )
+                        b_memory = tuple(
+                            jax.random.normal(key, memory.shape, dtype=memory.dtype)
+                            for key, memory in zip(keys[6:], initial_state[1])
+                        )
+                        state = (e_memory, b_memory, initial_state[2])
+
+                    reference_state = state
+                    for step in range(4):
+                        keys = jax.random.split(jax.random.key(100 + step), 6)
+                        derivatives = tuple(
+                            jax.random.normal(key, memory.shape, dtype=memory.dtype)
+                            for key, memory in zip(keys, state[memory_index])
+                        )
+
+                        stretched, state = stretch(
+                            derivatives,
+                            static_parameters,
+                            dynamic_parameters,
+                            state,
+                        )
+                        reference_stretched, reference_memory = _legacy_stretch_derivatives(
+                            derivatives,
+                            reference_state[memory_index],
+                            profiles,
+                            dt,
+                            derivative_axes,
+                        )
+                        if memory_index == 0:
+                            reference_state = (
+                                reference_memory,
+                                reference_state[1],
+                                reference_state[2],
+                            )
+                        else:
+                            reference_state = (
+                                reference_state[0],
+                                reference_memory,
+                                reference_state[2],
+                            )
+
+                        for actual, expected in zip(
+                            assemble_yee_curl(stretched),
+                            assemble_yee_curl(reference_stretched),
+                        ):
+                            self.assertTrue(jnp.allclose(actual, expected, rtol=1.0e-12, atol=1.0e-12))
+                        for actual, expected in zip(state[0] + state[1], reference_state[0] + reference_state[1]):
+                            self.assertTrue(jnp.allclose(actual, expected, rtol=1.0e-12, atol=1.0e-12))
+
     def test_magnetic_pml_memory_uses_b_half_timestep(self):
         parameter_set = _base_parameter_values(nx=4, ny=1, nz=1)
         dynamic_values = {"C": 1.0, "eps": 1.0, "mu": 1.0, "alpha": 1.0}
@@ -419,7 +521,7 @@ class TestPMLFDTDBehavior(unittest.TestCase):
 
         _, b_memory, tiled_profiles = pml_state
         derivatives = tuple(jnp.ones_like(memory) for memory in b_memory)
-        _, pml_state = apply_tiled_pml_to_b_curl(
+        _, pml_state = stretch_tiled_pml_b_derivatives(
             derivatives,
             static_parameters,
             dynamic_parameters,
@@ -624,7 +726,6 @@ class TestPMLFDTDBehavior(unittest.TestCase):
                 static_parameters,
                 dynamic_parameters,
                 tiled_pml_state,
-                do_filter=False,
             )
             E_tiles, tiled_pml_state = update_E(
                 E_tiles,
@@ -640,7 +741,6 @@ class TestPMLFDTDBehavior(unittest.TestCase):
                 static_parameters,
                 dynamic_parameters,
                 tiled_pml_state,
-                do_filter=True,
             )
             return E_tiles, B_tiles, tiled_pml_state
 

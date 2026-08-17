@@ -29,8 +29,8 @@ is:
 
 Each tile width must divide its physical grid dimension exactly. If tile widths
 are omitted, initialization uses ``(Nx, Ny, Nz)``, so the complete domain is
-one tile. The electrostatic solver currently forces this one-tile layout
-because its Poisson solve remains global.
+one tile. Electrostatic and electrodynamic runs both preserve an explicitly
+configured multi-tile layout.
 
 Field and Grid Storage
 ----------------------
@@ -43,12 +43,13 @@ For guard depth ``g``, every scalar tile has shape:
     tile_nx + 2*g, tile_ny + 2*g, tile_nz + 2*g)
 
 Vector fields are tuples of three arrays with this shape. The tiled center and
-vertex coordinate arrays use the same leading tile structure and local ghost 
-cells Initialization enforces at least two ghost cells:
+vertex coordinate arrays use the same leading tile structure and local ghost
+cells. The default is two guard cells, while the nearest-neighbor field
+stencils also support an explicit one-cell guard region:
 
 .. code-block:: text
 
-   g = max(ghost_cells, 2)
+   g = guard_cells >= 1
 
 The physical interior of each tile is ``g:-g`` along its local spatial axes.
 
@@ -119,4 +120,6 @@ tiles.
 Runtime openPMD writers transfer sharded tile snapshots to host memory and
 write physical tile interiors into their global mesh offsets. The live solver
 arrays remain tiled. Global assembly helpers are reserved for synchronous
-output adapters, tests, and the current electrostatic Poisson bridge.
+output adapters, tests, and validation references. The production
+electrostatic Poisson path remains in tiled storage and communicates only
+through scalar halo refreshes.

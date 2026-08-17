@@ -115,9 +115,19 @@ Numerical Choices
 - ``shape_factor`` is ``1`` or ``2``.
 - ``current_calculation`` is ``j_from_rhov`` or ``esirkepov``.
 - ``filter_j`` is ``none``, ``digital``, or ``bilinear`` for direct current.
-  Esirkepov requires ``filter_j = "none"``.
-- ``alpha`` is the digital-filter coefficient and belongs in a recognized
-  simulation or dynamic parameter section.
+  The selected filter is applied to deposited current and to an evolved electric
+  copy used for particle interpolation. Esirkepov requires
+  ``filter_j = "none"``.
+- ``alpha`` is the digital filter coefficient and belongs in a
+  recognized simulation or dynamic parameter section.
+- ``electrostatic_schwarz_tol`` is the maximum absolute Poisson residual in
+  the interface-adjacent owned cells (default ``1e-6``).
+- ``electrostatic_schwarz_max_iterations`` caps nearest-neighbor Schwarz
+  iterations per electrostatic timestep (default ``500``).
+- ``electrostatic_local_cg_tol`` is the tile-local CG residual-norm tolerance
+  (default ``1e-6``).
+- ``electrostatic_local_cg_max_iterations`` caps CG iterations within each
+  local tile solve (default ``500``).
 
 Boundary Conditions and PML
 ---------------------------

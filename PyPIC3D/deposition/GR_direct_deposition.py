@@ -14,7 +14,7 @@ from PyPIC3D.boundary_conditions.grid_and_stencil import (
 from PyPIC3D.deposition.shapes import get_first_order_weights, get_second_order_weights
 from PyPIC3D.pusher.boris import interpolate_field_to_particles
 from PyPIC3D.relativity.core import Metric, contravariant_three_velocity
-from PyPIC3D.utilities.filters import bilinear_filter_vector, digital_filter_vector
+from PyPIC3D.utilities.filters import tiled_bilinear_filter_vector, tiled_digital_filter_vector
 
 
 def _collapse_tiled_axis_stencil(points, weights, local_n, reduced_axis, g):
@@ -316,27 +316,19 @@ def GR_direct_deposition(
     )
 
     conformal_J = fold_tiled_vector_ghost_cells((Jx, Jy, Jz), static_parameters, g, bc_type=1)
-    conformal_J = update_tiled_vector_ghost_cells(conformal_J, static_parameters, g, bc_type=1)
 
     def bilinear_filtered_current(conformal_J):
-        conformal_J = bilinear_filter_vector(conformal_J, num_guard_cells=g)
-        return update_tiled_vector_ghost_cells(
+        return tiled_bilinear_filter_vector(
             conformal_J,
             static_parameters,
-            num_guard_cells=g,
             bc_type=1,
         )
 
     def digital_filtered_current(conformal_J):
-        conformal_J = digital_filter_vector(
+        return tiled_digital_filter_vector(
             conformal_J,
             dynamic_parameters.alpha,
-            num_guard_cells=g,
-        )
-        return update_tiled_vector_ghost_cells(
-            conformal_J,
             static_parameters,
-            num_guard_cells=g,
             bc_type=1,
         )
 
@@ -346,7 +338,12 @@ def GR_direct_deposition(
         lambda conformal_J: jax.lax.cond(
             current_filter == "digital",
             digital_filtered_current,
-            lambda conformal_J: conformal_J,
+            lambda conformal_J: update_tiled_vector_ghost_cells(
+                conformal_J,
+                static_parameters,
+                g,
+                bc_type=1,
+            ),
             conformal_J,
         ),
         conformal_J,

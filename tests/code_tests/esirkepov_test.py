@@ -21,13 +21,13 @@ from PyPIC3D.deposition.rho import compute_rho
 from PyPIC3D.boundary_conditions import ghost_cells
 from PyPIC3D.diagnostics.output_adapters import assemble_tiled_vector_field, fields_for_output
 from PyPIC3D.initialization import build_tiled_array, initialize_fields, initialize_simulation
-from PyPIC3D.parameters import build_static_parameters
+from PyPIC3D.utilities.parameters import build_static_parameters
 from PyPIC3D.particles.particle_tile_communication import (
     refresh_tiled_particle_tiles,
     update_tiled_particle_positions,
 )
 from PyPIC3D.particles.particle_class import SpeciesConfig, TiledParticles
-from PyPIC3D.solvers.first_order_yee import (
+from PyPIC3D.solvers.yee.first_order_yee import (
     update_E,
 )
 from PyPIC3D.utilities.grids import build_tiled_yee_grids

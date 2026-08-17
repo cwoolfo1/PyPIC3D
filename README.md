@@ -79,11 +79,13 @@ PyPIC3D/
   __main__.py                 # CLI and simulation driver
   initialization.py           # TOML defaults and runtime construction
   parameters.py               # static and dynamic NamedTuple parameters
-  evolve.py                   # electrodynamic/electrostatic time steps
   particles/                  # particle state, initialization, and retile communication
   pusher/                     # Boris and Higuera-Cary pushers
   deposition/                 # current, charge, and particle shape functions
-  solvers/                    # Yee and electrostatic field updates
+  solvers/                    # algorithm-specific time loops and field updates
+    electrostatic/            # electrostatic loop and Poisson solve
+    yee/                      # electrodynamic loop and Yee updates
+    gr_static/                # prescribed-metric loop and field updates
   boundary_conditions/        # ghost cells, conducting walls, and PML
   diagnostics/                # energy, fluid moments, plotting, and openPMD
   utilities/                  # grid construction and numerical filters
@@ -118,7 +120,9 @@ python -m sphinx -b html -W --keep-going docs docs/_build/html
 - [ ] 3+1 Curvilinear PIC with static metrics.
 - [ ] 3+1 Curvilinear PIC with dynamic metrics using BSSN/Z4C.
 - [ ] Harris Current Sheet Demonstration.
-- [ ] Orszag-Tang Vortex Demonstration.
+- [X] Orszag-Tang Vortex Demonstration.
+- [ ] Refactoring deposition to use single stencil call for deposition and interpolation.
+- [ ] Fixed mesh refinement for both standard and 3+1 curvilinear PIC.
 
 
 

@@ -10,7 +10,7 @@ import numpy as np
 
 from PyPIC3D.particles.particle_initialization import load_particles_from_toml
 from PyPIC3D.particles.particle_class import SpeciesConfig, TiledParticles
-from PyPIC3D.parameters import GridParameters
+from PyPIC3D.utilities.parameters import GridParameters
 from PyPIC3D.utilities.grids import build_yee_grid
 from tests.kernel_fixtures import build_tiled_particles, particle_parameters_from_tile_values, particle_species
 

@@ -16,13 +16,15 @@ from PyPIC3D.diagnostics.async_writer import (
     enqueue_openpmd_particle_output,
 )
 from PyPIC3D.diagnostics.output_adapters import build_field_output_map
-from PyPIC3D.utils import (
-    add_external_fields,
+from PyPIC3D.diagnostics.diagnostic_quantities import (
     compute_energy,
     compute_total_momentum,
+)
+from PyPIC3D.utilities.field_helpers import add_external_fields
+from PyPIC3D.utilities.simulation_helpers import setup_pmd_files
+from PyPIC3D.utilities.toml_helpers import (
     dump_parameters_to_toml,
     load_config_file,
-    setup_pmd_files,
 )
 from PyPIC3D.initialization import initialize_simulation
 

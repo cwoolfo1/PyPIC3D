@@ -1,10 +1,10 @@
 Architecture
 ============
 
-.. PyPIC3D separates compile-time numerical choices from dynamic scalar and array
-.. state. The production timestep operates on tile-major fields and particles;
-.. global arrays are constructed only at explicit diagnostic or electrostatic
-.. solver boundaries.
+PyPIC3D separates compile-time numerical choices from dynamic scalar and array
+state. The production timestep operates on tile-major fields and particles;
+global arrays are constructed only at explicit diagnostic and output
+boundaries.
 
 PyPIC3D contains a single run loop that advances the simulation timestep,
 the intermittently copies tile-local snapshots to asynchronous openPMD 
@@ -63,14 +63,13 @@ Core Module Map
   particle and field initialization, and solver selection.
 - ``PyPIC3D/parameters.py``: ``StaticParameters``, ``DynamicParameters``, and
   grid parameter tuples.
-- ``PyPIC3D/evolve.py``: main evolution logic.
 - ``PyPIC3D/particles/``: fixed-capacity particle state, initialization, and
   cross-tile communication.
 - ``PyPIC3D/pusher/``: field interpolation and particle pushers.
 - ``PyPIC3D/deposition/``: direct current, Esirkepov current, charge density,
   and particle shape functions.
-- ``PyPIC3D/solvers/``: Yee updates and the electrostatic Poisson
-  solve.
+- ``PyPIC3D/solvers/``: algorithm-specific time loops and numerical kernels
+  for electrostatic, Yee, and prescribed-metric GR evolution.
 - ``PyPIC3D/boundary_conditions/``: field/current ghost cell communications,
   conducting PEC walls, grid stencils, and PML.
 - ``PyPIC3D/diagnostics/``: field maps, fluid velocity, energy/momentum, and

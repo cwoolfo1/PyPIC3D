@@ -7,11 +7,7 @@ import matplotlib.pyplot as plt
 # import external libraries
 
 from . import initialization
-from . import utils
 from . import pusher
-from . import evolve
-
-from .solvers import electrostatic_yee
 
 from .particles import particle_initialization
 

@@ -267,9 +267,10 @@ def stretch_spatial_derivative(derivative, memory, sigma, dt):
     memory_new = b * memory + (b - 1.0) * derivative
     return derivative + memory_new, memory_new
 
-def apply_tiled_pml_to_e_curl(derivatives, static_parameters, dynamic_parameters, pml_state):
+
+def stretch_tiled_pml_e_derivatives(derivatives, static_parameters, dynamic_parameters, pml_state):
     """
-    Stretch tile-local B derivatives before assembling Ampere's-law curls.
+    Stretch tile-local B derivatives for the forward-time Ampere PML update.
     """
 
     dBz_dy, dBy_dz, dBx_dz, dBz_dx, dBy_dx, dBx_dy = derivatives
@@ -297,10 +298,6 @@ def apply_tiled_pml_to_e_curl(derivatives, static_parameters, dynamic_parameters
     dBy_dx, memory_dBy_dx = stretch_spatial_derivative(dBy_dx, memory_dBy_dx, sigma_x, dt)
     dBx_dy, memory_dBx_dy = stretch_spatial_derivative(dBx_dy, memory_dBx_dy, sigma_y, dt)
 
-    curl_x = dBz_dy - dBy_dz
-    curl_y = dBx_dz - dBz_dx
-    curl_z = dBy_dx - dBx_dy
-
     e_memory = (
         memory_dBz_dy,
         memory_dBy_dz,
@@ -310,12 +307,13 @@ def apply_tiled_pml_to_e_curl(derivatives, static_parameters, dynamic_parameters
         memory_dBx_dy,
     )
 
-    return (curl_x, curl_y, curl_z), (e_memory, b_memory, tiled_profiles)
+    derivatives = (dBz_dy, dBy_dz, dBx_dz, dBz_dx, dBy_dx, dBx_dy)
+    return derivatives, (e_memory, b_memory, tiled_profiles)
 
 
-def apply_tiled_pml_to_b_curl(derivatives, static_parameters, dynamic_parameters, pml_state):
+def stretch_tiled_pml_b_derivatives(derivatives, static_parameters, dynamic_parameters, pml_state):
     """
-    Stretch tile-local E derivatives before assembling Faraday-law curls.
+    Stretch tile-local E derivatives for the forward-time Faraday PML update.
     """
 
     dEz_dy, dEy_dz, dEx_dz, dEz_dx, dEy_dx, dEx_dy = derivatives
@@ -345,10 +343,6 @@ def apply_tiled_pml_to_b_curl(derivatives, static_parameters, dynamic_parameters
     dEy_dx, memory_dEy_dx = stretch_spatial_derivative(dEy_dx, memory_dEy_dx, sigma_x, dt)
     dEx_dy, memory_dEx_dy = stretch_spatial_derivative(dEx_dy, memory_dEx_dy, sigma_y, dt)
 
-    curl_x = dEz_dy - dEy_dz
-    curl_y = dEx_dz - dEz_dx
-    curl_z = dEy_dx - dEx_dy
-
     b_memory = (
         memory_dEz_dy,
         memory_dEy_dz,
@@ -358,4 +352,5 @@ def apply_tiled_pml_to_b_curl(derivatives, static_parameters, dynamic_parameters
         memory_dEx_dy,
     )
 
-    return (curl_x, curl_y, curl_z), (e_memory, b_memory, tiled_profiles)
+    derivatives = (dEz_dy, dEy_dz, dEx_dz, dEz_dx, dEy_dx, dEx_dy)
+    return derivatives, (e_memory, b_memory, tiled_profiles)
