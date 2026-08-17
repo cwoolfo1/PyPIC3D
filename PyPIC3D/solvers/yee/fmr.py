@@ -1,10 +1,9 @@
-from itertools import product
+from numbers import Integral
 from types import SimpleNamespace
 from typing import NamedTuple
 
 import jax
 import jax.numpy as jnp
-import numpy as np
 
 from PyPIC3D.boundary_conditions import ghost_cells
 from PyPIC3D.boundary_conditions.grid_and_stencil import BC_CONSTANT, BC_CONDUCTING
@@ -16,6 +15,19 @@ from .first_order_yee import assemble_yee_curl, yee_derivatives_e_to_b_refreshed
 
 E_FIELD_LOCATIONS = (("V", "C", "C"), ("C", "V", "C"), ("C", "C", "V"))
 B_FIELD_LOCATIONS = (("C", "V", "V"), ("V", "C", "V"), ("V", "V", "C"))
+
+FMR_INTERPOLATION_ORDER = 1
+
+_LINEAR_CORNER_OFFSETS = (
+    (0, 0, 0),
+    (0, 0, 1),
+    (0, 1, 0),
+    (0, 1, 1),
+    (1, 0, 0),
+    (1, 0, 1),
+    (1, 1, 0),
+    (1, 1, 1),
+)
 
 
 class FMRLevel(NamedTuple):
@@ -40,7 +52,7 @@ class FMRLevel(NamedTuple):
 
 
 class FMRInterpolationMap(NamedTuple):
-    """Precomputed tensor-product interpolation data for one E component."""
+    """Degree-one coarse-to-fine prolongation map for one staggered E component."""
 
     target_indices: jax.Array
     source_indices: jax.Array
@@ -66,7 +78,7 @@ class FMRParameters(NamedTuple):
 def _three_ints(values, name):
     if not isinstance(values, (list, tuple)) or len(values) != 3:
         raise ValueError(f"FMR {name} must contain exactly three integer indices.")
-    if any(isinstance(value, bool) or not isinstance(value, (int, np.integer)) for value in values):
+    if any(isinstance(value, bool) or not isinstance(value, Integral) for value in values):
         raise ValueError(f"FMR {name} must contain exactly three integer indices.")
     return tuple(int(value) for value in values)
 
@@ -146,14 +158,14 @@ def load_fmr_from_toml(config, dynamic_config, root_tile_shape):
         raise NotImplementedError(f"Unsupported FMR level option(s): {names}.")
 
     parent = raw_level.get("parent", -1)
-    if isinstance(parent, bool) or not isinstance(parent, (int, np.integer)):
+    if isinstance(parent, bool) or not isinstance(parent, Integral):
         raise ValueError("The first FMR fine level must have integer parent = 0.")
     parent = int(parent)
     if parent != 0:
         raise ValueError("The first FMR fine level must have integer parent = 0.")
 
     refinement_ratio = raw_level.get("refinement_ratio")
-    if isinstance(refinement_ratio, bool) or not isinstance(refinement_ratio, (int, np.integer)):
+    if isinstance(refinement_ratio, bool) or not isinstance(refinement_ratio, Integral):
         raise ValueError("FMR refinement_ratio must be an even integer greater than or equal to 2.")
     refinement_ratio = int(refinement_ratio)
     if refinement_ratio < 2 or refinement_ratio % 2 != 0:
@@ -262,28 +274,132 @@ def _component_coordinate_axes(grids, locations):
     axes = []
     for axis, location in enumerate(locations):
         tiled_grid = grids.tiled_vertex_grid if location == "V" else grids.tiled_center_grid
-        axes.append(np.asarray(jax.device_get(tiled_grid[axis][0, 0, 0])))
+        axes.append(jnp.asarray(tiled_grid[axis][0, 0, 0]))
     return tuple(axes)
 
 
 def _coordinate_tolerance(*axes):
-    scale = max(1.0, *(float(np.max(np.abs(axis))) for axis in axes))
-    dtype = np.result_type(*(axis.dtype for axis in axes))
-    return 32.0 * np.finfo(dtype).eps * scale
+    dtype = jnp.result_type(*(axis.dtype for axis in axes))
+    axis_scales = jnp.stack(tuple(jnp.max(jnp.abs(axis)) for axis in axes))
+    scale = jnp.maximum(jnp.asarray(1.0, dtype=dtype), jnp.max(axis_scales))
+    return 32.0 * jnp.finfo(dtype).eps * scale
 
 
-def _axis_interpolation_sources(coarse_axis, target_coordinate, tolerance):
-    coincident = np.flatnonzero(np.isclose(coarse_axis, target_coordinate, rtol=0.0, atol=tolerance))
-    if coincident.size:
-        return ((int(coincident[0]), 1.0),)
+def _interface_target_indices(fine_axes, bounds, tolerance):
+    """Locate fine-grid points on the closed boundary of the refined patch."""
 
-    right = int(np.searchsorted(coarse_axis, target_coordinate, side="right"))
-    left = right - 1
-    if left < 0 or right >= coarse_axis.size:
+    coordinate_mesh = jnp.meshgrid(*fine_axes, indexing="ij")
+    in_closed_patch = jnp.ones(coordinate_mesh[0].shape, dtype=bool)
+    on_interface = jnp.zeros(coordinate_mesh[0].shape, dtype=bool)
+    for coordinate, (lower, upper) in zip(coordinate_mesh, bounds):
+        in_closed_patch &= (coordinate >= lower - tolerance) & (coordinate <= upper + tolerance)
+        on_interface |= jnp.isclose(coordinate, lower, rtol=0.0, atol=tolerance)
+        on_interface |= jnp.isclose(coordinate, upper, rtol=0.0, atol=tolerance)
+
+    return jnp.argwhere(in_closed_patch & on_interface).astype(jnp.int32)
+
+
+def _linear_axis_stencil(parent_axis, target_coordinates, tolerance):
+    """Return the two parent indices and degree-one weights along one axis."""
+
+    insertion_index = jnp.searchsorted(parent_axis, target_coordinates, side="left")
+    left_candidate = jnp.clip(insertion_index - 1, 0, parent_axis.size - 1)
+    right_candidate = jnp.clip(insertion_index, 0, parent_axis.size - 1)
+
+    coincident_left = jnp.isclose(
+        parent_axis[left_candidate],
+        target_coordinates,
+        rtol=0.0,
+        atol=tolerance,
+    )
+    coincident_right = jnp.isclose(
+        parent_axis[right_candidate],
+        target_coordinates,
+        rtol=0.0,
+        atol=tolerance,
+    )
+    coincident = coincident_left | coincident_right
+    coincident_index = jnp.where(coincident_left, left_candidate, right_candidate)
+
+    left_index = insertion_index - 1
+    right_index = insertion_index
+    left_index = jnp.where(coincident, coincident_index, left_index)
+    right_index = jnp.where(coincident, coincident_index, right_index)
+
+    if bool(jnp.any((left_index < 0) | (right_index >= parent_axis.size))):
         raise ValueError("The FMR patch does not have enough parent cells for interface interpolation.")
 
-    weight_right = (target_coordinate - coarse_axis[left]) / (coarse_axis[right] - coarse_axis[left])
-    return ((left, 1.0 - weight_right), (right, weight_right))
+    parent_width = parent_axis[right_index] - parent_axis[left_index]
+    safe_parent_width = jnp.where(coincident, 1.0, parent_width)
+    right_weight = jnp.where(
+        coincident,
+        0.0,
+        (target_coordinates - parent_axis[left_index]) / safe_parent_width,
+    )
+
+    source_indices = jnp.stack((left_index, right_index), axis=1).astype(jnp.int32)
+    weights = jnp.stack((1.0 - right_weight, right_weight), axis=1)
+    return source_indices, weights
+
+
+def _tensor_product_linear_stencil(axis_source_indices, axis_weights):
+    """Combine three two-point linear stencils into eight trilinear donors."""
+
+    corner_offsets = jnp.asarray(_LINEAR_CORNER_OFFSETS, dtype=jnp.int32)
+    source_indices = jnp.stack(
+        tuple(
+            indices[:, corner_offsets[:, axis]]
+            for axis, indices in enumerate(axis_source_indices)
+        ),
+        axis=2,
+    )
+    corner_weights = jnp.stack(
+        tuple(
+            weights[:, corner_offsets[:, axis]]
+            for axis, weights in enumerate(axis_weights)
+        ),
+        axis=2,
+    )
+    interpolation_weights = jnp.prod(corner_weights, axis=2)
+
+    # Coincident axes have one nonzero donor. Pack all nonzero tensor-product
+    # donors first, matching the existing compact eight-slot map layout.
+    donor_order = jnp.argsort(interpolation_weights == 0.0, axis=1, stable=True)
+    source_indices = jnp.take_along_axis(
+        source_indices,
+        donor_order[:, :, jnp.newaxis],
+        axis=1,
+    )
+    interpolation_weights = jnp.take_along_axis(
+        interpolation_weights,
+        donor_order,
+        axis=1,
+    )
+    source_indices = jnp.where(
+        interpolation_weights[:, :, jnp.newaxis] != 0.0,
+        source_indices,
+        source_indices[:, :1, :],
+    )
+    return source_indices, interpolation_weights
+
+
+def _validate_interpolation_stencil(source_indices, weights, parent_shape, guard_cells):
+    """Check that every active donor lies on the parent grid and weights sum to one."""
+
+    g = int(guard_cells)
+    upper_bound = g + jnp.asarray(parent_shape, dtype=jnp.int32)
+    active_donors = weights != 0.0
+    donors_in_parent = jnp.all(
+        (source_indices >= g) & (source_indices < upper_bound),
+        axis=2,
+    )
+    if not bool(jnp.all(~active_donors | donors_in_parent)):
+        raise ValueError(
+            "The FMR patch does not have enough parent cells around it "
+            "for all Yee interpolation stencils."
+        )
+    if not bool(jnp.allclose(jnp.sum(weights, axis=1), 1.0)):
+        raise ValueError("FMR interpolation weights must sum to one for every target.")
 
 
 def _build_component_interpolation_map(
@@ -299,63 +415,37 @@ def _build_component_interpolation_map(
         (fine_level.z_min, fine_level.z_max),
     )
     tolerance = _coordinate_tolerance(*coarse_axes, *fine_axes)
+    target_indices = _interface_target_indices(fine_axes, bounds, tolerance)
+    target_coordinates = tuple(
+        fine_axes[axis][target_indices[:, axis]]
+        for axis in range(3)
+    )
 
-    x, y, z = np.meshgrid(*fine_axes, indexing="ij")
-    coordinate_mesh = (x, y, z)
-    in_closed_patch = np.ones(x.shape, dtype=bool)
-    on_interface = np.zeros(x.shape, dtype=bool)
-    for coordinate, (lower, upper) in zip(coordinate_mesh, bounds):
-        in_closed_patch &= (coordinate >= lower - tolerance) & (coordinate <= upper + tolerance)
-        on_interface |= np.isclose(coordinate, lower, rtol=0.0, atol=tolerance)
-        on_interface |= np.isclose(coordinate, upper, rtol=0.0, atol=tolerance)
+    # Degree-one interpolation uses two bracketing parent points on each axis.
+    axis_stencils = tuple(
+        _linear_axis_stencil(coarse_axes[axis], target_coordinates[axis], tolerance)
+        for axis in range(3)
+    )
+    axis_source_indices = tuple(stencil[0] for stencil in axis_stencils)
+    axis_weights = tuple(stencil[1] for stencil in axis_stencils)
 
-    target_indices = np.argwhere(in_closed_patch & on_interface)
-    if np.unique(target_indices, axis=0).shape[0] != target_indices.shape[0]:
-        raise ValueError("FMR interpolation target indices must be unique.")
+    # Their tensor product is trilinear in 3-D and has at most 2^3 donors.
+    source_indices, weights = _tensor_product_linear_stencil(
+        axis_source_indices,
+        axis_weights,
+    )
+    _validate_interpolation_stencil(source_indices, weights, parent_shape, guard_cells)
 
-    source_indices = np.zeros((target_indices.shape[0], 8, 3), dtype=np.int32)
-    weights = np.zeros((target_indices.shape[0], 8), dtype=np.float64)
-    g = int(guard_cells)
-
-    for target_number, target_index in enumerate(target_indices):
-        target_coordinate = tuple(
-            fine_axes[axis][target_index[axis]]
-            for axis in range(3)
-        )
-        axis_sources = tuple(
-            _axis_interpolation_sources(coarse_axes[axis], target_coordinate[axis], tolerance)
-            for axis in range(3)
-        )
-        donors = tuple(product(*axis_sources))
-
-        for donor_number, donor in enumerate(donors):
-            donor_index = tuple(axis_donor[0] for axis_donor in donor)
-            donor_weight = float(np.prod([axis_donor[1] for axis_donor in donor]))
-            if donor_weight != 0.0:
-                for index, cells in zip(donor_index, parent_shape):
-                    if not g <= index < g + int(cells):
-                        raise ValueError(
-                            "The FMR patch does not have enough parent cells around it "
-                            "for all Yee interpolation stencils."
-                        )
-            source_indices[target_number, donor_number] = donor_index
-            weights[target_number, donor_number] = donor_weight
-
-        source_indices[target_number, len(donors):] = source_indices[target_number, 0]
-
-    if not np.allclose(np.sum(weights, axis=1), 1.0):
-        raise ValueError("FMR interpolation weights must sum to one for every target.")
-
-    weight_dtype = np.result_type(*(axis.dtype for axis in coarse_axes), np.float32)
+    weight_dtype = jnp.result_type(*(axis.dtype for axis in coarse_axes), jnp.float32)
     return FMRInterpolationMap(
-        target_indices=jnp.asarray(target_indices, dtype=jnp.int32),
-        source_indices=jnp.asarray(source_indices, dtype=jnp.int32),
-        weights=jnp.asarray(weights, dtype=weight_dtype),
+        target_indices=target_indices,
+        source_indices=source_indices,
+        weights=weights.astype(weight_dtype),
     )
 
 
 def build_e_interface_maps(parent_level, fine_level, parent_grids, fine_grids, guard_cells):
-    """Build separate tensor-product interpolation maps for Ex, Ey, and Ez."""
+    """Build degree-one tensor-product prolongation maps for Ex, Ey, and Ez."""
 
     parent_shape = (parent_level.Nx, parent_level.Ny, parent_level.Nz)
     return tuple(
@@ -374,14 +464,14 @@ def _component_inside_mask(grids, locations, level, refined_bounds, guard_cells)
     g = int(guard_cells)
     axes = _component_coordinate_axes(grids, locations)
     active_axes = tuple(axis[g:g + cells] for axis, cells in zip(axes, (level.Nx, level.Ny, level.Nz)))
-    x, y, z = np.meshgrid(*active_axes, indexing="ij")
+    x, y, z = jnp.meshgrid(*active_axes, indexing="ij")
 
     tolerance = _coordinate_tolerance(*active_axes)
-    inside = np.ones(x.shape, dtype=bool)
+    inside = jnp.ones(x.shape, dtype=bool)
     for coordinate, (lower, upper) in zip((x, y, z), refined_bounds):
         inside &= (coordinate > lower + tolerance) & (coordinate < upper - tolerance)
 
-    return jnp.asarray(inside[jnp.newaxis, jnp.newaxis, jnp.newaxis, :, :, :])
+    return inside[jnp.newaxis, jnp.newaxis, jnp.newaxis, :, :, :]
 
 
 def build_b_active_masks(parent_level, fine_level, parent_grids, fine_grids, guard_cells):
@@ -425,8 +515,8 @@ def build_fmr_metric_weights(
 ):
     """Build active-grid Cartesian volume weights for the FMR fields."""
 
-    parent_volume = np.prod(parent_level.spacing)
-    fine_volume = np.prod(fine_level.spacing)
+    parent_volume = jnp.prod(jnp.asarray(parent_level.spacing))
+    fine_volume = jnp.prod(jnp.asarray(fine_level.spacing))
 
     parent_e_weights = tuple(
         jnp.full(mask.shape, parent_volume)
@@ -434,12 +524,12 @@ def build_fmr_metric_weights(
     )
 
     g = int(guard_cells)
-    fine_shape = np.asarray((fine_level.Nx, fine_level.Ny, fine_level.Nz))
+    fine_shape = jnp.asarray((fine_level.Nx, fine_level.Ny, fine_level.Nz), dtype=jnp.int32)
     fine_e_weights = []
     for interpolation_map, mask in zip(e_interface_maps, fine_b_masks):
         weight = jnp.full(mask.shape, fine_volume)
-        target = np.asarray(interpolation_map.target_indices) - g
-        physical = np.all((target >= 0) & (target < fine_shape), axis=1)
+        target = interpolation_map.target_indices - g
+        physical = jnp.all((target >= 0) & (target < fine_shape), axis=1)
         target = target[physical]
         weight = weight.at[
             0,
@@ -626,7 +716,12 @@ def fmr_curl_e_to_b(E_levels, static_parameters, dynamic_parameters):
 
 
 def fmr_curl_b_to_e(B_levels, E_template, static_parameters, dynamic_parameters):
-    """Apply the metric-weighted FMR adjoint M_E^-1 C.T M_B."""
+    """Apply the metric-weighted FMR adjoint M_E^-1 C.T M_B.
+
+    ``C.T`` supplies the fine-to-coarse contribution by transposing the same
+    degree-one coarse-to-fine prolongation used in ``fmr_curl_e_to_b``. There
+    is deliberately no separately implemented restriction stencil.
+    """
 
     g = int(static_parameters.guard_cells)
     B_active_levels = tuple(_active_vector(B_level, g) for B_level in B_levels)
@@ -737,6 +832,7 @@ def time_loop_electrodynamic_fmr_fields(
 
 __all__ = [
     "FMRInterpolationMap",
+    "FMR_INTERPOLATION_ORDER",
     "FMRLevel",
     "FMRLevelData",
     "FMRParameters",
