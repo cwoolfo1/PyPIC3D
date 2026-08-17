@@ -13,6 +13,7 @@ from PyPIC3D.solvers.yee.first_order_yee import (
     yee_derivatives_e_to_b_refreshed,
 )
 from PyPIC3D.solvers.yee.fmr import (
+    FMR_INTERPOLATION_ORDER,
     build_fmr_fields,
     build_fmr_parameters,
     fmr_curl_b_to_e,
@@ -406,7 +407,9 @@ class TestFMRGeometryAndInterpolation(unittest.TestCase):
                             atol=1.0e-13,
                         ))
 
-    def test_coincident_axes_copy_directly_and_ratio_four_has_quarter_weights(self):
+    def test_degree_one_tensor_product_map_uses_direct_copies_and_linear_weights(self):
+        self.assertEqual(FMR_INTERPOLATION_ORDER, 1)
+
         static_parameters, dynamic_parameters, *_ = _fmr_case(4)
         parent_grids = dynamic_parameters.fmr.levels[0].grids
         fine_grids = dynamic_parameters.fmr.levels[1].grids
@@ -438,9 +441,9 @@ class TestFMRGeometryAndInterpolation(unittest.TestCase):
                         direct_axis_count += 1
                         self.assertEqual(donor_indices.shape[0], 1)
                         self.assertAlmostEqual(float(donor_coordinates[0]), float(target_coordinate), places=13)
-
-                    if donor_indices.shape[0] != 2:
                         continue
+
+                    self.assertEqual(donor_indices.shape[0], FMR_INTERPOLATION_ORDER + 1)
 
                     order = np.argsort(donor_coordinates)
                     donor_indices = donor_indices[order]
