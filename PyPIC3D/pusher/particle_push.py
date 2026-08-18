@@ -2,6 +2,11 @@ import jax
 import jax.numpy as jnp
 
 from PyPIC3D.particles.particle_class import TiledParticles
+from PyPIC3D.particles.particle_batching import (
+    number_of_particle_batches,
+    particle_batch_indices,
+    prepare_particle_batches,
+)
 from PyPIC3D.pusher.boris import (
     boris_single_particle,
     interpolate_field_to_particles,
@@ -57,22 +62,17 @@ def particle_push(particles, species_config, E_tiles, B_tiles, static_parameters
 
     def push_one_tile(tx, ty, tz, x_tile, u_tile, active_tile, charge_species, mass_species, update_x_species,
                       Ex_tile, Ey_tile, Ez_tile, Bx_tile, By_tile, Bz_tile):
-        particle_capacity = active_tile.size
+        particle_capacity, batch_size, active_indices, n_active = prepare_particle_batches(
+            active_tile,
+            static_parameters.particle_batch_size,
+        )
         if particle_capacity == 0:
             return u_tile
 
         slots_per_species = active_tile.shape[-1]
-        batch_size = min(int(static_parameters.particle_batch_size), particle_capacity)
 
         x_flat = x_tile.reshape(-1, 3)
         u_flat = u_tile.reshape(-1, 3)
-        active_flat = active_tile.reshape(-1)
-        active_indices = jnp.nonzero(
-            active_flat,
-            size=particle_capacity,
-            fill_value=0,
-        )[0]
-        n_active = jnp.count_nonzero(active_flat)
 
         center_x = tiled_center_grid[0][tx, ty, tz]
         center_y = tiled_center_grid[1][tx, ty, tz]
@@ -88,15 +88,16 @@ def particle_push(particles, species_config, E_tiles, B_tiles, static_parameters
         By_grid = vertex_x, center_y, vertex_z
         Bz_grid = vertex_x, vertex_y, center_z
 
-        batch_offsets = jnp.arange(batch_size)
-        n_batches = (n_active + batch_size - 1) // batch_size
+        n_batches = number_of_particle_batches(n_active, batch_size)
 
         def push_batch(batch_state):
             batch_index, current_u = batch_state
-            active_offsets = batch_index * batch_size + batch_offsets
-            valid = active_offsets < n_active
-            safe_offsets = jnp.minimum(active_offsets, particle_capacity - 1)
-            particle_indices = active_indices[safe_offsets]
+            particle_indices, valid = particle_batch_indices(
+                active_indices,
+                n_active,
+                batch_index,
+                batch_size,
+            )
 
             x_batch = x_flat[particle_indices]
             old_u_batch = current_u[particle_indices]
