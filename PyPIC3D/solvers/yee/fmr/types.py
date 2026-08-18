@@ -10,7 +10,9 @@ from PyPIC3D.utilities.parameters import GridParameters
 E_FIELD_LOCATIONS = (("V", "C", "C"), ("C", "V", "C"), ("C", "C", "V"))
 B_FIELD_LOCATIONS = (("C", "V", "V"), ("V", "C", "V"), ("V", "V", "C"))
 
-FMR_INTERPOLATION_ORDER = 1
+FMR_DEFAULT_INTERPOLATION_ORDER = 1
+FMR_SUPPORTED_INTERPOLATION_ORDERS = (1, 2)
+FMR_INTERPOLATION_ORDER = FMR_DEFAULT_INTERPOLATION_ORDER
 
 
 class FMRLevel(NamedTuple):
@@ -35,7 +37,7 @@ class FMRLevel(NamedTuple):
 
 
 class FMRInterpolationMap(NamedTuple):
-    """Degree-one coarse-to-fine prolongation map for one staggered E component."""
+    """Coarse-to-fine tensor-product prolongation map for one staggered E component."""
 
     target_indices: jax.Array
     source_indices: jax.Array

@@ -42,6 +42,7 @@ from PyPIC3D.solvers.yee.fmr import (
     build_fmr_fields,
     build_fmr_parameters,
     load_fmr_from_toml,
+    load_fmr_interpolation_order,
     time_loop_electrodynamic_fmr_fields,
     validate_fmr_configuration,
 )
@@ -379,6 +380,7 @@ def initialize_simulation(toml_file):
     fmr_enabled = bool(fmr_levels)
     static_config["fmr_enabled"] = fmr_enabled
     static_config["fmr_levels"] = fmr_levels
+    static_config["fmr_interpolation_order"] = load_fmr_interpolation_order(config)
 
     if dynamic_config["dt"] is not None:
         print(f"Using user defined dt: {dynamic_config['dt']}")

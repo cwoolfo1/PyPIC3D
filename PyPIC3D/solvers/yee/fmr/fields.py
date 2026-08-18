@@ -24,6 +24,7 @@ def build_fmr_parameters(static_parameters, dynamic_parameters):
         dynamic_parameters.grids,
         fine_grids,
         static_parameters.guard_cells,
+        static_parameters.fmr_interpolation_order,
     )
     parent_b_masks, fine_b_masks = build_b_active_masks(
         parent_level,

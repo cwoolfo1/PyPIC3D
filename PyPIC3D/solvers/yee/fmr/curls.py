@@ -67,8 +67,8 @@ def fmr_curl_e_to_b(E_levels, static_parameters, dynamic_parameters):
 def fmr_curl_b_to_e(B_levels, E_template, static_parameters, dynamic_parameters):
     """Apply the metric-weighted FMR adjoint M_E^-1 C.T M_B.
 
-    ``C.T`` supplies the fine-to-coarse contribution by transposing the same
-    degree-one coarse-to-fine prolongation used in ``fmr_curl_e_to_b``. There
+    ``C.T`` supplies the fine-to-coarse contribution by transposing the
+    configured coarse-to-fine prolongation used in ``fmr_curl_e_to_b``. There
     is deliberately no separately implemented restriction stencil.
     """
 

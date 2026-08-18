@@ -92,7 +92,11 @@ class TestKernelParameters(unittest.TestCase):
         fmr_data = {"weights": jax.numpy.ones((4, 8))}
 
         static_config = static_parameters._asdict()
-        static_config.update(fmr_enabled=True, fmr_levels=fmr_levels)
+        static_config.update(
+            fmr_enabled=True,
+            fmr_levels=fmr_levels,
+            fmr_interpolation_order=2,
+        )
         dynamic_config = dynamic_parameters._asdict()
         dynamic_config["fmr"] = fmr_data
 
@@ -101,6 +105,7 @@ class TestKernelParameters(unittest.TestCase):
 
         self.assertTrue(static_parameters.fmr_enabled)
         self.assertEqual(static_parameters.fmr_levels, fmr_levels)
+        self.assertEqual(static_parameters.fmr_interpolation_order, 2)
         self.assertIsInstance(hash(static_parameters), int)
         self.assertIs(dynamic_parameters.fmr, fmr_data)
 

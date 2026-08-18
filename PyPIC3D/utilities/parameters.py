@@ -39,6 +39,7 @@ class StaticParameters(NamedTuple):
     field_mesh: object
     fmr_enabled: bool = False
     fmr_levels: tuple = ()
+    fmr_interpolation_order: int = 1
 
 
 class DynamicParameters(NamedTuple):
@@ -135,6 +136,7 @@ def build_static_parameters(static_config):
         field_mesh=_field_mesh(static_config, tile_shape),
         fmr_enabled=bool(static_config.get("fmr_enabled", False)),
         fmr_levels=tuple(static_config.get("fmr_levels", ())),
+        fmr_interpolation_order=int(static_config.get("fmr_interpolation_order", 1)),
     )
 
 

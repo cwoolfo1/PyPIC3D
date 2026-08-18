@@ -2,7 +2,11 @@
 
 from numbers import Integral
 
-from .types import FMRLevel
+from .types import (
+    FMR_DEFAULT_INTERPOLATION_ORDER,
+    FMR_SUPPORTED_INTERPOLATION_ORDERS,
+    FMRLevel,
+)
 
 
 def _three_ints(values, name):
@@ -24,6 +28,25 @@ def _fmr_enabled(config):
     return enabled
 
 
+def load_fmr_interpolation_order(config):
+    """Read the coarse-to-fine interpolation order as a static integer."""
+
+    raw_fmr = config.get("fmr") or {}
+    interpolation_order = raw_fmr.get(
+        "interpolation_order",
+        FMR_DEFAULT_INTERPOLATION_ORDER,
+    )
+    if (
+        isinstance(interpolation_order, bool)
+        or not isinstance(interpolation_order, Integral)
+        or interpolation_order not in FMR_SUPPORTED_INTERPOLATION_ORDERS
+    ):
+        raise ValueError(
+            "FMR interpolation_order must be 1 (linear) or 2 (quadratic)."
+        )
+    return int(interpolation_order)
+
+
 def validate_fmr_configuration(config, static_config, plotting_parameters):
     """Reject runtime combinations outside the first field-only FMR scope."""
 
@@ -31,10 +54,14 @@ def validate_fmr_configuration(config, static_config, plotting_parameters):
     if not _fmr_enabled(config):
         return
 
-    unsupported_options = sorted(set(raw_fmr) - {"enabled", "levels"})
+    unsupported_options = sorted(
+        set(raw_fmr) - {"enabled", "levels", "interpolation_order"}
+    )
     if unsupported_options:
         names = ", ".join(unsupported_options)
         raise NotImplementedError(f"Unsupported FMR option(s): {names}.")
+
+    load_fmr_interpolation_order(config)
 
     if static_config["solver"] != "electrodynamic_yee":
         raise NotImplementedError("FMR currently supports only solver='electrodynamic_yee'.")
@@ -68,6 +95,7 @@ def load_fmr_from_toml(config, dynamic_config, root_tile_shape):
     if not _fmr_enabled(config):
         return ()
 
+    load_fmr_interpolation_order(config)
     raw_levels = raw_fmr.get("levels", ())
     if len(raw_levels) != 1:
         raise ValueError("The first FMR implementation requires exactly one [[fmr.levels]] entry.")

@@ -14,18 +14,24 @@ from PyPIC3D.solvers.yee.first_order_yee import (
     yee_derivatives_e_to_b_refreshed,
 )
 from PyPIC3D.solvers.yee.fmr import (
+    FMR_DEFAULT_INTERPOLATION_ORDER,
     FMR_INTERPOLATION_ORDER,
+    FMR_SUPPORTED_INTERPOLATION_ORDERS,
     FMRLevel,
+    build_e_interface_maps,
     build_fmr_fields,
     build_fmr_parameters,
     fmr_curl_b_to_e,
     fmr_curl_e_to_b,
     load_fmr_from_toml,
+    load_fmr_interpolation_order,
     prolong_e_to_fine_interface,
     time_loop_electrodynamic_fmr_fields,
     update_B_fmr,
     update_E_fmr,
+    validate_fmr_configuration,
 )
+from PyPIC3D.solvers.yee.fmr.interpolation import _quadratic_axis_stencil
 from tests.kernel_fixtures import initialized_fields, kernel_parameters
 
 
@@ -47,10 +53,12 @@ class TestFMRPublicAPI(unittest.TestCase):
     def test_package_exports_geometry_and_forward_curl(self):
         self.assertIs(fmr_api.FMRLevel, FMRLevel)
         self.assertIs(fmr_api.fmr_curl_e_to_b, fmr_curl_e_to_b)
+        self.assertEqual(FMR_DEFAULT_INTERPOLATION_ORDER, 1)
+        self.assertEqual(FMR_SUPPORTED_INTERPOLATION_ORDERS, (1, 2))
 
 
-@lru_cache(maxsize=2)
-def _fmr_case(refinement_ratio):
+@lru_cache(maxsize=4)
+def _fmr_case(refinement_ratio, interpolation_order=1):
     static_parameters, dynamic_parameters = kernel_parameters(
         Nx=8,
         Ny=8,
@@ -72,6 +80,7 @@ def _fmr_case(refinement_ratio):
     config = {
         "fmr": {
             "enabled": True,
+            "interpolation_order": interpolation_order,
             "levels": [
                 {
                     "parent": 0,
@@ -101,6 +110,7 @@ def _fmr_case(refinement_ratio):
     static_parameters = static_parameters._replace(
         fmr_enabled=True,
         fmr_levels=levels,
+        fmr_interpolation_order=load_fmr_interpolation_order(config),
     )
     fmr_parameters = build_fmr_parameters(static_parameters, dynamic_parameters)
     dynamic_parameters = dynamic_parameters._replace(fmr=fmr_parameters)
@@ -146,6 +156,25 @@ def _affine_e_field(grids):
     for locations, (ax, ay, az, constant) in zip(E_FIELD_LOCATIONS, AFFINE_E_COEFFICIENTS):
         x, y, z = _component_coordinates(grids, locations)
         fields.append(ax * x + ay * y + az * z + constant)
+    return tuple(fields)
+
+
+def _triquadratic_e_field(grids):
+    fields = []
+    for locations in E_FIELD_LOCATIONS:
+        x, y, z = _component_coordinates(grids, locations)
+        fields.append(
+            1.0
+            + 2.0 * x
+            - 3.0 * y
+            + 0.5 * z
+            + x**2
+            + 2.0 * y**2
+            - z**2
+            + x * y
+            + y * z
+            + x * z
+        )
     return tuple(fields)
 
 
@@ -291,6 +320,33 @@ def _runtime_fields(E, B, J, rho, phi):
 
 
 class TestFMRGeometryAndInterpolation(unittest.TestCase):
+    def test_interpolation_order_configuration_defaults_and_validation(self):
+        static_config = {"solver": "electrodynamic_yee"}
+        for interpolation_order in (None, 1, 2):
+            raw_fmr = {"enabled": True, "levels": [{}]}
+            if interpolation_order is not None:
+                raw_fmr["interpolation_order"] = interpolation_order
+            config = {"fmr": raw_fmr}
+
+            validate_fmr_configuration(config, static_config, {})
+            expected = 1 if interpolation_order is None else interpolation_order
+            self.assertEqual(load_fmr_interpolation_order(config), expected)
+
+        for interpolation_order in (0, 3, -1, True, "2"):
+            with self.subTest(interpolation_order=interpolation_order):
+                config = {
+                    "fmr": {
+                        "enabled": True,
+                        "interpolation_order": interpolation_order,
+                        "levels": [{}],
+                    }
+                }
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "FMR interpolation_order must be 1.*or 2",
+                ):
+                    validate_fmr_configuration(config, static_config, {})
+
     def test_geometry_and_interface_map_metadata_for_ratio_two_and_four(self):
         for ratio in (2, 4):
             with self.subTest(refinement_ratio=ratio):
@@ -476,6 +532,85 @@ class TestFMRGeometryAndInterpolation(unittest.TestCase):
 
         self.assertGreater(direct_axis_count, 0)
         self.assertEqual(observed_fractions, {0.25, 0.5, 0.75})
+
+    def test_default_and_explicit_linear_maps_are_identical(self):
+        static_parameters, dynamic_parameters, *_ = _fmr_case(2)
+        parent_level, fine_level = static_parameters.fmr_levels
+        parent_grids = dynamic_parameters.fmr.levels[0].grids
+        fine_grids = dynamic_parameters.fmr.levels[1].grids
+
+        default_maps = build_e_interface_maps(
+            parent_level,
+            fine_level,
+            parent_grids,
+            fine_grids,
+            static_parameters.guard_cells,
+        )
+        explicit_maps = build_e_interface_maps(
+            parent_level,
+            fine_level,
+            parent_grids,
+            fine_grids,
+            static_parameters.guard_cells,
+            interpolation_order=1,
+        )
+        for default_map, explicit_map in zip(default_maps, explicit_maps):
+            for default, explicit in zip(default_map, explicit_map):
+                self.assertTrue(jnp.array_equal(default, explicit))
+
+    def test_quadratic_axis_stencil_reproduces_degree_two_polynomials(self):
+        parent_axis = jnp.linspace(-2.0, 3.0, 11)
+        target_coordinates = jnp.asarray((-1.75, -0.4, 0.0, 1.3, 2.75))
+        source_indices, weights = _quadratic_axis_stencil(
+            parent_axis,
+            target_coordinates,
+            tolerance=1.0e-13,
+        )
+
+        for polynomial in (
+            lambda x: 3.0 + 0.0 * x,
+            lambda x: -1.5 * x + 2.0,
+            lambda x: 2.0 * x**2 - 3.0 * x + 4.0,
+        ):
+            interpolated = jnp.sum(weights * polynomial(parent_axis[source_indices]), axis=1)
+            self.assertTrue(jnp.allclose(
+                interpolated,
+                polynomial(target_coordinates),
+                rtol=1.0e-13,
+                atol=1.0e-13,
+            ))
+
+    def test_triquadratic_interface_interpolation_and_donor_metadata(self):
+        static_parameters, dynamic_parameters, E, *_ = _fmr_case(2, interpolation_order=2)
+        parent_grids = dynamic_parameters.fmr.levels[0].grids
+        fine_grids = dynamic_parameters.fmr.levels[1].grids
+        interpolation_maps = dynamic_parameters.fmr.levels[1].e_interface_maps
+
+        parent_field = _triquadratic_e_field(parent_grids)
+        expected_field = _triquadratic_e_field(fine_grids)
+        fine_zeros = tuple(jnp.zeros_like(component) for component in E[1])
+        actual_field = prolong_e_to_fine_interface(
+            parent_field,
+            fine_zeros,
+            interpolation_maps,
+        )
+
+        for actual, expected, interpolation_map in zip(
+            actual_field,
+            expected_field,
+            interpolation_maps,
+        ):
+            weights = interpolation_map.weights
+            self.assertEqual(interpolation_map.source_indices.shape[1:], (27, 3))
+            self.assertEqual(weights.shape[1], 27)
+            self.assertTrue(jnp.allclose(jnp.sum(weights, axis=1), 1.0, atol=1.0e-14))
+            self.assertTrue(jnp.all(jnp.count_nonzero(weights, axis=1) <= 27))
+            self.assertTrue(jnp.allclose(
+                _map_target_values(actual, interpolation_map),
+                _map_target_values(expected, interpolation_map),
+                rtol=2.0e-13,
+                atol=2.0e-13,
+            ))
 
     def test_b_active_masks_use_each_components_staggering(self):
         static_parameters, dynamic_parameters, *_ = _fmr_case(2)
@@ -769,6 +904,44 @@ class TestFMRCurl(unittest.TestCase):
             atol=1.0e-12,
         ))
 
+    def test_quadratic_fmr_curl_satisfies_weighted_adjoint_identity(self):
+        static_parameters, dynamic_parameters, E, B, *_ = _fmr_case(
+            2,
+            interpolation_order=2,
+        )
+        g = int(static_parameters.guard_cells)
+        e_weights = tuple(level.e_weights for level in dynamic_parameters.fmr.levels)
+        b_weights = tuple(level.b_weights for level in dynamic_parameters.fmr.levels)
+        e_masks = tuple(
+            tuple(weight != 0.0 for weight in level_weights)
+            for level_weights in e_weights
+        )
+        b_masks = tuple(
+            tuple(weight != 0.0 for weight in level_weights)
+            for level_weights in b_weights
+        )
+        E_levels = _random_physical_levels_like(E, e_masks, 221, g)
+        B_levels = _random_physical_levels_like(B, b_masks, 222, g)
+
+        curl_E = fmr_curl_e_to_b(E_levels, static_parameters, dynamic_parameters)
+        curl_B = fmr_curl_b_to_e(
+            B_levels,
+            E_levels,
+            static_parameters,
+            dynamic_parameters,
+        )
+        E_active = tuple(_active_vector(level, g) for level in E_levels)
+        B_active = tuple(_active_vector(level, g) for level in B_levels)
+        electric_power = _weighted_field_dot_levels(E_active, curl_B, e_weights)
+        magnetic_power = _weighted_field_dot_levels(curl_E, B_active, b_weights)
+
+        self.assertTrue(jnp.allclose(
+            electric_power,
+            magnetic_power,
+            rtol=1.0e-11,
+            atol=1.0e-12,
+        ))
+
 
 class TestFMRFieldUpdates(unittest.TestCase):
     def test_covered_parent_b_is_not_updated(self):
@@ -856,6 +1029,34 @@ class TestFMRFieldUpdates(unittest.TestCase):
             jax.tree_util.tree_leaves(particles),
         ):
             self.assertTrue(jnp.array_equal(actual, expected))
+
+    def test_quadratic_field_only_b_e_b_step_preserves_shapes_and_finiteness(self):
+        static_parameters, dynamic_parameters, E, B, J, rho, phi = _fmr_case(
+            2,
+            interpolation_order=2,
+        )
+        E = _random_levels_like(E, seed=511)
+        B = _random_levels_like(B, seed=512)
+        particles, species_config = _empty_particles()
+        fields = _runtime_fields(E, B, J, rho, phi)
+        initial_shapes = tuple(
+            leaf.shape for leaf in jax.tree_util.tree_leaves(fields[:3])
+        )
+
+        _, fields_after = time_loop_electrodynamic_fmr_fields(
+            particles,
+            species_config,
+            fields,
+            static_parameters,
+            dynamic_parameters,
+        )
+
+        self.assertEqual(
+            tuple(leaf.shape for leaf in jax.tree_util.tree_leaves(fields_after[:3])),
+            initial_shapes,
+        )
+        for leaf in jax.tree_util.tree_leaves(fields_after[:3]):
+            self.assertTrue(jnp.all(jnp.isfinite(leaf)))
 
     def test_repeated_field_steps_preserve_shapes_constraints_and_finiteness(self):
         static_parameters, dynamic_parameters, E, B, J, rho, phi = _fmr_case(2)

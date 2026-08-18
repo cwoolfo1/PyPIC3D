@@ -1,20 +1,15 @@
-"""Coarse-to-fine prolongation P on staggered Yee E-field locations."""
+"""Configured trilinear or triquadratic prolongation P on staggered Yee E grids."""
+
+from itertools import product
 
 import jax.numpy as jnp
 
 from .grids import _component_coordinate_axes, _coordinate_tolerance
-from .types import E_FIELD_LOCATIONS, FMRInterpolationMap
-
-
-_LINEAR_CORNER_OFFSETS = (
-    (0, 0, 0),
-    (0, 0, 1),
-    (0, 1, 0),
-    (0, 1, 1),
-    (1, 0, 0),
-    (1, 0, 1),
-    (1, 1, 0),
-    (1, 1, 1),
+from .types import (
+    E_FIELD_LOCATIONS,
+    FMR_DEFAULT_INTERPOLATION_ORDER,
+    FMR_SUPPORTED_INTERPOLATION_ORDERS,
+    FMRInterpolationMap,
 )
 
 
@@ -75,28 +70,73 @@ def _linear_axis_stencil(parent_axis, target_coordinates, tolerance):
     return source_indices, weights
 
 
-def _tensor_product_linear_stencil(axis_source_indices, axis_weights):
-    """Combine three two-point linear stencils into eight trilinear donors."""
+def _quadratic_axis_stencil(parent_axis, target_coordinates, tolerance):
+    """Return three local parent indices and degree-two Lagrange weights."""
 
-    corner_offsets = jnp.asarray(_LINEAR_CORNER_OFFSETS, dtype=jnp.int32)
+    del tolerance
+    if parent_axis.size < 3:
+        raise ValueError(
+            "The FMR patch does not have enough parent cells for interface interpolation."
+        )
+
+    distances = jnp.abs(
+        target_coordinates[:, jnp.newaxis] - parent_axis[jnp.newaxis, :]
+    )
+    source_indices = jnp.argsort(distances, axis=1, stable=True)[:, :3]
+    source_indices = jnp.sort(source_indices, axis=1).astype(jnp.int32)
+
+    x = target_coordinates
+    x0 = parent_axis[source_indices[:, 0]]
+    x1 = parent_axis[source_indices[:, 1]]
+    x2 = parent_axis[source_indices[:, 2]]
+
+    w0 = (x - x1) * (x - x2) / ((x0 - x1) * (x0 - x2))
+    w1 = (x - x0) * (x - x2) / ((x1 - x0) * (x1 - x2))
+    w2 = (x - x0) * (x - x1) / ((x2 - x0) * (x2 - x1))
+
+    return source_indices, jnp.stack((w0, w1, w2), axis=1)
+
+
+def _axis_stencil(parent_axis, target_coordinates, tolerance, interpolation_order):
+    if isinstance(interpolation_order, bool):
+        raise ValueError(
+            "FMR interpolation_order must be 1 (linear) or 2 (quadratic)."
+        )
+    if interpolation_order == 1:
+        return _linear_axis_stencil(parent_axis, target_coordinates, tolerance)
+    if interpolation_order == 2:
+        return _quadratic_axis_stencil(parent_axis, target_coordinates, tolerance)
+    raise ValueError(
+        "FMR interpolation_order must be 1 (linear) or 2 (quadratic)."
+    )
+
+
+def _tensor_product_stencil(axis_source_indices, axis_weights):
+    """Combine three equal-width axis stencils into tensor-product donors."""
+
+    stencil_width = axis_source_indices[0].shape[1]
+    donor_offsets = jnp.asarray(
+        tuple(product(range(stencil_width), repeat=3)),
+        dtype=jnp.int32,
+    )
     source_indices = jnp.stack(
         tuple(
-            indices[:, corner_offsets[:, axis]]
+            indices[:, donor_offsets[:, axis]]
             for axis, indices in enumerate(axis_source_indices)
         ),
         axis=2,
     )
-    corner_weights = jnp.stack(
+    donor_weights = jnp.stack(
         tuple(
-            weights[:, corner_offsets[:, axis]]
+            weights[:, donor_offsets[:, axis]]
             for axis, weights in enumerate(axis_weights)
         ),
         axis=2,
     )
-    interpolation_weights = jnp.prod(corner_weights, axis=2)
+    interpolation_weights = jnp.prod(donor_weights, axis=2)
 
-    # Coincident axes have one nonzero donor. Pack all nonzero tensor-product
-    # donors first, matching the existing compact eight-slot map layout.
+    # Coincident axes have fewer nonzero donors. Pack all nonzero tensor-product
+    # donors first, matching the existing compact map layout.
     donor_order = jnp.argsort(interpolation_weights == 0.0, axis=1, stable=True)
     source_indices = jnp.take_along_axis(
         source_indices,
@@ -141,6 +181,7 @@ def _build_component_interpolation_map(
     fine_level,
     parent_shape,
     guard_cells,
+    interpolation_order,
 ):
     bounds = (
         (fine_level.x_min, fine_level.x_max),
@@ -154,16 +195,19 @@ def _build_component_interpolation_map(
         for axis in range(3)
     )
 
-    # Degree-one interpolation uses two bracketing parent points on each axis.
     axis_stencils = tuple(
-        _linear_axis_stencil(coarse_axes[axis], target_coordinates[axis], tolerance)
+        _axis_stencil(
+            coarse_axes[axis],
+            target_coordinates[axis],
+            tolerance,
+            interpolation_order,
+        )
         for axis in range(3)
     )
     axis_source_indices = tuple(stencil[0] for stencil in axis_stencils)
     axis_weights = tuple(stencil[1] for stencil in axis_stencils)
 
-    # Their tensor product is trilinear in 3-D and has at most 2^3 donors.
-    source_indices, weights = _tensor_product_linear_stencil(
+    source_indices, weights = _tensor_product_stencil(
         axis_source_indices,
         axis_weights,
     )
@@ -177,8 +221,23 @@ def _build_component_interpolation_map(
     )
 
 
-def build_e_interface_maps(parent_level, fine_level, parent_grids, fine_grids, guard_cells):
-    """Build degree-one tensor-product prolongation maps for Ex, Ey, and Ez."""
+def build_e_interface_maps(
+    parent_level,
+    fine_level,
+    parent_grids,
+    fine_grids,
+    guard_cells,
+    interpolation_order=FMR_DEFAULT_INTERPOLATION_ORDER,
+):
+    """Build configured tensor-product prolongation maps for Ex, Ey, and Ez."""
+
+    if (
+        isinstance(interpolation_order, bool)
+        or interpolation_order not in FMR_SUPPORTED_INTERPOLATION_ORDERS
+    ):
+        raise ValueError(
+            "FMR interpolation_order must be 1 (linear) or 2 (quadratic)."
+        )
 
     parent_shape = (parent_level.Nx, parent_level.Ny, parent_level.Nz)
     return tuple(
@@ -188,6 +247,7 @@ def build_e_interface_maps(parent_level, fine_level, parent_grids, fine_grids, g
             fine_level,
             parent_shape,
             guard_cells,
+            interpolation_order,
         )
         for locations in E_FIELD_LOCATIONS
     )
