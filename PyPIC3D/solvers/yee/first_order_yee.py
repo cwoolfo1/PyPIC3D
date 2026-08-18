@@ -1,4 +1,5 @@
 import jax
+import jax.numpy as jnp
 
 from PyPIC3D.boundary_conditions.PML import (
     stretch_tiled_pml_b_derivatives,
@@ -14,7 +15,7 @@ def _active_vector(field_tiles, g):
     return tuple(component[:, :, :, active, active, active] for component in field_tiles)
 
 
-def _forward_difference_from_refreshed(field, axis, spacing, guard_cells):
+def _forward_difference(field, axis, spacing, guard_cells):
     """Take one forward Yee difference after the vector halo refresh."""
 
     g = int(guard_cells)
@@ -30,6 +31,52 @@ def _forward_difference_from_refreshed(field, axis, spacing, guard_cells):
     return (field[forward_slices] - field[current_slices]) / spacing
 
 
+def _mesh_adapted_difference(
+    field,
+    axis,
+    spacing,
+    guard_cells,
+    alpha,
+):
+    """Take one four-point mesh-adapted staggered difference.
+
+    Baker, J. G., & Van Meter, J. R. (2005). Reducing reflections 
+    from mesh refinement interfaces in numerical relativity. 
+    Physical Review D—Particles, Fields, Gravitation, and 
+    Cosmology, 72(10), 104010.
+    
+    """
+
+    g = int(guard_cells)
+    active = slice(g, -g)
+    offsets = (
+        slice(g - 1, -g - 1),
+        active,
+        slice(g + 1, -g + 1),
+        slice(g + 2, None if g == 2 else -g + 2),
+    )
+
+    stencil_slices = []
+    for offset in offsets:
+        slices = [active, active, active]
+        slices[int(axis)] = offset
+        stencil_slices.append(
+            (slice(None), slice(None), slice(None), *slices)
+        )
+
+    previous, current, forward, next_forward = (
+        field[slices] for slices in stencil_slices
+    )
+    outer_coefficient = 1.0 - alpha
+    inner_coefficient = 27.0 - 3.0 * alpha
+    return (
+        outer_coefficient * previous
+        - inner_coefficient * current
+        + inner_coefficient * forward
+        - outer_coefficient * next_forward
+    ) / (24.0 * spacing)
+
+
 def _yee_derivatives_from_refreshed_channels(channels, spacing, guard_cells):
     """Apply the six canonical forward differences to refreshed field channels."""
 
@@ -38,16 +85,38 @@ def _yee_derivatives_from_refreshed_channels(channels, spacing, guard_cells):
     g = int(guard_cells)
 
     return (
-        _forward_difference_from_refreshed(Ez_for_dy, 1, dy, g),
-        _forward_difference_from_refreshed(Ey_for_dz, 2, dz, g),
-        _forward_difference_from_refreshed(Ex_for_dz, 2, dz, g),
-        _forward_difference_from_refreshed(Ez_for_dx, 0, dx, g),
-        _forward_difference_from_refreshed(Ey_for_dx, 0, dx, g),
-        _forward_difference_from_refreshed(Ex_for_dy, 1, dy, g),
+        _forward_difference(Ez_for_dy, 1, dy, g),
+        _forward_difference(Ey_for_dz, 2, dz, g),
+        _forward_difference(Ex_for_dz, 2, dz, g),
+        _forward_difference(Ez_for_dx, 0, dx, g),
+        _forward_difference(Ey_for_dx, 0, dx, g),
+        _forward_difference(Ex_for_dy, 1, dy, g),
     )
 
 
-def yee_derivatives_e_to_b_refreshed(E_tiles, spacing, guard_cells):
+def _mesh_adapted_yee_derivatives_from_refreshed_channels(
+    channels,
+    spacing,
+    guard_cells,
+    alpha,
+):
+    """Apply the six canonical mesh-adapted differences to refreshed fields."""
+
+    Ez_for_dy, Ey_for_dz, Ex_for_dz, Ez_for_dx, Ey_for_dx, Ex_for_dy = channels
+    dx, dy, dz = spacing
+    g = int(guard_cells)
+
+    return (
+        _mesh_adapted_difference(Ez_for_dy, 1, dy, g, alpha),
+        _mesh_adapted_difference(Ey_for_dz, 2, dz, g, alpha),
+        _mesh_adapted_difference(Ex_for_dz, 2, dz, g, alpha),
+        _mesh_adapted_difference(Ez_for_dx, 0, dx, g, alpha),
+        _mesh_adapted_difference(Ey_for_dx, 0, dx, g, alpha),
+        _mesh_adapted_difference(Ex_for_dy, 1, dy, g, alpha),
+    )
+
+
+def yee_derivatives_e_to_b_refreshed(E_tiles, spacing, guard_cells, alpha=1.0):
     """
     Return the six forward Yee derivatives after halos are already populated.
 
@@ -55,9 +124,39 @@ def yee_derivatives_e_to_b_refreshed(E_tiles, spacing, guard_cells):
     ``dEz_dy, dEy_dz, dEx_dz, dEz_dx, dEy_dx, dEx_dy``.
     """
 
+    g = int(guard_cells)
+    if g < 2:
+        alpha_value = jax.core.concrete_or_error(
+            float,
+            alpha,
+            "alpha must be statically equal to 1 when the Yee field has only one guard cell",
+        )
+        if alpha_value != 1.0:
+            raise ValueError("Mesh-adapted Yee differencing requires at least two guard cells.")
+
+        Ex, Ey, Ez = E_tiles
+        channels = (Ez, Ey, Ex, Ez, Ey, Ex)
+        return _yee_derivatives_from_refreshed_channels(channels, spacing, g)
+
     Ex, Ey, Ez = E_tiles
     channels = (Ez, Ey, Ex, Ez, Ey, Ex)
-    return _yee_derivatives_from_refreshed_channels(channels, spacing, guard_cells)
+    alpha = jnp.asarray(alpha)
+
+    return jax.lax.cond(
+        alpha == 1.0,
+        lambda fields: _yee_derivatives_from_refreshed_channels(
+            fields,
+            spacing,
+            g,
+        ),
+        lambda fields: _mesh_adapted_yee_derivatives_from_refreshed_channels(
+            fields,
+            spacing,
+            g,
+            alpha,
+        ),
+        channels,
+    )
 
 
 def yee_derivatives_e_to_b(E_tiles, static_parameters, dynamic_parameters):

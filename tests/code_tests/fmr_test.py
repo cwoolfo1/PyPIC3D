@@ -319,6 +319,207 @@ def _runtime_fields(E, B, J, rho, phi):
     return E, B, J, rho, phi, ((), ()), None, jnp.asarray(False)
 
 
+def _directional_stencil(field, axis, spacing, guard_cells, coefficients, denominator):
+    g = int(guard_cells)
+    active = slice(g, -g)
+    offsets = (
+        slice(g - 1, -g - 1),
+        active,
+        slice(g + 1, -g + 1),
+        slice(g + 2, None if g == 2 else -g + 2),
+    )
+
+    terms = []
+    for coefficient, offset in zip(coefficients, offsets):
+        slices = [active, active, active]
+        slices[axis] = offset
+        slices = (slice(None), slice(None), slice(None), *slices)
+        terms.append(coefficient * field[slices])
+    return sum(terms) / (denominator * spacing)
+
+
+class TestMeshAdaptedYeeDerivative(unittest.TestCase):
+    def setUp(self):
+        self.g = 2
+        self.spacing = (0.3, 0.4, 0.5)
+        shape = (1, 1, 1, 10, 9, 8)
+        keys = jax.random.split(jax.random.key(41), 3)
+        self.E = tuple(
+            jax.random.normal(key, shape, dtype=jnp.float64)
+            for key in keys
+        )
+
+    def _channel_fields_and_axes(self):
+        Ex, Ey, Ez = self.E
+        return (
+            (Ez, 1),
+            (Ey, 2),
+            (Ex, 2),
+            (Ez, 0),
+            (Ey, 0),
+            (Ex, 1),
+        )
+
+    def test_alpha_one_is_exactly_backward_compatible(self):
+        default = yee_derivatives_e_to_b_refreshed(
+            self.E,
+            self.spacing,
+            self.g,
+        )
+        explicit = yee_derivatives_e_to_b_refreshed(
+            self.E,
+            self.spacing,
+            self.g,
+            alpha=1.0,
+        )
+
+        for actual, expected in zip(explicit, default):
+            self.assertTrue(jnp.array_equal(actual, expected))
+
+    def test_ratio_two_mad_coefficients_are_one_minus_35_plus_35_minus_one(self):
+        alpha = 0.25
+        self.assertEqual((1.0 - alpha) / 24.0, 1.0 / 32.0)
+        self.assertEqual((27.0 - 3.0 * alpha) / 24.0, 35.0 / 32.0)
+
+        actual = yee_derivatives_e_to_b_refreshed(
+            self.E,
+            self.spacing,
+            self.g,
+            alpha=alpha,
+        )
+
+        for derivative, (field, axis) in zip(actual, self._channel_fields_and_axes()):
+            expected = _directional_stencil(
+                field,
+                axis,
+                self.spacing[axis],
+                self.g,
+                (1.0, -35.0, 35.0, -1.0),
+                32.0,
+            )
+            self.assertTrue(jnp.allclose(derivative, expected, rtol=2.0e-14, atol=2.0e-14))
+
+    def test_general_alpha_matches_blended_second_and_fourth_order_stencils(self):
+        alpha = 0.6
+        actual = yee_derivatives_e_to_b_refreshed(
+            self.E,
+            self.spacing,
+            self.g,
+            alpha=alpha,
+        )
+
+        for derivative, (field, axis) in zip(actual, self._channel_fields_and_axes()):
+            D2 = _directional_stencil(
+                field,
+                axis,
+                self.spacing[axis],
+                self.g,
+                (0.0, -1.0, 1.0, 0.0),
+                1.0,
+            )
+            D4 = _directional_stencil(
+                field,
+                axis,
+                self.spacing[axis],
+                self.g,
+                (1.0, -27.0, 27.0, -1.0),
+                24.0,
+            )
+            expected = alpha * D2 + (1.0 - alpha) * D4
+            self.assertTrue(jnp.allclose(derivative, expected, rtol=2.0e-14, atol=2.0e-14))
+
+    def test_constant_linear_and_quadratic_polynomials_are_exact(self):
+        g = self.g
+        dx, dy, dz = self.spacing
+        shape = (1, 1, 1, 10, 9, 8)
+        x = dx * jnp.arange(shape[-3])
+        y = dy * jnp.arange(shape[-2])
+        z = dz * jnp.arange(shape[-1])
+        x = x[jnp.newaxis, jnp.newaxis, jnp.newaxis, :, jnp.newaxis, jnp.newaxis]
+        y = y[jnp.newaxis, jnp.newaxis, jnp.newaxis, jnp.newaxis, :, jnp.newaxis]
+        z = z[jnp.newaxis, jnp.newaxis, jnp.newaxis, jnp.newaxis, jnp.newaxis, :]
+        axes = (x, y, z)
+        spacings = (dx, dy, dz)
+        derivative_axes = (1, 2, 2, 0, 0, 1)
+
+        for degree in (0, 1, 2):
+            with self.subTest(degree=degree):
+                field = x**degree + y**degree + z**degree
+                E = (field, field, field)
+                derivatives = yee_derivatives_e_to_b_refreshed(
+                    E,
+                    self.spacing,
+                    g,
+                    alpha=0.37,
+                )
+
+                for derivative, axis in zip(derivatives, derivative_axes):
+                    coordinate = axes[axis]
+                    spacing = spacings[axis]
+                    coordinate_slices = [slice(None)] * 6
+                    coordinate_slices[axis + 3] = slice(g, -g)
+                    coordinate = coordinate[tuple(coordinate_slices)]
+                    midpoint = coordinate + 0.5 * spacing
+                    if degree == 0:
+                        expected = jnp.zeros_like(midpoint)
+                    elif degree == 1:
+                        expected = jnp.ones_like(midpoint)
+                    else:
+                        expected = 2.0 * midpoint
+                    expected = jnp.broadcast_to(expected, derivative.shape)
+                    self.assertTrue(jnp.allclose(
+                        derivative,
+                        expected,
+                        rtol=2.0e-13,
+                        atol=2.0e-13,
+                    ))
+
+    def test_both_alpha_branches_jit_and_lower_as_conditional(self):
+        apply_derivatives = jax.jit(
+            lambda alpha: yee_derivatives_e_to_b_refreshed(
+                self.E,
+                self.spacing,
+                self.g,
+                alpha=alpha,
+            )
+        )
+        ordinary = apply_derivatives(jnp.asarray(1.0))
+        mesh_adapted = apply_derivatives(jnp.asarray(0.25))
+
+        self.assertEqual(jax.tree_util.tree_structure(ordinary), jax.tree_util.tree_structure(mesh_adapted))
+        for ordinary_component, mad_component in zip(ordinary, mesh_adapted):
+            self.assertEqual(ordinary_component.shape, mad_component.shape)
+            self.assertEqual(ordinary_component.dtype, mad_component.dtype)
+
+        jaxpr = jax.make_jaxpr(
+            lambda alpha: yee_derivatives_e_to_b_refreshed(
+                self.E,
+                self.spacing,
+                self.g,
+                alpha=alpha,
+            )
+        )(jnp.asarray(0.25))
+        self.assertIn("cond", {equation.primitive.name for equation in jaxpr.jaxpr.eqns})
+
+    def test_one_guard_cell_remains_valid_only_for_ordinary_yee(self):
+        g = 1
+        ordinary = yee_derivatives_e_to_b_refreshed(
+            self.E,
+            self.spacing,
+            g,
+            alpha=1.0,
+        )
+        self.assertEqual(ordinary[0].shape[-3:], (8, 7, 6))
+
+        with self.assertRaisesRegex(ValueError, "requires at least two guard cells"):
+            yee_derivatives_e_to_b_refreshed(
+                self.E,
+                self.spacing,
+                g,
+                alpha=0.25,
+            )
+
+
 class TestFMRGeometryAndInterpolation(unittest.TestCase):
     def test_interpolation_order_configuration_defaults_and_validation(self):
         static_config = {"solver": "electrodynamic_yee"}
@@ -346,6 +547,13 @@ class TestFMRGeometryAndInterpolation(unittest.TestCase):
                     "FMR interpolation_order must be 1.*or 2",
                 ):
                     validate_fmr_configuration(config, static_config, {})
+
+    def test_fmr_metadata_requires_two_guard_cells_for_coarse_mad(self):
+        static_parameters, dynamic_parameters, *_ = _fmr_case(2)
+        static_parameters = static_parameters._replace(guard_cells=1)
+
+        with self.assertRaisesRegex(ValueError, "requires at least two guard cells"):
+            build_fmr_parameters(static_parameters, dynamic_parameters)
 
     def test_geometry_and_interface_map_metadata_for_ratio_two_and_four(self):
         for ratio in (2, 4):
@@ -689,6 +897,80 @@ class TestFMRGeometryAndInterpolation(unittest.TestCase):
 
 
 class TestFMRCurl(unittest.TestCase):
+    def test_forward_curl_uses_ratio_derived_coarse_alpha_and_ordinary_fine_alpha(self):
+        static_parameters, dynamic_parameters, E, *_ = _fmr_case(2)
+        E_levels = _random_levels_like(E, seed=191)
+        E0, E1 = E_levels
+        g = int(static_parameters.guard_cells)
+        fine_level = static_parameters.fmr_levels[1]
+        parent_data, fine_data = dynamic_parameters.fmr.levels
+
+        E0_work = ghost_cells.update_tiled_vector_ghost_cells(
+            E0,
+            static_parameters,
+            g,
+        )
+        E1_work = ghost_cells.update_tiled_vector_ghost_cells(
+            E1,
+            static_parameters._replace(
+                tile_shape=fine_level.tile_shape,
+                boundary_conditions=(BC_CONSTANT, BC_CONSTANT, BC_CONSTANT),
+                fmr_enabled=False,
+                fmr_levels=(),
+            ),
+            g,
+        )
+        E1_work = prolong_e_to_fine_interface(
+            E0_work,
+            E1_work,
+            fine_data.e_interface_maps,
+        )
+
+        alpha_coarse = 1.0 / fine_level.refinement_ratio**2
+        expected0 = assemble_yee_curl(yee_derivatives_e_to_b_refreshed(
+            E0_work,
+            (dynamic_parameters.dx, dynamic_parameters.dy, dynamic_parameters.dz),
+            g,
+            alpha=alpha_coarse,
+        ))
+        expected1 = assemble_yee_curl(yee_derivatives_e_to_b_refreshed(
+            E1_work,
+            fine_level.spacing,
+            g,
+            alpha=1.0,
+        ))
+        expected0 = tuple(
+            mask * component
+            for mask, component in zip(parent_data.b_active_masks, expected0)
+        )
+        expected1 = tuple(
+            mask * component
+            for mask, component in zip(fine_data.b_active_masks, expected1)
+        )
+
+        actual0, actual1 = fmr_curl_e_to_b(
+            E_levels,
+            static_parameters,
+            dynamic_parameters,
+        )
+        for actual, expected in zip(actual0 + actual1, expected0 + expected1):
+            self.assertTrue(jnp.array_equal(actual, expected))
+
+        ordinary0 = assemble_yee_curl(yee_derivatives_e_to_b_refreshed(
+            E0_work,
+            (dynamic_parameters.dx, dynamic_parameters.dy, dynamic_parameters.dz),
+            g,
+            alpha=1.0,
+        ))
+        self.assertTrue(any(
+            not jnp.allclose(actual, mask * ordinary)
+            for actual, mask, ordinary in zip(
+                actual0,
+                parent_data.b_active_masks,
+                ordinary0,
+            )
+        ))
+
     def test_constant_field_has_zero_fine_and_composite_curl(self):
         static_parameters, dynamic_parameters, *_ = _fmr_case(2)
         E_levels = tuple(
@@ -756,10 +1038,11 @@ class TestFMRCurl(unittest.TestCase):
                 expected = expected_value * active_mask
                 if level_index == 0:
                     # The affine root field is intentionally not periodic.  Its
-                    # wrapped upper physical halo is unrelated to FMR, so keep
-                    # this comparison away from those three outer planes.
-                    actual = actual[:, :, :, :-1, :-1, :-1]
-                    expected = expected[:, :, :, :-1, :-1, :-1]
+                    # wrapped physical halos are unrelated to FMR.  Keep this
+                    # comparison away from the planes reached by coarse MAD's
+                    # i-1 and i+2 stencil points.
+                    actual = actual[:, :, :, 1:-2, 1:-2, 1:-2]
+                    expected = expected[:, :, :, 1:-2, 1:-2, 1:-2]
                 with self.subTest(level=level_index, component=component_index):
                     self.assertTrue(jnp.allclose(actual, expected, rtol=1.0e-12, atol=1.0e-12))
 

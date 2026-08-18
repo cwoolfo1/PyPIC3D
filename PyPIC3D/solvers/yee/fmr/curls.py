@@ -44,6 +44,8 @@ def fmr_curl_e_to_b(E_levels, static_parameters, dynamic_parameters):
     E0, E1 = E_levels
     g = int(static_parameters.guard_cells)
     fine_level = static_parameters.fmr_levels[1]
+    refinement_ratio = fine_level.refinement_ratio
+    alpha_coarse = 1.0 / refinement_ratio**2
     parent_data, fine_data = dynamic_parameters.fmr.levels
 
     E0_work = ghost_cells.update_tiled_vector_ghost_cells(E0, static_parameters, g)
@@ -54,8 +56,14 @@ def fmr_curl_e_to_b(E_levels, static_parameters, dynamic_parameters):
         E0_work,
         (dynamic_parameters.dx, dynamic_parameters.dy, dynamic_parameters.dz),
         g,
+        alpha=alpha_coarse,
     )
-    derivatives1 = yee_derivatives_e_to_b_refreshed(E1_work, fine_level.spacing, g)
+    derivatives1 = yee_derivatives_e_to_b_refreshed(
+        E1_work,
+        fine_level.spacing,
+        g,
+        alpha=1.0,
+    )
     curl0 = assemble_yee_curl(derivatives0)
     curl1 = assemble_yee_curl(derivatives1)
 

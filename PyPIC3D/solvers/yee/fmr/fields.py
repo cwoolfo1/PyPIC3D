@@ -15,6 +15,8 @@ def build_fmr_parameters(static_parameters, dynamic_parameters):
         return None
     if len(static_parameters.fmr_levels) != 2:
         raise ValueError("The first FMR implementation requires root and one fine level.")
+    if int(static_parameters.guard_cells) < 2:
+        raise ValueError("FMR mesh-adapted Yee differencing requires at least two guard cells.")
 
     parent_level, fine_level = static_parameters.fmr_levels
     fine_grids = _build_level_grids(fine_level, static_parameters.guard_cells)
