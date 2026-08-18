@@ -5,6 +5,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+import PyPIC3D.fmr as fmr_api
 from PyPIC3D.boundary_conditions import ghost_cells
 from PyPIC3D.boundary_conditions.grid_and_stencil import BC_CONSTANT
 from PyPIC3D.particles.particle_class import SpeciesConfig, TiledParticles
@@ -12,8 +13,9 @@ from PyPIC3D.solvers.yee.first_order_yee import (
     assemble_yee_curl,
     yee_derivatives_e_to_b_refreshed,
 )
-from PyPIC3D.solvers.yee.fmr import (
+from PyPIC3D.fmr import (
     FMR_INTERPOLATION_ORDER,
+    FMRLevel,
     build_fmr_fields,
     build_fmr_parameters,
     fmr_curl_b_to_e,
@@ -39,6 +41,12 @@ AFFINE_E_COEFFICIENTS = (
     (1.5, -0.6, 0.8, 0.1),
 )
 AFFINE_E_CURL = (-1.9, -1.2, 0.9)
+
+
+class TestFMRPublicAPI(unittest.TestCase):
+    def test_package_exports_geometry_and_forward_curl(self):
+        self.assertIs(fmr_api.FMRLevel, FMRLevel)
+        self.assertIs(fmr_api.fmr_curl_e_to_b, fmr_curl_e_to_b)
 
 
 @lru_cache(maxsize=2)

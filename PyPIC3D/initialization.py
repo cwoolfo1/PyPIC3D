@@ -38,7 +38,7 @@ from PyPIC3D.boundary_conditions.ghost_cells import (
 )
 from PyPIC3D.solvers.electrostatic.time_loop import time_loop_electrostatic
 from PyPIC3D.solvers.gr_static.time_loop import time_loop_static_metric
-from PyPIC3D.solvers.yee.fmr import (
+from PyPIC3D.fmr import (
     build_fmr_fields,
     build_fmr_parameters,
     load_fmr_from_toml,

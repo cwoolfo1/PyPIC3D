@@ -17,7 +17,7 @@ from PyPIC3D.initialization import (
 )
 from PyPIC3D.solvers.electrostatic.time_loop import time_loop_electrostatic
 from PyPIC3D.solvers.gr_static.time_loop import time_loop_static_metric
-from PyPIC3D.solvers.yee.fmr import time_loop_electrodynamic_fmr_fields
+from PyPIC3D.fmr import time_loop_electrodynamic_fmr_fields
 from PyPIC3D.solvers.yee.time_loop import time_loop_electrodynamic
 from PyPIC3D.boundary_conditions.grid_and_stencil import (
     BC_ABSORBING,
