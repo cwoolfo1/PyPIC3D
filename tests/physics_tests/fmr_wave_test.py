@@ -6,7 +6,7 @@ import numpy as np
 
 from PyPIC3D.boundary_conditions.grid_and_stencil import BC_PERIODIC
 from PyPIC3D.initialization import initialize_fields
-from PyPIC3D.fmr import (
+from PyPIC3D.solvers.yee.fmr import (
     B_FIELD_LOCATIONS,
     E_FIELD_LOCATIONS,
     build_fmr_fields,

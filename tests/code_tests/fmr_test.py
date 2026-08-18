@@ -5,7 +5,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-import PyPIC3D.fmr as fmr_api
+import PyPIC3D.solvers.yee.fmr as fmr_api
 from PyPIC3D.boundary_conditions import ghost_cells
 from PyPIC3D.boundary_conditions.grid_and_stencil import BC_CONSTANT
 from PyPIC3D.particles.particle_class import SpeciesConfig, TiledParticles
@@ -13,7 +13,7 @@ from PyPIC3D.solvers.yee.first_order_yee import (
     assemble_yee_curl,
     yee_derivatives_e_to_b_refreshed,
 )
-from PyPIC3D.fmr import (
+from PyPIC3D.solvers.yee.fmr import (
     FMR_INTERPOLATION_ORDER,
     FMRLevel,
     build_fmr_fields,
