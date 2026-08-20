@@ -10,9 +10,8 @@ from PyPIC3D.utilities.parameters import GridParameters
 E_FIELD_LOCATIONS = (("V", "C", "C"), ("C", "V", "C"), ("C", "C", "V"))
 B_FIELD_LOCATIONS = (("C", "V", "V"), ("V", "C", "V"), ("V", "V", "C"))
 
-FMR_DEFAULT_INTERPOLATION_ORDER = 1
-FMR_SUPPORTED_INTERPOLATION_ORDERS = (1, 2)
-FMR_INTERPOLATION_ORDER = FMR_DEFAULT_INTERPOLATION_ORDER
+FMR_DEFAULT_INTERPOLATION_ORDER = 3
+FMR_SUPPORTED_INTERPOLATION_ORDERS = (3,)
 
 
 class FMRLevel(NamedTuple):
@@ -37,7 +36,7 @@ class FMRLevel(NamedTuple):
 
 
 class FMRInterpolationMap(NamedTuple):
-    """Coarse-to-fine tensor-product prolongation map for one staggered E component."""
+    """Fixed transfer stencil for one staggered field component."""
 
     target_indices: jax.Array
     source_indices: jax.Array
@@ -49,6 +48,10 @@ class FMRLevelData(NamedTuple):
 
     grids: GridParameters
     e_interface_maps: tuple
+    b_interface_maps: tuple
+    e_restriction_maps: tuple
+    b_restriction_maps: tuple
+    e_active_masks: tuple
     b_active_masks: tuple
     e_weights: tuple
     b_weights: tuple

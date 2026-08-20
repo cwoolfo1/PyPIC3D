@@ -20,8 +20,15 @@ def _component_inside_mask(grids, locations, level, refined_bounds, guard_cells)
     return inside[jnp.newaxis, jnp.newaxis, jnp.newaxis, :, :, :]
 
 
-def build_b_active_masks(parent_level, fine_level, parent_grids, fine_grids, guard_cells):
-    """Build stagger-aware coarse-active B masks for the two-level composite grid."""
+def build_field_active_masks(
+    parent_level,
+    fine_level,
+    parent_grids,
+    fine_grids,
+    field_locations,
+    guard_cells,
+):
+    """Build component-specific ownership masks for either Yee vector."""
 
     refined_bounds = (
         (fine_level.x_min, fine_level.x_max),
@@ -30,7 +37,7 @@ def build_b_active_masks(parent_level, fine_level, parent_grids, fine_grids, gua
     )
     parent_masks = []
     fine_masks = []
-    for locations in B_FIELD_LOCATIONS:
+    for locations in field_locations:
         parent_inside = _component_inside_mask(
             parent_grids,
             locations,
@@ -47,7 +54,6 @@ def build_b_active_masks(parent_level, fine_level, parent_grids, fine_grids, gua
         )
         parent_masks.append(~parent_inside)
         fine_masks.append(fine_inside)
-
     return tuple(parent_masks), tuple(fine_masks)
 
 
@@ -204,15 +210,3 @@ def build_fmr_metric_weights(
         tuple(fine_e_weights),
         fine_b_weights,
     )
-
-
-def _apply_weights(values, weights):
-    return tuple(value * weight for value, weight in zip(values, weights))
-
-
-def _apply_inverse_weights(values, weights):
-    weighted_values = []
-    for value, weight in zip(values, weights):
-        safe_weight = jnp.where(weight != 0.0, weight, 1.0)
-        weighted_values.append(jnp.where(weight != 0.0, value / safe_weight, 0.0))
-    return tuple(weighted_values)

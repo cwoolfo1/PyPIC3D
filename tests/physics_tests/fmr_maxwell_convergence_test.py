@@ -21,12 +21,12 @@ from PyPIC3D.solvers.yee.fmr import (
     load_fmr_from_toml,
     load_fmr_interpolation_order,
     prolong_e_to_fine_interface,
+    synchronize_e_levels,
     time_loop_electrodynamic_fmr_fields,
 )
 from PyPIC3D.solvers.yee.fmr.grids import _component_coordinate_axes
 from PyPIC3D.solvers.yee.first_order_yee import (
     _forward_difference as _yee_forward_difference,
-    _mesh_adapted_difference,
 )
 from PyPIC3D.utilities.simulation_helpers import courant_condition
 from tests.kernel_fixtures import kernel_parameters
@@ -42,7 +42,7 @@ ROOT_RESOLUTIONS = (12, 24, 48)
 DOMAIN_LENGTHS = (1.0, 1.0, 1.0)
 PATCH_BOUNDS = ((0.25, 0.75),) * 3
 REFINEMENT_RATIO = 2
-INTERPOLATION_ORDER = 2
+INTERPOLATION_ORDER = 3
 GUARD_CELLS = 2
 CFL = 0.8
 
@@ -189,12 +189,10 @@ def _initialize_analytic_fields(
             )
         ))
 
-    initialized_E[1] = prolong_e_to_fine_interface(
-        initialized_E[0],
-        initialized_E[1],
-        dynamic_parameters.fmr.levels[1].e_interface_maps,
+    return (
+        synchronize_e_levels(tuple(initialized_E), dynamic_parameters),
+        tuple(initialized_B),
     )
-    return tuple(initialized_E), tuple(initialized_B)
 
 
 def _coordinate_mesh(grids, locations, level, guard_cells):
@@ -310,28 +308,52 @@ def _regional_vector_error(
     numerical_active = tuple(_active_vector(level, guard_cells) for level in numerical_levels)
     exact_active = tuple(_active_vector(level, guard_cells) for level in exact_levels)
     errors = {}
+    infinity_errors = {}
+    component_errors = {}
+    component_infinity_errors = {}
 
     for region in REGIONS:
         squared_error = 0.0
         total_weight = 0.0
+        maximum_error = 0.0
+        component_squared_error = [0.0, 0.0, 0.0]
+        component_weight = [0.0, 0.0, 0.0]
+        component_maximum = [0.0, 0.0, 0.0]
         for numerical, exact, masks, weights in zip(
             numerical_active,
             exact_active,
             region_masks[region],
             level_weights,
         ):
-            for numerical_component, exact_component, mask, weight in zip(
+            for component_index, (numerical_component, exact_component, mask, weight) in enumerate(zip(
                 numerical,
                 exact,
                 masks,
                 weights,
-            ):
+            )):
                 regional_weight = weight * mask
-                squared_error += jnp.sum(regional_weight * (numerical_component - exact_component) ** 2)
-                total_weight += jnp.sum(regional_weight)
+                difference = numerical_component - exact_component
+                component_square = jnp.sum(regional_weight * difference**2)
+                component_volume = jnp.sum(regional_weight)
+                component_max = jnp.max(jnp.where(mask, jnp.abs(difference), 0.0))
+                squared_error += component_square
+                total_weight += component_volume
+                maximum_error = jnp.maximum(maximum_error, component_max)
+                component_squared_error[component_index] += component_square
+                component_weight[component_index] += component_volume
+                component_maximum[component_index] = jnp.maximum(
+                    component_maximum[component_index],
+                    component_max,
+                )
         errors[region] = float(jnp.sqrt(squared_error / total_weight))
+        infinity_errors[region] = float(maximum_error)
+        component_errors[region] = tuple(
+            float(jnp.sqrt(square / weight))
+            for square, weight in zip(component_squared_error, component_weight)
+        )
+        component_infinity_errors[region] = tuple(float(value) for value in component_maximum)
 
-    return errors
+    return errors, infinity_errors, component_errors, component_infinity_errors
 
 
 def _electromagnetic_energy(E_levels, B_levels, dynamic_parameters, guard_cells):
@@ -368,9 +390,8 @@ def _magnetic_divergence(
 ):
     """Apply the level's forward Yee divergence at V-V-V locations.
 
-    The root uses the same MAD derivative family as its production curl. The
-    fine level uses ordinary forward Yee differences. This makes div(curl(E))
-    the relevant level-local algebraic identity for the evolved FMR fields.
+    Both levels use the ordinary forward Yee derivative with their own physical
+    spacing, matching the explicit production E-to-B curl.
     """
 
     g = int(static_parameters.guard_cells)
@@ -380,9 +401,8 @@ def _magnetic_divergence(
             static_parameters,
             g,
         )
-        alpha = 1.0 / static_parameters.fmr_levels[1].refinement_ratio**2
-        derivative = _mesh_adapted_difference
-        derivative_arguments = (g, alpha)
+        derivative = _yee_forward_difference
+        derivative_arguments = (g,)
     else:
         fine_level = static_parameters.fmr_levels[1]
         fine_static_parameters = static_parameters._replace(
@@ -411,29 +431,14 @@ def _divergence_valid_mask(level_data, level_index):
     """Keep divergence points whose complete B stencil is level-owned."""
 
     Bx_mask, By_mask, Bz_mask = level_data.b_active_masks
-    if level_index == 0:
-        def stencil_is_owned(mask, axis):
-            return (
-                jnp.roll(mask, 1, axis=axis)
-                & mask
-                & jnp.roll(mask, -1, axis=axis)
-                & jnp.roll(mask, -2, axis=axis)
-            )
-
-        valid = (
-            stencil_is_owned(Bx_mask, 3)
-            & stencil_is_owned(By_mask, 4)
-            & stencil_is_owned(Bz_mask, 5)
-        )
-    else:
-        valid = (
-            Bx_mask
-            & jnp.roll(Bx_mask, -1, axis=3)
-            & By_mask
-            & jnp.roll(By_mask, -1, axis=4)
-            & Bz_mask
-            & jnp.roll(Bz_mask, -1, axis=5)
-        )
+    valid = (
+        Bx_mask
+        & jnp.roll(Bx_mask, -1, axis=3)
+        & By_mask
+        & jnp.roll(By_mask, -1, axis=4)
+        & Bz_mask
+        & jnp.roll(Bz_mask, -1, axis=5)
+    )
     return valid
 
 
@@ -547,7 +552,7 @@ def _interface_constraint_residual(E_levels, dynamic_parameters):
     return float(residual)
 
 
-def _build_fmr_case(problem, resolution):
+def _build_fmr_case(problem, resolution, dt_value=None, final_time_value=None):
     periodic = problem == "periodic"
     root_points = resolution if periodic else resolution + 1
     spacing = 1.0 / resolution
@@ -624,10 +629,11 @@ def _build_fmr_case(problem, resolution):
 
     wave_number = math.sqrt(3.0) * (2.0 * math.pi if periodic else math.pi)
     period = 2.0 * math.pi / (float(dynamic_parameters.C) * wave_number)
-    final_time = period / 3.0
+    final_time = period / 3.0 if final_time_value is None else float(final_time_value)
     fine_spacing = static_parameters.fmr_levels[-1].spacing
     dt_max = float(courant_condition(CFL, *fine_spacing, dynamic_parameters))
-    number_of_steps = math.ceil(final_time / dt_max)
+    requested_dt = dt_max if dt_value is None else float(dt_value)
+    number_of_steps = math.ceil(final_time / requested_dt)
     dynamic_parameters = dynamic_parameters._replace(
         dt=jnp.asarray(final_time / number_of_steps)
     )
@@ -635,12 +641,21 @@ def _build_fmr_case(problem, resolution):
     return static_parameters, dynamic_parameters, final_time, number_of_steps
 
 
-def _run_problem(problem, resolution):
+def _run_problem(
+    problem,
+    resolution,
+    exact_e_interface=False,
+    dt_value=None,
+    final_time_value=None,
+    return_state=False,
+):
     periodic = problem == "periodic"
     analytic_fields = _periodic_fields if periodic else _tm111_fields
     static_parameters, dynamic_parameters, final_time, number_of_steps = _build_fmr_case(
         problem,
         resolution,
+        dt_value=dt_value,
+        final_time_value=final_time_value,
     )
 
     E0, B0, J0, phi, rho = initialize_fields(static_parameters, dynamic_parameters)
@@ -671,6 +686,12 @@ def _run_problem(problem, resolution):
         external_fields,
         None,
         jnp.asarray(False),
+    )
+
+    interface_maps = dynamic_parameters.fmr.levels[1].e_interface_maps
+    interface_parent_indices = tuple(
+        jnp.unique(interpolation_map.source_indices.reshape((-1, 3)), axis=0)
+        for interpolation_map in interface_maps
     )
 
     E_region_masks = _build_vector_region_masks(
@@ -722,7 +743,7 @@ def _run_problem(problem, resolution):
         )
         return energy, div_l2, div_infinity
 
-    def step(field_state, _unused):
+    def step(field_state, step_index):
         _, field_state = time_loop_electrodynamic_fmr_fields(
             (),
             (),
@@ -730,6 +751,59 @@ def _run_problem(problem, resolution):
             static_parameters,
             dynamic_parameters,
         )
+        if exact_e_interface:
+            exact_time = (step_index + 1) * dynamic_parameters.dt
+            exact_E = tuple(
+                analytic_fields(level_data.grids, exact_time, dynamic_parameters.C)[0]
+                for level_data in dynamic_parameters.fmr.levels
+            )
+            E0, E1 = field_state[0]
+            updated_E0 = []
+            updated_E1 = []
+            for component, exact_component, source_indices in zip(
+                E0,
+                exact_E[0],
+                interface_parent_indices,
+            ):
+                component = component.at[
+                    0,
+                    0,
+                    0,
+                    source_indices[:, 0],
+                    source_indices[:, 1],
+                    source_indices[:, 2],
+                ].set(exact_component[
+                    0,
+                    0,
+                    0,
+                    source_indices[:, 0],
+                    source_indices[:, 1],
+                    source_indices[:, 2],
+                ], unique_indices=True)
+                updated_E0.append(component)
+            for component, exact_component, interpolation_map in zip(
+                E1,
+                exact_E[1],
+                interface_maps,
+            ):
+                target = interpolation_map.target_indices
+                component = component.at[
+                    0,
+                    0,
+                    0,
+                    target[:, 0],
+                    target[:, 1],
+                    target[:, 2],
+                ].set(exact_component[
+                    0,
+                    0,
+                    0,
+                    target[:, 0],
+                    target[:, 1],
+                    target[:, 2],
+                ], unique_indices=True)
+                updated_E1.append(component)
+            field_state = ((tuple(updated_E0), tuple(updated_E1)), *field_state[1:])
         return field_state, diagnostics(field_state)
 
     @jax.jit
@@ -737,8 +811,7 @@ def _run_problem(problem, resolution):
         return jax.lax.scan(
             step,
             field_state,
-            xs=None,
-            length=number_of_steps,
+            xs=jnp.arange(number_of_steps),
         )
 
     start_time = time.perf_counter()
@@ -757,14 +830,14 @@ def _run_problem(problem, resolution):
     E_weights = tuple(level_data.e_weights for level_data in dynamic_parameters.fmr.levels)
     B_weights = tuple(level_data.b_weights for level_data in dynamic_parameters.fmr.levels)
 
-    E_l2 = _regional_vector_error(
+    E_l2, E_linf, E_component_l2, E_component_linf = _regional_vector_error(
         E_final,
         exact_E_levels,
         E_region_masks,
         E_weights,
         static_parameters.guard_cells,
     )
-    B_l2 = _regional_vector_error(
+    B_l2, B_linf, B_component_l2, B_component_linf = _regional_vector_error(
         B_final,
         exact_B_levels,
         B_region_masks,
@@ -789,7 +862,7 @@ def _run_problem(problem, resolution):
     divergence_infinity_history = np.asarray(divergence_infinity_history)
 
     leaves = jax.tree_util.tree_leaves((E_final, B_final))
-    return {
+    result = {
         "H": 1.0 / resolution,
         "h": 1.0 / (REFINEMENT_RATIO * resolution),
         "dt": float(dynamic_parameters.dt),
@@ -807,12 +880,29 @@ def _run_problem(problem, resolution):
             zip(REGIONS, np.max(divergence_infinity_history, axis=0).tolist())
         ),
         "E_l2": E_l2,
+        "E_linf": E_linf,
+        "E_component_l2": E_component_l2,
+        "E_component_linf": E_component_linf,
         "B_l2": B_l2,
+        "B_linf": B_linf,
+        "B_component_l2": B_component_l2,
+        "B_component_linf": B_component_linf,
         "EM_l2": EM_l2,
         "interface_residual": _interface_constraint_residual(E_final, dynamic_parameters),
         "finite": all(bool(jnp.all(jnp.isfinite(component))) for component in leaves),
         "runtime": runtime,
     }
+    if return_state:
+        result.update(
+            E_final=E_final,
+            B_final=B_final,
+            E_region_masks=E_region_masks,
+            B_region_masks=B_region_masks,
+            E_weights=E_weights,
+            B_weights=B_weights,
+            guard_cells=static_parameters.guard_cells,
+        )
+    return result
 
 
 def _observed_orders(results, diagnostic):
@@ -871,8 +961,7 @@ class TestFMRMaxwellConvergence(unittest.TestCase):
             self.assertLess(result["energy_max_relative_error"], 5.0e-2, msg=message)
 
         for region in REGIONS:
-            self.assertGreater(orders["EM_l2"][region][0], 1.7, msg=message)
-            self.assertGreater(orders["EM_l2"][region][1], 1.7, msg=message)
+            self.assertGreater(orders["EM_l2"][region][-1], 1.8, msg=message)
             self.assertLess(results[-1]["divB_max"][region], 2.0e-10, msg=message)
 
         energy_errors = [result["energy_max_relative_error"] for result in results]

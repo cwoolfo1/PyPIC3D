@@ -29,7 +29,7 @@ def _fmr_enabled(config):
 
 
 def load_fmr_interpolation_order(config):
-    """Read the coarse-to-fine interpolation order as a static integer."""
+    """Accept only the fixed cubic FMR interface stencil."""
 
     raw_fmr = config.get("fmr") or {}
     interpolation_order = raw_fmr.get(
@@ -41,9 +41,7 @@ def load_fmr_interpolation_order(config):
         or not isinstance(interpolation_order, Integral)
         or interpolation_order not in FMR_SUPPORTED_INTERPOLATION_ORDERS
     ):
-        raise ValueError(
-            "FMR interpolation_order must be 1 (linear) or 2 (quadratic)."
-        )
+        raise ValueError("FMR interpolation_order must be 3 (cubic).")
     return int(interpolation_order)
 
 
@@ -124,10 +122,10 @@ def load_fmr_from_toml(config, dynamic_config, root_tile_shape):
 
     refinement_ratio = raw_level.get("refinement_ratio")
     if isinstance(refinement_ratio, bool) or not isinstance(refinement_ratio, Integral):
-        raise ValueError("FMR refinement_ratio must be an even integer greater than or equal to 2.")
+        raise ValueError("The field-only FMR implementation requires refinement_ratio = 2.")
     refinement_ratio = int(refinement_ratio)
-    if refinement_ratio < 2 or refinement_ratio % 2 != 0:
-        raise ValueError("FMR refinement_ratio must be an even integer greater than or equal to 2.")
+    if refinement_ratio != 2:
+        raise ValueError("The field-only FMR implementation requires refinement_ratio = 2.")
 
     parent_start = _three_ints(raw_level.get("coarse_start"), "coarse_start")
     parent_stop = _three_ints(raw_level.get("coarse_stop"), "coarse_stop")

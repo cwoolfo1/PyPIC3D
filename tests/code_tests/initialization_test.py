@@ -245,7 +245,7 @@ class TestInitializationFunctions(unittest.TestCase):
 
         self.assertIs(loop, time_loop_electrodynamic_fmr_fields)
         self.assertTrue(static_parameters.fmr_enabled)
-        self.assertEqual(static_parameters.fmr_interpolation_order, 1)
+        self.assertEqual(static_parameters.fmr_interpolation_order, 3)
         self.assertEqual(len(static_parameters.fmr_levels), 2)
         self.assertEqual(len(dynamic_parameters.fmr.levels), 2)
         self.assertEqual(particles.active.shape[3], 0)
@@ -285,18 +285,18 @@ class TestInitializationFunctions(unittest.TestCase):
         self.assertIs(field_map["B"], B)
         self.assertIs(field_map["J"], J)
 
-    def test_initialize_simulation_builds_quadratic_fmr_maps(self):
+    def test_initialize_simulation_builds_cubic_fmr_interface_maps(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             config = self._fmr_config(tmpdir)
             config["simulation_parameters"]["dt"] = 0.05
-            config["fmr"]["interpolation_order"] = 2
+            config["fmr"]["interpolation_order"] = 3
 
             _, _, _, static_parameters, dynamic_parameters, *_ = initialize_simulation(config)
 
-        self.assertEqual(static_parameters.fmr_interpolation_order, 2)
+        self.assertEqual(static_parameters.fmr_interpolation_order, 3)
         for interpolation_map in dynamic_parameters.fmr.levels[1].e_interface_maps:
-            self.assertEqual(interpolation_map.source_indices.shape[1:], (27, 3))
-            self.assertEqual(interpolation_map.weights.shape[1], 27)
+            self.assertEqual(interpolation_map.source_indices.shape[1:], (64, 3))
+            self.assertEqual(interpolation_map.weights.shape[1], 64)
 
     def test_initialize_simulation_uses_finest_fmr_spacing_for_automatic_dt(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -345,7 +345,7 @@ class TestInitializationFunctions(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             config = self._fmr_config(tmpdir)
             config["fmr"]["levels"][0]["refinement_ratio"] = 3
-            with self.assertRaisesRegex(ValueError, "even integer"):
+            with self.assertRaisesRegex(ValueError, "refinement_ratio = 2"):
                 initialize_simulation(config)
 
             for enabled in (1, "false"):

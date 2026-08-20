@@ -95,7 +95,7 @@ class TestKernelParameters(unittest.TestCase):
         static_config.update(
             fmr_enabled=True,
             fmr_levels=fmr_levels,
-            fmr_interpolation_order=2,
+            fmr_interpolation_order=3,
         )
         dynamic_config = dynamic_parameters._asdict()
         dynamic_config["fmr"] = fmr_data
@@ -105,7 +105,7 @@ class TestKernelParameters(unittest.TestCase):
 
         self.assertTrue(static_parameters.fmr_enabled)
         self.assertEqual(static_parameters.fmr_levels, fmr_levels)
-        self.assertEqual(static_parameters.fmr_interpolation_order, 2)
+        self.assertEqual(static_parameters.fmr_interpolation_order, 3)
         self.assertIsInstance(hash(static_parameters), int)
         self.assertIs(dynamic_parameters.fmr, fmr_data)
 
