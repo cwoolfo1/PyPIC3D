@@ -43,6 +43,8 @@ def build_fmr_parameters(static_parameters, dynamic_parameters):
     ) = build_fmr_metric_weights(
         parent_level,
         fine_level,
+        dynamic_parameters.grids,
+        fine_grids,
         e_interface_maps,
         parent_b_masks,
         fine_b_masks,

@@ -849,7 +849,7 @@ class TestFMRGeometryAndInterpolation(unittest.TestCase):
                 self.assertGreater(int(jnp.sum(~expected_parent)), 0)
                 self.assertGreater(int(jnp.sum(~expected_fine)), 0)
 
-    def test_metric_weights_use_level_volumes_and_zero_constrained_dofs(self):
+    def test_metric_weights_are_positive_on_owned_dofs_and_zero_elsewhere(self):
         static_parameters, dynamic_parameters, *_ = _fmr_case(2)
         parent_level, fine_level = static_parameters.fmr_levels
         parent_data, fine_data = dynamic_parameters.fmr.levels
@@ -861,7 +861,8 @@ class TestFMRGeometryAndInterpolation(unittest.TestCase):
 
         for weight in parent_data.e_weights:
             self.assertTrue(jnp.all(jnp.isfinite(weight)))
-            self.assertTrue(jnp.all(weight == parent_volume))
+            self.assertTrue(jnp.all(weight >= 0.0))
+            self.assertTrue(jnp.all(weight[weight != 0.0] <= parent_volume))
 
         fine_shape = np.asarray((fine_level.Nx, fine_level.Ny, fine_level.Nz))
         for weight, interpolation_map in zip(
@@ -881,19 +882,25 @@ class TestFMRGeometryAndInterpolation(unittest.TestCase):
             ]
             self.assertTrue(jnp.all(interface_weights == 0.0))
             self.assertTrue(jnp.all(jnp.isfinite(weight)))
+            self.assertTrue(jnp.all(weight >= 0.0))
             self.assertTrue(jnp.all(weight[weight != 0.0] == fine_volume))
 
-        for level_data, volume in (
-            (parent_data, parent_volume),
-            (fine_data, fine_volume),
+        for weight, active_mask in zip(
+            parent_data.b_weights,
+            parent_data.b_active_masks,
         ):
-            for weight, active_mask in zip(
-                level_data.b_weights,
-                level_data.b_active_masks,
-            ):
-                self.assertTrue(jnp.all(weight[~active_mask] == 0.0))
-                self.assertTrue(jnp.all(jnp.isfinite(weight[active_mask])))
-                self.assertTrue(jnp.all(weight[active_mask] == volume))
+            self.assertTrue(jnp.all(weight[~active_mask] == 0.0))
+            self.assertTrue(jnp.all(jnp.isfinite(weight[active_mask])))
+            self.assertTrue(jnp.all(weight[active_mask] > 0.0))
+            self.assertTrue(jnp.all(weight[active_mask] <= parent_volume))
+
+        for weight, active_mask in zip(
+            fine_data.b_weights,
+            fine_data.b_active_masks,
+        ):
+            self.assertTrue(jnp.all(weight[~active_mask] == 0.0))
+            self.assertTrue(jnp.all(jnp.isfinite(weight[active_mask])))
+            self.assertTrue(jnp.all(weight[active_mask] == fine_volume))
 
 
 class TestFMRCurl(unittest.TestCase):
