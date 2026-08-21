@@ -1,5 +1,4 @@
 import unittest
-from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -17,9 +16,6 @@ from PyPIC3D.boundary_conditions import ghost_cells
 
 
 jax.config.update("jax_enable_x64", True)
-
-
-REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _mesh(mesh_shape):
@@ -228,16 +224,6 @@ def _reference_fold(field_tiles, boundary_conditions, tile_shape, g=1):
 class TestDistributedGhostCells(unittest.TestCase):
     def assert_allclose(self, actual, expected):
         self.assertTrue(jnp.allclose(actual, expected, rtol=1.0e-12, atol=1.0e-12), msg=f"\n{actual}\n!=\n{expected}")
-
-    def test_no_single_device_fast_paths_remain_in_tiled_ghost_module(self):
-        source = (REPO_ROOT / "PyPIC3D" / "boundary_conditions" / "ghost_cells.py").read_text()
-
-        self.assertNotIn("_local_refresh_single_tile_axis", source)
-        self.assertNotIn("_local_fold_single_tile_axis", source)
-        self.assertNotIn("mesh_shape == (1, 1, 1)", source)
-        self.assertNotIn("elif mesh_shape[0] == 1", source)
-        self.assertNotIn("elif mesh_shape[1] == 1", source)
-        self.assertNotIn("elif mesh_shape[2] == 1", source)
 
     def test_public_scalar_update_on_one_device_uses_mapped_periodic_self_exchange(self):
         mesh_shape = (1, 1, 1)

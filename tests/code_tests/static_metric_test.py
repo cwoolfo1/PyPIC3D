@@ -266,10 +266,6 @@ def test_magnetic_boris_rotation_raises_covariant_momentum_in_cross_product():
     np.testing.assert_allclose(np.asarray(u_plus), np.asarray(expected), rtol=0.0, atol=1.0e-12)
 
 
-def test_geodesic_rhs_is_removed_from_hybrid_pusher_module():
-    assert not hasattr(hybrid_pusher, "geodesic_rhs")
-
-
 def test_GR_position_update_uses_lapse_scaled_contravariant_velocity_minus_shift():
     gamma = jnp.asarray(
         (

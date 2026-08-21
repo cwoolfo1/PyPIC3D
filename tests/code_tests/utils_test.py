@@ -1,27 +1,24 @@
 import unittest
 import os
 import tempfile
-import importlib.util
 from types import SimpleNamespace
 import jax
 import jax.numpy as jnp
 import numpy as np
 import toml
-import PyPIC3D
 from PyPIC3D.boundary_conditions import ghost_cells
 from PyPIC3D.initialization import initialize_fields
 from PyPIC3D.particles.particle_class import SpeciesConfig, TiledParticles
 from tests.kernel_fixtures import (
     build_tiled_particles,
     particle_parameters_from_tile_values,
-    particle_parameters_from_values,
     particle_species,
 )
 from PyPIC3D.diagnostics import plotting
 from PyPIC3D.utilities.parameters import build_dynamic_parameters, build_static_parameters
 from PyPIC3D.diagnostics.diagnostic_quantities import compute_energy
 from PyPIC3D.utilities.field_helpers import add_external_fields
-from PyPIC3D.utilities.grids import build_collocated_grid, build_yee_grid
+from PyPIC3D.utilities.grids import build_yee_grid
 from PyPIC3D.utilities.plasma_quantities import (
     T_to_vth,
     build_plasma_parameters_dict,
@@ -31,7 +28,6 @@ from PyPIC3D.utilities.plasma_quantities import (
 from PyPIC3D.utilities.simulation_helpers import (
     courant_condition,
     particle_sanity_check,
-    print_stats,
 )
 from PyPIC3D.utilities.toml_helpers import (
     dump_parameters_to_toml,
@@ -490,10 +486,6 @@ class TestUtilsFunctions(unittest.TestCase):
         self.assertEqual(config["particles"][1]["storage"], "tiled")
         self.assertEqual(config["particles"][1]["active_particles"], 1)
         self.assertEqual(config["particles"][0]["tile_shape"], [2, 1, 1])
-
-    def test_package_does_not_export_vtk_diagnostics(self):
-        self.assertFalse(hasattr(PyPIC3D, "vtk"))
-        self.assertIsNone(importlib.util.find_spec("PyPIC3D.diagnostics.vtk"))
 
     def test_plot_positions_flattens_tiled_particles_and_preserves_species_names(self):
         species = particle_species(

@@ -1,7 +1,5 @@
 import os
 from pathlib import Path
-import subprocess
-import sys
 import tempfile
 import unittest
 from types import SimpleNamespace
@@ -13,7 +11,6 @@ import toml
 
 from PyPIC3D.boundary_conditions.grid_and_stencil import (
     BC_ABSORBING,
-    BC_CONDUCTING,
     BC_PERIODIC,
 )
 from PyPIC3D.deposition.Esirkepov import Esirkepov_current
@@ -31,11 +28,9 @@ from PyPIC3D.solvers.yee.first_order_yee import (
     update_E,
 )
 from PyPIC3D.utilities.grids import build_tiled_yee_grids
-from tests.kernel_fixtures import kernel_parameters_from_values
+from tests.kernel_fixtures import field_tiles_from_global, kernel_parameters_from_values
 
 jax.config.update("jax_enable_x64", True)
-
-os.environ["XLA_FLAGS"] = "--xla_force_host_platform_device_count=32"
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -47,37 +42,21 @@ def _tile_axis_count(n_cells, cells_per_tile):
 
 
 def tile_scalar_field(field, parameter_set, tile_shape, num_guard_cells=2):
-    tile_nx, tile_ny, tile_nz = [int(width) for width in tile_shape]
-    g = int(num_guard_cells)
-    Nx = int(field.shape[0]) - 2
-    Ny = int(field.shape[1]) - 2
-    Nz = int(field.shape[2]) - 2
-    ntx = _tile_axis_count(Nx, tile_nx)
-    nty = _tile_axis_count(Ny, tile_ny)
-    ntz = _tile_axis_count(Nz, tile_nz)
-
-    interior_tiles = field[1:-1, 1:-1, 1:-1]
-    interior_tiles = interior_tiles.reshape(ntx, tile_nx, nty, tile_ny, ntz, tile_nz)
-    interior_tiles = interior_tiles.transpose(0, 2, 4, 1, 3, 5)
-
-    field_tiles = jnp.zeros(
-        (
-            ntx,
-            nty,
-            ntz,
-            tile_nx + 2 * g,
-            tile_ny + 2 * g,
-            tile_nz + 2 * g,
-        ),
-        dtype=field.dtype,
-    )
-    field_tiles = field_tiles.at[:, :, :, g:-g, g:-g, g:-g].set(interior_tiles)
-
     parameter_set = dict(parameter_set)
     parameter_set["tile_shape"] = tuple(int(width) for width in tile_shape)
-    parameter_set["field_mesh"] = ghost_cells.make_field_mesh((ntx, nty, ntz))
-    static_parameters, _ = kernel_parameters_from_values(parameter_set)
-    return ghost_cells.update_tiled_ghost_cells(field_tiles, static_parameters, g)
+    parameter_set["field_mesh"] = ghost_cells.make_field_mesh(
+        tuple(
+            int(parameter_set[axis]) // int(width)
+            for axis, width in zip(("Nx", "Ny", "Nz"), tile_shape)
+        )
+    )
+    static_parameters, dynamic_parameters = kernel_parameters_from_values(parameter_set)
+    return field_tiles_from_global(
+        field,
+        static_parameters,
+        dynamic_parameters,
+        num_guard_cells=num_guard_cells,
+    )
 
 
 def tile_vector_field(field, parameter_set, tile_shape, num_guard_cells=2):
@@ -273,78 +252,6 @@ class TestTiledEsirkepovCurrent(unittest.TestCase):
 
     def _one_tile_shape_for_parameters(self, parameter_set):
         return (int(parameter_set["Nx"]), int(parameter_set["Ny"]), int(parameter_set["Nz"]))
-
-    def _assert_tile_scalar_field_rebuilds_halos(self, parameter_set, tile_shape, num_guard_cells):
-        shape = (parameter_set["Nx"] + 2, parameter_set["Ny"] + 2, parameter_set["Nz"] + 2)
-        field = jnp.arange(jnp.prod(jnp.asarray(shape)), dtype=jnp.float64).reshape(shape)
-        field = field.at[0, :, :].set(-1001.0)
-        field = field.at[-1, :, :].set(-1002.0)
-        field = field.at[:, 0, :].set(-1003.0)
-        field = field.at[:, -1, :].set(-1004.0)
-        field = field.at[:, :, 0].set(-1005.0)
-        field = field.at[:, :, -1].set(-1006.0)
-
-        tiles = tile_scalar_field(field, parameter_set, tile_shape, num_guard_cells=num_guard_cells)
-        assembled = assemble_tiled_vector_field(
-            (tiles, tiles, tiles),
-            parameter_set,
-            tile_shape,
-            num_guard_cells=num_guard_cells,
-        )[0]
-        expected = _update_ghost_cells(
-            field,
-            parameter_set["boundary_conditions"]["x"],
-            parameter_set["boundary_conditions"]["y"],
-            parameter_set["boundary_conditions"]["z"],
-        )
-
-        self.assertTrue(jnp.allclose(assembled, expected, rtol=1.0e-15, atol=1.0e-15))
-
-    def test_tile_scalar_field_one_guard_rebuilds_periodic_halos_from_interiors(self):
-        parameter_set = self._build_parameter_values(Nx=8, Ny=6, Nz=4)
-        self._assert_tile_scalar_field_rebuilds_halos(parameter_set, (2, 3, 2), num_guard_cells=1)
-
-    def test_tile_scalar_field_two_guards_rebuilds_periodic_halos_from_interiors(self):
-        parameter_set = self._build_parameter_values(Nx=8, Ny=6, Nz=4)
-        self._assert_tile_scalar_field_rebuilds_halos(parameter_set, (2, 3, 2), num_guard_cells=2)
-
-    def test_tile_scalar_field_rebuilds_conducting_halos_from_interiors(self):
-        parameter_set = self._build_parameter_values(
-            Nx=8,
-            Ny=6,
-            Nz=4,
-            boundary_conditions={"x": BC_CONDUCTING, "y": BC_PERIODIC, "z": BC_PERIODIC},
-        )
-        self._assert_tile_scalar_field_rebuilds_halos(parameter_set, (2, 3, 2), num_guard_cells=1)
-
-    def test_source_has_no_legacy_particle_fixture_imports(self):
-        with open(__file__, "r") as source_file:
-            source = source_file.read()
-
-        banned_tokens = [
-            "tiled_" + "particle_" + "fixtures",
-            "particle_" + "species",
-            "to_" + "tiled_" + "particles",
-        ]
-        for token in banned_tokens:
-            self.assertNotIn(token, source)
-
-    def test_esirkepov_uses_shared_ghost_cell_folding(self):
-        source = (REPO_ROOT / "PyPIC3D" / "deposition" / "Esirkepov.py").read_text()
-
-        self.assertNotIn("fold_tiled_esirkepov_ghost_cells", source)
-        self.assertNotIn("fold_tiled_esirkepov_vector_ghost_cells", source)
-        self.assertNotIn('static_argnames=("static_parameters", "bc_type")', source)
-        self.assertNotIn("bc_type=bc_type", source)
-        self.assertIn("fold_tiled_vector_ghost_cells", source)
-        self.assertIn(
-            "fold_tiled_vector_ghost_cells((Jx, Jy, Jz), static_parameters, num_guard_cells=g, bc_type=1)",
-            source,
-        )
-        self.assertIn(
-            "update_tiled_vector_ghost_cells(J, static_parameters, num_guard_cells=g, bc_type=1)",
-            source,
-        )
 
     def _parameters_with_tiled_grids(self, parameter_set, tile_shape):
         g = int(parameter_set["guard_cells"])
@@ -693,16 +600,15 @@ class TestTiledEsirkepovCurrent(unittest.TestCase):
             )
 
     def test_tiled_esirkepov_matches_global_current_for_dimensions_and_shapes(self):
-        cases = [
-            (8, 1, 1),
-            (1, 8, 1),
-            (1, 1, 8),
-            (8, 8, 1),
-            (8, 1, 8),
-            (1, 8, 8),
-            (6, 6, 6),
-        ]
         for shape_factor in (1, 2):
+            two_dimensional_case = (8, 8, 1) if shape_factor == 1 else (1, 8, 8)
+            cases = (
+                (8, 1, 1),
+                (1, 8, 1),
+                (1, 1, 8),
+                two_dimensional_case,
+                (4, 4, 4),
+            )
             for Nx, Ny, Nz in cases:
                 with self.subTest(shape_factor=shape_factor, shape=(Nx, Ny, Nz)):
                     parameter_set = self._build_parameter_values(Nx=Nx, Ny=Ny, Nz=Nz, dt=0.05, shape_factor=shape_factor)

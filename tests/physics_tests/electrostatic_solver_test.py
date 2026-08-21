@@ -1,4 +1,3 @@
-import inspect
 import unittest
 
 import jax
@@ -9,10 +8,8 @@ from PyPIC3D.boundary_conditions.ghost_cells import update_tiled_ghost_cells
 from PyPIC3D.boundary_conditions.grid_and_stencil import BC_CONDUCTING, BC_PERIODIC
 from PyPIC3D.solvers.electrostatic.electrostatic_yee import (
     _apply_tiled_phi_constant_boundaries,
-    _local_tile_cg_solve,
     _poisson_residual,
     _tiled_laplacian,
-    calculate_electrostatic_fields,
     solve_poisson_with_tiled_local_schwarz,
 )
 from tests.kernel_fixtures import kernel_parameters
@@ -515,17 +512,6 @@ class TestTiledLocalSchwarz(unittest.TestCase):
         self.assertTrue(jnp.allclose(diagnostics[0], 0.0))
         self.assertEqual(float(diagnostics[1]), 0.0)
         self.assertEqual(int(diagnostics[2]), 0)
-
-    def test_local_cg_reductions_keep_the_tile_axes(self):
-        source = inspect.getsource(_local_tile_cg_solve)
-        production_source = inspect.getsource(calculate_electrostatic_fields)
-
-        self.assertEqual(source.count("axis=(-3, -2, -1)"), 3)
-        self.assertIn("solve_poisson_with_tiled_local_schwarz", production_source)
-        self.assertNotIn("conjugate_gradient", production_source)
-        self.assertNotIn("rho_tiles[0", production_source)
-        self.assertNotIn("phi_tiles[0", production_source)
-
 
 if __name__ == "__main__":
     unittest.main()

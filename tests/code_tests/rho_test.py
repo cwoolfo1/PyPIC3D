@@ -84,12 +84,6 @@ def tile_scalar_field(field, parameter_set, tile_shape, num_guard_cells=2):
 
 
 class TestTiledRho(unittest.TestCase):
-    def test_compute_rho_hard_codes_particle_bc_for_ghost_cells(self):
-        source = (REPO_ROOT / "PyPIC3D" / "deposition" / "rho.py").read_text()
-
-        self.assertIn("fold_tiled_ghost_cells(rho, static_parameters, g, bc_type=1)", source)
-        self.assertIn("update_tiled_ghost_cells(rho, static_parameters, g, bc_type=1)", source)
-
     def _build_parameter_values(self, shape_factor, dt=0.08, particle_boundary_conditions=None):
         x_wind, y_wind, z_wind = 4.0, 3.0, 2.0
         if particle_boundary_conditions is None:

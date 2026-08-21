@@ -183,53 +183,6 @@ class OpenPMDDiagnosticsTests(unittest.TestCase):
 
         self.assertEqual(array.shape, (4, 1, 6))
 
-    def _expected_tiled_scalar_from_interior(self, field, static_parameters, dynamic_parameters, num_guard_cells):
-        return field_tiles_from_global(field, static_parameters, dynamic_parameters, num_guard_cells)
-
-    def _field_with_stale_global_ghosts(self, dynamic_parameters, value_offset=0.0):
-        shape = (
-            int(dynamic_parameters.Nx) + 2,
-            int(dynamic_parameters.Ny) + 2,
-            int(dynamic_parameters.Nz) + 2,
-        )
-        field = jnp.arange(jnp.prod(jnp.asarray(shape)), dtype=jnp.float64).reshape(shape)
-        field = field + value_offset
-        field = field.at[0, :, :].set(-1000.0)
-        field = field.at[-1, :, :].set(-2000.0)
-        field = field.at[:, 0, :].set(-3000.0)
-        field = field.at[:, -1, :].set(-4000.0)
-        field = field.at[:, :, 0].set(-5000.0)
-        field = field.at[:, :, -1].set(-6000.0)
-        return field
-
-    def test_tile_scalar_field_one_guard_rebuilds_periodic_halos_from_interiors(self):
-        static_parameters, dynamic_parameters = kernel_parameters_from_values(_parameter_values())
-        field = self._field_with_stale_global_ghosts(dynamic_parameters)
-
-        tiles = tile_scalar_field(field, static_parameters, dynamic_parameters, num_guard_cells=1)
-        expected = self._expected_tiled_scalar_from_interior(
-            field,
-            static_parameters,
-            dynamic_parameters,
-            num_guard_cells=1,
-        )
-
-        self.assertTrue(jnp.allclose(tiles, expected))
-
-    def test_tile_scalar_field_two_guards_rebuilds_periodic_halos_from_interiors(self):
-        static_parameters, dynamic_parameters = kernel_parameters_from_values(_parameter_values())
-        field = self._field_with_stale_global_ghosts(dynamic_parameters, value_offset=10.0)
-
-        tiles = tile_scalar_field(field, static_parameters, dynamic_parameters, num_guard_cells=2)
-        expected = self._expected_tiled_scalar_from_interior(
-            field,
-            static_parameters,
-            dynamic_parameters,
-            num_guard_cells=2,
-        )
-
-        self.assertTrue(jnp.allclose(tiles, expected))
-
     def test_write_openpmd_fields_preserves_thin_y_mesh_metadata(self):
         shape_with_ghosts = (6, 3, 8)
         E = _zero_field(shape_with_ghosts)

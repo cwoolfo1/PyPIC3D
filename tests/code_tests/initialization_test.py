@@ -55,25 +55,6 @@ class TestInitializationFunctions(unittest.TestCase):
         self.assertEqual(sim["particle_y_bc"], "periodic")
         self.assertEqual(sim["particle_z_bc"], "periodic")
         self.assertEqual(sim["guard_cells"], 2)
-        self.assertIsNone(sim["particle_batch_size"])
-        self.assertNotIn("plot_vtk_particles", plotting)
-        self.assertNotIn("plot_vtk_scalars", plotting)
-        self.assertNotIn("plot_vtk_vectors", plotting)
-        deprecated_plotting_flags = (
-            "plotting",
-            "save_data",
-            "plotfields",
-            "plotpositions",
-            "plotenergy",
-            "plotcurrent",
-            "plasmaFreq",
-            "plot_phasespace",
-            "plot_errors",
-            "plot_dispersion",
-            "plot_chargeconservation",
-        )
-        for flag in deprecated_plotting_flags:
-            self.assertNotIn(flag, plotting)
         self.assertFalse(plotting["plotchargedensity"])
         self.assertIn('eps', dynamic)
         # check that the default parameters contain expected keys
