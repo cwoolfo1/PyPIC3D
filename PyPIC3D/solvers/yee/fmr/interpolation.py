@@ -35,19 +35,9 @@ def _nearest_indices(source_axis, source_indices, targets, width):
     return source_indices[local_indices].astype(jnp.int32)
 
 
-def _quadratic_axis_stencil(source_axis, source_indices, targets):
-    indices = _nearest_indices(source_axis, source_indices, targets, 3)
-    x = targets
-    x0 = source_axis[indices[:, 0]]
-    x1 = source_axis[indices[:, 1]]
-    x2 = source_axis[indices[:, 2]]
-    w0 = (x-x1)*(x-x2) / ((x0-x1)*(x0-x2))
-    w1 = (x-x0)*(x-x2) / ((x1-x0)*(x1-x2))
-    w2 = (x-x0)*(x-x1) / ((x2-x0)*(x2-x1))
-    return indices, jnp.stack((w0, w1, w2), axis=1)
+def _fourth_order_lagrange_axis_stencil(source_axis, source_indices, targets):
+    """Build the four-point Lagrange stencil with O(h^4) point error."""
 
-
-def _cubic_axis_stencil(source_axis, source_indices, targets):
     indices = _nearest_indices(source_axis, source_indices, targets, 4)
     x = targets
     x0 = source_axis[indices[:, 0]]
@@ -116,17 +106,16 @@ def _build_component_maps(fine_level, parent_grids, fine_grids, field_locations)
             axis=-1,
         ).reshape((-1, 3))
 
-        # Cubic point values leave O(H^4) interface error before the fine
-        # O(1/h) curl. Coarse shadow reconstruction is quadratic, giving O(H^3)
-        # point error before the coarse O(1/H) curl. Both curls are therefore
-        # at least second-order consistent at the interface.
+        # Four-point Lagrange values leave O(h^4) transfer error before either
+        # Yee curl. Both transfer directions therefore remain at least
+        # second-order consistent at the interface after differentiation.
         interface_maps.append(
             _build_transfer_map(
                 parent_axes,
                 fine_axes,
                 parent_all,
                 fine_interface,
-                _cubic_axis_stencil,
+                _fourth_order_lagrange_axis_stencil,
             )
         )
         restriction_maps.append(
@@ -135,7 +124,7 @@ def _build_component_maps(fine_level, parent_grids, fine_grids, field_locations)
                 parent_axes,
                 fine_interior,
                 parent_interior,
-                _quadratic_axis_stencil,
+                _fourth_order_lagrange_axis_stencil,
             )
         )
 

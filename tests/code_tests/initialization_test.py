@@ -245,7 +245,6 @@ class TestInitializationFunctions(unittest.TestCase):
 
         self.assertIs(loop, time_loop_electrodynamic_fmr_fields)
         self.assertTrue(static_parameters.fmr_enabled)
-        self.assertEqual(static_parameters.fmr_interpolation_order, 3)
         self.assertEqual(len(static_parameters.fmr_levels), 2)
         self.assertEqual(len(dynamic_parameters.fmr.levels), 2)
         self.assertEqual(particles.active.shape[3], 0)
@@ -285,18 +284,24 @@ class TestInitializationFunctions(unittest.TestCase):
         self.assertIs(field_map["B"], B)
         self.assertIs(field_map["J"], J)
 
-    def test_initialize_simulation_builds_cubic_fmr_interface_maps(self):
+    def test_initialize_simulation_builds_fixed_fourth_order_fmr_maps(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             config = self._fmr_config(tmpdir)
             config["simulation_parameters"]["dt"] = 0.05
-            config["fmr"]["interpolation_order"] = 3
 
             _, _, _, static_parameters, dynamic_parameters, *_ = initialize_simulation(config)
 
-        self.assertEqual(static_parameters.fmr_interpolation_order, 3)
-        for interpolation_map in dynamic_parameters.fmr.levels[1].e_interface_maps:
-            self.assertEqual(interpolation_map.source_indices.shape[1:], (64, 3))
-            self.assertEqual(interpolation_map.weights.shape[1], 64)
+        self.assertNotIn("fmr_interpolation_order", static_parameters._fields)
+        fine_data = dynamic_parameters.fmr.levels[1]
+        for maps in (
+            fine_data.e_interface_maps,
+            fine_data.b_interface_maps,
+            fine_data.e_restriction_maps,
+            fine_data.b_restriction_maps,
+        ):
+            for interpolation_map in maps:
+                self.assertEqual(interpolation_map.source_indices.shape[1:], (64, 3))
+                self.assertEqual(interpolation_map.weights.shape[1], 64)
 
     def test_initialize_simulation_uses_finest_fmr_spacing_for_automatic_dt(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -332,7 +337,7 @@ class TestInitializationFunctions(unittest.TestCase):
                 initialize_simulation(config)
 
             config = self._fmr_config(tmpdir)
-            config["plotting"] = {"plot_openpmd_fields": True}
+            config["plotting"] = {"dump_fields": True}
             with self.assertRaisesRegex(NotImplementedError, "not level-aware"):
                 initialize_simulation(config)
 
@@ -340,6 +345,19 @@ class TestInitializationFunctions(unittest.TestCase):
             config["fmr"]["subcycling"] = True
             with self.assertRaisesRegex(NotImplementedError, "subcycling"):
                 initialize_simulation(config)
+
+    def test_initialize_simulation_allows_runtime_fmr_openpmd_fields(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = self._fmr_config(tmpdir)
+            config["plotting"] = {"plot_openpmd_fields": True}
+
+            result = initialize_simulation(config)
+
+        static_parameters = result[3]
+        plotting_parameters = result[5]
+        self.assertTrue(static_parameters.fmr_enabled)
+        self.assertTrue(plotting_parameters["plot_openpmd_fields"])
+        self.assertEqual(tuple(plotting_parameters["field_map"]), ("E", "B", "J"))
 
     def test_initialize_simulation_rejects_invalid_fmr_geometry(self):
         with tempfile.TemporaryDirectory() as tmpdir:

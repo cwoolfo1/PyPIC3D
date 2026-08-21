@@ -11,6 +11,9 @@ import numpy as np
 
 from PyPIC3D.diagnostics.openPMD import (
     TiledMeshLayout,
+    finalize_fmr_openpmd_viewer_step,
+    setup_fmr_openpmd_viewer_files,
+    write_fmr_patch_snapshot_openpmd,
     write_tiled_field_snapshot_openpmd,
     write_tiled_particle_snapshot_openpmd,
 )
@@ -40,6 +43,15 @@ class TiledFieldSnapshot:
     step: int
     time: float
     fields: Mapping[str, SnapshotFieldValue]
+
+
+@dataclass(frozen=True)
+class FMRFieldSnapshot:
+    """One output timestep containing a host-owned snapshot for every FMR level."""
+
+    step: int
+    time: float
+    levels: Tuple[TiledFieldSnapshot, ...]
 
 
 @dataclass(frozen=True)
@@ -120,6 +132,36 @@ def make_tiled_field_snapshot(field_map, *, step, time):
         step=int(step),
         time=float(time),
         fields=copied,
+    )
+
+
+def prefetch_fmr_field_map_to_host(field_map):
+    for field_levels in field_map.values():
+        for level in field_levels:
+            for component in level:
+                if hasattr(component, "copy_to_host_async"):
+                    component.copy_to_host_async()
+
+
+def make_fmr_field_snapshot(field_map, *, step, time, level_count):
+    level_maps = [dict() for _ in range(int(level_count))]
+
+    for name, field_levels in field_map.items():
+        if len(field_levels) != int(level_count):
+            raise ValueError(
+                f"FMR field {name} has {len(field_levels)} levels, expected {int(level_count)}."
+            )
+        for level_index, level_field in enumerate(field_levels):
+            level_maps[level_index][name] = level_field
+
+    level_snapshots = tuple(
+        make_tiled_field_snapshot(level_map, step=step, time=time)
+        for level_map in level_maps
+    )
+    return FMRFieldSnapshot(
+        step=int(step),
+        time=float(time),
+        levels=level_snapshots,
     )
 
 
@@ -283,6 +325,156 @@ class AsyncTiledOpenPMDFieldWriter:
                 self._queue.task_done()
 
 
+class AsyncFMROpenPMDFieldWriter:
+    """Bounded background writer for one openPMD series per FMR patch."""
+
+    def __init__(
+        self,
+        *,
+        output_dir,
+        static_parameters,
+        dynamic_parameters,
+        queue_size=2,
+        dtype=np.float64,
+        raise_writer_errors_on_close=True,
+    ):
+        queue_size = max(1, int(queue_size))
+
+        self.output_dir = output_dir
+        self.static_parameters = static_parameters
+        self.dynamic_parameters = dynamic_parameters
+        self.levels = tuple(static_parameters.fmr_levels)
+        self.raise_writer_errors_on_close = bool(raise_writer_errors_on_close)
+
+        if len(self.levels) != 2:
+            raise ValueError("FMR openPMD output requires one root and one fine patch.")
+
+        root_level, fine_level = self.levels
+        expected_fine_origin = tuple(
+            root_origin + coarse_start * coarse_spacing
+            for root_origin, coarse_start, coarse_spacing in zip(
+                (root_level.x_min, root_level.y_min, root_level.z_min),
+                fine_level.parent_start,
+                root_level.spacing,
+            )
+        )
+        actual_fine_origin = (fine_level.x_min, fine_level.y_min, fine_level.z_min)
+        if not np.allclose(actual_fine_origin, expected_fine_origin, rtol=0.0, atol=0.0):
+            raise ValueError("FMR fine-patch origin is inconsistent with its coarse bounds.")
+
+        guard_cells = int(static_parameters.guard_cells)
+        self.layouts = tuple(
+            TiledMeshLayout(
+                global_shape=(int(level.Nx), int(level.Ny), int(level.Nz)),
+                tile_shape=tuple(int(width) for width in level.tile_shape),
+                guard_cells=guard_cells,
+                active_dims=(1, 1, 1),
+                dtype=dtype,
+            )
+            for level in self.levels
+        )
+        for level, layout in zip(self.levels, self.layouts):
+            if layout.tile_shape != layout.global_shape:
+                raise ValueError(
+                    f"FMR openPMD output requires one tile for level {int(level.level)}."
+                )
+
+        if jax.process_index() == 0:
+            setup_fmr_openpmd_viewer_files(self.output_dir, self.levels)
+
+        self._queue = queue.Queue(maxsize=queue_size)
+        self._thread = None
+        self._closed = False
+        self._error = None
+        self._error_traceback = None
+
+    def start(self):
+        if self._thread is not None:
+            return
+
+        self._thread = threading.Thread(target=self._writer_loop, daemon=True)
+        self._thread.start()
+
+    def enqueue(self, snapshot, *, block=True):
+        if self._closed:
+            raise RuntimeError("Cannot enqueue after writer.close().")
+        if self._error is not None:
+            raise RuntimeError(
+                "Async FMR openPMD writer failed. Original traceback:\n"
+                f"{self._error_traceback}"
+            ) from self._error
+
+        try:
+            self._queue.put(snapshot, block=block)
+            return True
+        except queue.Full:
+            return False
+
+    def enqueue_fields(self, field_map, *, step, time, block=True):
+        snapshot = make_fmr_field_snapshot(
+            field_map,
+            step=step,
+            time=time,
+            level_count=len(self.levels),
+        )
+        return self.enqueue(snapshot, block=block)
+
+    def close(self, raise_errors=None):
+        if self._closed:
+            return
+
+        self._closed = True
+        if self._thread is not None:
+            self._queue.put(None)
+            self._queue.join()
+            self._thread.join()
+            self._thread = None
+
+        if raise_errors is None:
+            raise_errors = self.raise_writer_errors_on_close
+        if self._error is not None and raise_errors:
+            raise RuntimeError(
+                "Async FMR openPMD writer failed. Original traceback:\n"
+                f"{self._error_traceback}"
+            ) from self._error
+
+    def _writer_loop(self):
+        while True:
+            item = self._queue.get()
+            try:
+                if item is None:
+                    return
+
+                if self._error is None:
+                    with _OPENPMD_WRITE_LOCK:
+                        for level, layout, level_snapshot in zip(
+                            self.levels,
+                            self.layouts,
+                            item.levels,
+                        ):
+                            write_fmr_patch_snapshot_openpmd(
+                                level_snapshot,
+                                output_dir=self.output_dir,
+                                level=level,
+                                layout=layout,
+                                dt=self.dynamic_parameters.dt,
+                            )
+
+                        if jax.process_index() == 0:
+                            finalize_fmr_openpmd_viewer_step(
+                                self.output_dir,
+                                self.levels,
+                                item.step,
+                                item.time,
+                            )
+
+            except BaseException as exc:
+                self._error = exc
+                self._error_traceback = traceback.format_exc()
+            finally:
+                self._queue.task_done()
+
+
 class AsyncTiledOpenPMDParticleWriter:
     """
     Bounded background queue writer for tiled openPMD particle output.
@@ -420,6 +612,23 @@ def create_async_tiled_openpmd_field_writer(
     return writer
 
 
+def create_async_fmr_openpmd_field_writer(
+    static_parameters,
+    dynamic_parameters,
+    output_dir,
+    *,
+    queue_size=2,
+):
+    writer = AsyncFMROpenPMDFieldWriter(
+        output_dir=output_dir,
+        static_parameters=static_parameters,
+        dynamic_parameters=dynamic_parameters,
+        queue_size=queue_size,
+    )
+    writer.start()
+    return writer
+
+
 def create_async_tiled_openpmd_particle_writer(
     static_parameters,
     dynamic_parameters,
@@ -443,6 +652,16 @@ def create_async_tiled_openpmd_particle_writer(
 
 def enqueue_openpmd_field_output(field_writer, field_map, dynamic_parameters, plot_t, t, *, block=True):
     prefetch_field_map_to_host(field_map)
+    return field_writer.enqueue_fields(
+        field_map,
+        step=int(plot_t),
+        time=float(t * dynamic_parameters.dt),
+        block=block,
+    )
+
+
+def enqueue_fmr_openpmd_field_output(field_writer, field_map, dynamic_parameters, plot_t, t, *, block=True):
+    prefetch_fmr_field_map_to_host(field_map)
     return field_writer.enqueue_fields(
         field_map,
         step=int(plot_t),

@@ -10,7 +10,6 @@ from PyPIC3D.solvers.yee.fmr import (
     E_FIELD_LOCATIONS,
     build_fmr_parameters,
     load_fmr_from_toml,
-    load_fmr_interpolation_order,
 )
 from PyPIC3D.solvers.yee.fmr.grids import _component_coordinate_axes
 from tests.kernel_fixtures import kernel_parameters
@@ -79,7 +78,6 @@ def _metric_case(resolution, refinement_ratio):
     static_parameters = static_parameters._replace(
         fmr_enabled=True,
         fmr_levels=levels,
-        fmr_interpolation_order=load_fmr_interpolation_order(config),
     )
     dynamic_parameters = dynamic_parameters._replace(
         fmr=build_fmr_parameters(static_parameters, dynamic_parameters)

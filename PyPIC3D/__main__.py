@@ -10,8 +10,10 @@ from tqdm import tqdm
 
 from PyPIC3D.diagnostics.plotting import write_data
 from PyPIC3D.diagnostics.async_writer import (
+    create_async_fmr_openpmd_field_writer,
     create_async_tiled_openpmd_field_writer,
     create_async_tiled_openpmd_particle_writer,
+    enqueue_fmr_openpmd_field_output,
     enqueue_openpmd_field_output,
     enqueue_openpmd_particle_output,
 )
@@ -90,15 +92,23 @@ def run_PyPIC3D(config_file):
     field_writer = None
     particle_writer = None
     if plotting_parameters["plot_openpmd_fields"]:
-        setup_pmd_files(os.path.join(output_dir, "data"), "fields", ".h5")
-        field_writer = create_async_tiled_openpmd_field_writer(
-            static_parameters,
-            dynamic_parameters,
-            os.path.join(output_dir, "data"),
-            filename="fields",
-            file_extension=".h5",
-            queue_size=int(plotting_parameters.get("openpmd_field_queue_size", 2)),
-        )
+        if fmr_enabled:
+            field_writer = create_async_fmr_openpmd_field_writer(
+                static_parameters,
+                dynamic_parameters,
+                os.path.join(output_dir, "data"),
+                queue_size=int(plotting_parameters.get("openpmd_field_queue_size", 2)),
+            )
+        else:
+            setup_pmd_files(os.path.join(output_dir, "data"), "fields", ".h5")
+            field_writer = create_async_tiled_openpmd_field_writer(
+                static_parameters,
+                dynamic_parameters,
+                os.path.join(output_dir, "data"),
+                filename="fields",
+                file_extension=".h5",
+                queue_size=int(plotting_parameters.get("openpmd_field_queue_size", 2)),
+            )
     if plotting_parameters["plot_openpmd_particles"]:
         setup_pmd_files(os.path.join(output_dir, "data"), "particles", ".h5")
         particle_writer = create_async_tiled_openpmd_particle_writer(
@@ -153,17 +163,36 @@ def run_PyPIC3D(config_file):
                     )
 
                 if field_writer is not None:
-                    field_map = build_field_output_map(
-                        fields,
-                        particles,
-                        species_config,
-                        static_parameters,
-                        dynamic_parameters,
-                        include_fluid_velocity=bool(plotting_parameters["plotvelocities"]),
-                        include_charge_density=bool(plotting_parameters["plotchargedensity"]),
-                    )
+                    if fmr_enabled:
+                        E, B, J, *_rest = fields
+                        field_map = {"E": E, "B": B, "J": J}
+                    else:
+                        field_map = build_field_output_map(
+                            fields,
+                            particles,
+                            species_config,
+                            static_parameters,
+                            dynamic_parameters,
+                            include_fluid_velocity=bool(plotting_parameters["plotvelocities"]),
+                            include_charge_density=bool(plotting_parameters["plotchargedensity"]),
+                        )
                     plotting_parameters["field_map"] = field_map
-                    enqueue_openpmd_field_output(field_writer, field_map, dynamic_parameters, plot_num, t)
+                    if fmr_enabled:
+                        enqueue_fmr_openpmd_field_output(
+                            field_writer,
+                            field_map,
+                            dynamic_parameters,
+                            plot_num,
+                            t,
+                        )
+                    else:
+                        enqueue_openpmd_field_output(
+                            field_writer,
+                            field_map,
+                            dynamic_parameters,
+                            plot_num,
+                            t,
+                        )
 
             particles, fields = jit_loop(
                 particles,

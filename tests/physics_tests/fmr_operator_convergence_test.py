@@ -9,8 +9,10 @@ from PyPIC3D.solvers.yee.fmr import (
     E_FIELD_LOCATIONS,
     fmr_curl_b_to_e,
     fmr_curl_e_to_b,
+    prolong_b_to_fine_interface,
     prolong_e_to_fine_interface,
     restrict_b_to_coarse_shadow,
+    restrict_e_to_coarse_shadow,
     update_B_fmr,
     update_E_fmr,
 )
@@ -166,6 +168,24 @@ def _run_transfers(resolution):
         fine_data.e_interface_maps,
     )
 
+    parent_B = _manufactured_b(parent_data.grids)
+    exact_fine_B = _manufactured_b(fine_data.grids)
+    fine_B = tuple(jnp.zeros_like(component) for component in exact_fine_B)
+    supplied_fine_B = prolong_b_to_fine_interface(
+        parent_B,
+        fine_B,
+        fine_data.b_interface_maps,
+    )
+
+    fine_E = _manufactured_e(fine_data.grids)
+    exact_parent_E = _manufactured_e(parent_data.grids)
+    parent_E = tuple(jnp.zeros_like(component) for component in exact_parent_E)
+    supplied_parent_E = restrict_e_to_coarse_shadow(
+        fine_E,
+        parent_E,
+        fine_data.e_restriction_maps,
+    )
+
     fine_B = _manufactured_b(fine_data.grids)
     exact_parent_B = _manufactured_b(parent_data.grids)
     parent_B = tuple(jnp.zeros_like(component) for component in exact_parent_B)
@@ -179,6 +199,16 @@ def _run_transfers(resolution):
             supplied_fine_E,
             exact_fine_E,
             fine_data.e_interface_maps,
+        ),
+        "B_prolongation": _transfer_norms(
+            supplied_fine_B,
+            exact_fine_B,
+            fine_data.b_interface_maps,
+        ),
+        "E_restriction": _transfer_norms(
+            supplied_parent_E,
+            exact_parent_E,
+            fine_data.e_restriction_maps,
         ),
         "B_restriction": _transfer_norms(
             supplied_parent_B,
@@ -257,9 +287,11 @@ def _run_stages(resolution):
 class TestFMROperatorConvergence(unittest.TestCase):
     def test_interface_transfers_have_sufficient_point_value_order(self):
         results = [_run_transfers(resolution) for resolution in RESOLUTIONS]
-        for diagnostic, minimum_order in (
-            ("E_prolongation", 3.5),
-            ("B_restriction", 2.5),
+        for diagnostic in (
+            "E_prolongation",
+            "B_prolongation",
+            "E_restriction",
+            "B_restriction",
         ):
             for norm_index, norm_name in enumerate(("L2", "Linf")):
                 errors = [result[diagnostic][norm_index] for result in results]
@@ -269,7 +301,7 @@ class TestFMROperatorConvergence(unittest.TestCase):
                 )
                 self.assertGreater(
                     orders[-1],
-                    minimum_order,
+                    3.5,
                     msg=f"{diagnostic} {norm_name}: errors={errors}, orders={orders}",
                 )
 

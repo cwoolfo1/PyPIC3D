@@ -12,14 +12,12 @@ from PyPIC3D.initialization import initialize_fields
 from PyPIC3D.solvers.yee.fmr import (
     B_FIELD_LOCATIONS,
     E_FIELD_LOCATIONS,
-    FMR_DEFAULT_INTERPOLATION_ORDER,
-    FMR_SUPPORTED_INTERPOLATION_ORDERS,
     build_fmr_fields,
     build_fmr_parameters,
     fmr_curl_b_to_e,
     fmr_curl_e_to_b,
     load_fmr_from_toml,
-    load_fmr_interpolation_order,
+    prolong_b_to_fine_interface,
     prolong_e_to_fine_interface,
     restrict_b_to_coarse_shadow,
     restrict_e_to_coarse_shadow,
@@ -63,7 +61,6 @@ def _fmr_case():
     config = {
         "fmr": {
             "enabled": True,
-            "interpolation_order": 3,
             "levels": [{
                 "parent": 0,
                 "refinement_ratio": 2,
@@ -90,7 +87,6 @@ def _fmr_case():
     static_parameters = static_parameters._replace(
         fmr_enabled=True,
         fmr_levels=levels,
-        fmr_interpolation_order=load_fmr_interpolation_order(config),
     )
     dynamic_parameters = dynamic_parameters._replace(
         fmr=build_fmr_parameters(static_parameters, dynamic_parameters)
@@ -135,16 +131,7 @@ def _map_values(component, transfer_map):
 
 
 class TestFMRConfiguration(unittest.TestCase):
-    def test_only_fixed_cubic_and_ratio_two_are_supported(self):
-        self.assertEqual(FMR_DEFAULT_INTERPOLATION_ORDER, 3)
-        self.assertEqual(FMR_SUPPORTED_INTERPOLATION_ORDERS, (3,))
-        self.assertEqual(load_fmr_interpolation_order({"fmr": {}}), 3)
-
-        for order in (1, 2, 4, True, "3"):
-            with self.subTest(order=order):
-                with self.assertRaisesRegex(ValueError, "must be 3"):
-                    load_fmr_interpolation_order({"fmr": {"interpolation_order": order}})
-
+    def test_only_fixed_fourth_order_transfer_and_ratio_two_are_supported(self):
         static, _, *_ = _fmr_case()
         geometry = {
             "Nx": 12, "Ny": 12, "Nz": 12,
@@ -153,6 +140,24 @@ class TestFMRConfiguration(unittest.TestCase):
             "y_min": 0.0, "y_max": 1.0,
             "z_min": 0.0, "z_max": 1.0,
         }
+
+        config = {
+            "fmr": {
+                "enabled": True,
+                "interpolation_order": 4,
+                "levels": [{
+                    "parent": 0,
+                    "refinement_ratio": 2,
+                    "coarse_start": [3, 3, 3],
+                    "coarse_stop": [9, 9, 9],
+                }],
+            }
+        }
+        with self.assertRaisesRegex(NotImplementedError, "interpolation_order"):
+            validate_fmr_configuration(config, {"solver": "electrodynamic_yee"}, {})
+        with self.assertRaisesRegex(NotImplementedError, "interpolation_order"):
+            load_fmr_from_toml(config, geometry, static.tile_shape)
+
         for ratio in (3, 4):
             config = {"fmr": {"enabled": True, "levels": [{
                 "parent": 0,
@@ -164,66 +169,92 @@ class TestFMRConfiguration(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "refinement_ratio = 2"):
                     load_fmr_from_toml(config, geometry, static.tile_shape)
 
+    def test_fourth_order_transfer_requires_three_parent_cells_per_axis(self):
+        geometry = {
+            "Nx": 8, "Ny": 8, "Nz": 8,
+            "dx": 1/8, "dy": 1/8, "dz": 1/8,
+            "x_min": 0.0, "x_max": 1.0,
+            "y_min": 0.0, "y_max": 1.0,
+            "z_min": 0.0, "z_max": 1.0,
+        }
+
+        config = {"fmr": {"enabled": True, "levels": [{
+            "parent": 0,
+            "refinement_ratio": 2,
+            "coarse_start": [2, 2, 2],
+            "coarse_stop": [4, 5, 5],
+        }]}}
+        with self.assertRaisesRegex(ValueError, "at least three parent cells"):
+            load_fmr_from_toml(config, geometry, (8, 8, 8))
+
+        config["fmr"]["levels"][0]["coarse_stop"] = [5, 5, 5]
+        levels = load_fmr_from_toml(config, geometry, (8, 8, 8))
+        self.assertEqual((levels[1].Nx, levels[1].Ny, levels[1].Nz), (6, 6, 6))
+
     def test_scope_validation_still_rejects_non_field_fmr(self):
-        config = {"fmr": {"enabled": True, "interpolation_order": 3, "levels": [{}]}}
+        config = {"fmr": {"enabled": True, "levels": [{}]}}
         validate_fmr_configuration(config, {"solver": "electrodynamic_yee"}, {})
         with self.assertRaises(NotImplementedError):
             validate_fmr_configuration(config, {"solver": "electrostatic"}, {})
 
 
 class TestFMRTransfers(unittest.TestCase):
-    def test_interface_coordinates_and_cubic_polynomials_are_exact(self):
-        static, dynamic, E, *_ = _fmr_case()
+    def test_fourth_order_interface_maps_are_exact_through_degree_three(self):
+        _, dynamic, E, B, *_ = _fmr_case()
         parent_data, fine_data = dynamic.fmr.levels
-        parent = _polynomial_vector(parent_data.grids, E_FIELD_LOCATIONS, degree=3)
-        exact = _polynomial_vector(fine_data.grids, E_FIELD_LOCATIONS, degree=3)
-        actual = prolong_e_to_fine_interface(
-            parent,
-            tuple(jnp.zeros_like(component) for component in E[1]),
-            fine_data.e_interface_maps,
-        )
+        for locations, templates, maps, prolong in (
+            (E_FIELD_LOCATIONS, E, fine_data.e_interface_maps, prolong_e_to_fine_interface),
+            (B_FIELD_LOCATIONS, B, fine_data.b_interface_maps, prolong_b_to_fine_interface),
+        ):
+            parent = _polynomial_vector(parent_data.grids, locations, degree=3)
+            exact = _polynomial_vector(fine_data.grids, locations, degree=3)
+            actual = prolong(
+                parent,
+                tuple(jnp.zeros_like(component) for component in templates[1]),
+                maps,
+            )
 
-        for component, (computed, expected, transfer_map, locations) in enumerate(zip(
-            actual,
-            exact,
-            fine_data.e_interface_maps,
-            E_FIELD_LOCATIONS,
-        )):
-            with self.subTest(component=component):
-                self.assertEqual(transfer_map.source_indices.shape[1:], (64, 3))
-                self.assertTrue(jnp.allclose(jnp.sum(transfer_map.weights, axis=1), 1.0))
-                self.assertTrue(jnp.allclose(
-                    _map_values(computed, transfer_map),
-                    _map_values(expected, transfer_map),
-                    rtol=2.0e-12,
-                    atol=2.0e-12,
-                ))
-
-                parent_axes = _component_coordinate_axes(parent_data.grids, locations)
-                fine_axes = _component_coordinate_axes(fine_data.grids, locations)
-                source = transfer_map.source_indices
-                for axis in range(3):
-                    interpolated_coordinate = jnp.sum(
-                        transfer_map.weights * parent_axes[axis][source[:, :, axis]],
-                        axis=1,
-                    )
-                    target_coordinate = fine_axes[axis][transfer_map.target_indices[:, axis]]
+            for component, (computed, expected, transfer_map, component_locations) in enumerate(zip(
+                actual,
+                exact,
+                maps,
+                locations,
+            )):
+                with self.subTest(locations=locations, component=component):
+                    self.assertEqual(transfer_map.source_indices.shape[1:], (64, 3))
+                    self.assertTrue(jnp.allclose(jnp.sum(transfer_map.weights, axis=1), 1.0))
                     self.assertTrue(jnp.allclose(
-                        interpolated_coordinate,
-                        target_coordinate,
-                        rtol=0.0,
-                        atol=2.0e-14,
+                        _map_values(computed, transfer_map),
+                        _map_values(expected, transfer_map),
+                        rtol=2.0e-12,
+                        atol=2.0e-12,
                     ))
 
-    def test_shadow_restriction_is_quadratic_exact_for_E_and_B(self):
+                    parent_axes = _component_coordinate_axes(parent_data.grids, component_locations)
+                    fine_axes = _component_coordinate_axes(fine_data.grids, component_locations)
+                    source = transfer_map.source_indices
+                    for axis in range(3):
+                        interpolated_coordinate = jnp.sum(
+                            transfer_map.weights * parent_axes[axis][source[:, :, axis]],
+                            axis=1,
+                        )
+                        target_coordinate = fine_axes[axis][transfer_map.target_indices[:, axis]]
+                        self.assertTrue(jnp.allclose(
+                            interpolated_coordinate,
+                            target_coordinate,
+                            rtol=0.0,
+                            atol=2.0e-14,
+                        ))
+
+    def test_fourth_order_shadow_maps_are_exact_through_degree_three(self):
         _, dynamic, E, B, *_ = _fmr_case()
         parent_data, fine_data = dynamic.fmr.levels
         for locations, templates, maps, restrict in (
             (E_FIELD_LOCATIONS, E, fine_data.e_restriction_maps, restrict_e_to_coarse_shadow),
             (B_FIELD_LOCATIONS, B, fine_data.b_restriction_maps, restrict_b_to_coarse_shadow),
         ):
-            fine = _polynomial_vector(fine_data.grids, locations, degree=2)
-            exact = _polynomial_vector(parent_data.grids, locations, degree=2)
+            fine = _polynomial_vector(fine_data.grids, locations, degree=3)
+            exact = _polynomial_vector(parent_data.grids, locations, degree=3)
             actual = restrict(
                 fine,
                 tuple(jnp.zeros_like(component) for component in templates[0]),
@@ -231,7 +262,8 @@ class TestFMRTransfers(unittest.TestCase):
             )
             for component, (computed, expected, transfer_map) in enumerate(zip(actual, exact, maps)):
                 with self.subTest(locations=locations, component=component):
-                    self.assertEqual(transfer_map.source_indices.shape[1:], (27, 3))
+                    self.assertEqual(transfer_map.source_indices.shape[1:], (64, 3))
+                    self.assertTrue(jnp.allclose(jnp.sum(transfer_map.weights, axis=1), 1.0))
                     self.assertTrue(jnp.allclose(
                         _map_values(computed, transfer_map),
                         _map_values(expected, transfer_map),

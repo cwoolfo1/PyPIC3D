@@ -19,7 +19,6 @@ from PyPIC3D.solvers.yee.fmr import (
     build_fmr_fields,
     build_fmr_parameters,
     load_fmr_from_toml,
-    load_fmr_interpolation_order,
     prolong_e_to_fine_interface,
     synchronize_e_levels,
     time_loop_electrodynamic_fmr_fields,
@@ -42,7 +41,6 @@ ROOT_RESOLUTIONS = (12, 24, 48)
 DOMAIN_LENGTHS = (1.0, 1.0, 1.0)
 PATCH_BOUNDS = ((0.25, 0.75),) * 3
 REFINEMENT_RATIO = 2
-INTERPOLATION_ORDER = 3
 GUARD_CELLS = 2
 CFL = 0.8
 
@@ -588,7 +586,6 @@ def _build_fmr_case(problem, resolution, dt_value=None, final_time_value=None):
     config = {
         "fmr": {
             "enabled": True,
-            "interpolation_order": INTERPOLATION_ORDER,
             "levels": [
                 {
                     "parent": 0,
@@ -621,7 +618,6 @@ def _build_fmr_case(problem, resolution, dt_value=None, final_time_value=None):
     static_parameters = static_parameters._replace(
         fmr_enabled=True,
         fmr_levels=levels,
-        fmr_interpolation_order=load_fmr_interpolation_order(config),
     )
     dynamic_parameters = dynamic_parameters._replace(
         fmr=build_fmr_parameters(static_parameters, dynamic_parameters)

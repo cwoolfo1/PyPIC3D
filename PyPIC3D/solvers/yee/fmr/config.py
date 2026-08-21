@@ -2,11 +2,7 @@
 
 from numbers import Integral
 
-from .types import (
-    FMR_DEFAULT_INTERPOLATION_ORDER,
-    FMR_SUPPORTED_INTERPOLATION_ORDERS,
-    FMRLevel,
-)
+from .types import FMRLevel
 
 
 def _three_ints(values, name):
@@ -28,38 +24,22 @@ def _fmr_enabled(config):
     return enabled
 
 
-def load_fmr_interpolation_order(config):
-    """Accept only the fixed cubic FMR interface stencil."""
-
-    raw_fmr = config.get("fmr") or {}
-    interpolation_order = raw_fmr.get(
-        "interpolation_order",
-        FMR_DEFAULT_INTERPOLATION_ORDER,
-    )
-    if (
-        isinstance(interpolation_order, bool)
-        or not isinstance(interpolation_order, Integral)
-        or interpolation_order not in FMR_SUPPORTED_INTERPOLATION_ORDERS
-    ):
-        raise ValueError("FMR interpolation_order must be 3 (cubic).")
-    return int(interpolation_order)
+def _validate_fmr_options(raw_fmr):
+    unsupported_options = sorted(set(raw_fmr) - {"enabled", "levels"})
+    if unsupported_options:
+        names = ", ".join(unsupported_options)
+        raise NotImplementedError(f"Unsupported FMR option(s): {names}.")
 
 
 def validate_fmr_configuration(config, static_config, plotting_parameters):
     """Reject runtime combinations outside the first field-only FMR scope."""
 
     raw_fmr = config.get("fmr")
-    if not _fmr_enabled(config):
+    enabled = _fmr_enabled(config)
+    if raw_fmr:
+        _validate_fmr_options(raw_fmr)
+    if not enabled:
         return
-
-    unsupported_options = sorted(
-        set(raw_fmr) - {"enabled", "levels", "interpolation_order"}
-    )
-    if unsupported_options:
-        names = ", ".join(unsupported_options)
-        raise NotImplementedError(f"Unsupported FMR option(s): {names}.")
-
-    load_fmr_interpolation_order(config)
 
     if static_config["solver"] != "electrodynamic_yee":
         raise NotImplementedError("FMR currently supports only solver='electrodynamic_yee'.")
@@ -76,7 +56,6 @@ def validate_fmr_configuration(config, static_config, plotting_parameters):
 
     unsupported_diagnostics = (
         "dump_fields",
-        "plot_openpmd_fields",
         "plotvelocities",
         "plotchargedensity",
     )
@@ -90,10 +69,11 @@ def load_fmr_from_toml(config, dynamic_config, root_tile_shape):
     """Parse one interior rectangular fine patch and derive its geometry."""
 
     raw_fmr = config.get("fmr")
-    if not _fmr_enabled(config):
+    enabled = _fmr_enabled(config)
+    if raw_fmr:
+        _validate_fmr_options(raw_fmr)
+    if not enabled:
         return ()
-
-    load_fmr_interpolation_order(config)
     raw_levels = raw_fmr.get("levels", ())
     if len(raw_levels) != 1:
         raise ValueError("The first FMR implementation requires exactly one [[fmr.levels]] entry.")
@@ -134,6 +114,11 @@ def load_fmr_from_toml(config, dynamic_config, root_tile_shape):
             raise ValueError("FMR bounds must satisfy 0 <= coarse_start < coarse_stop <= parent shape.")
         if start == 0 or stop == cells:
             raise ValueError("The FMR fine patch must be strictly interior to the root domain.")
+        if stop - start < 3:
+            raise ValueError(
+                "The fixed fourth-order FMR transfer requires the fine patch "
+                "to span at least three parent cells along every axis."
+            )
 
     spacing = tuple(float(dynamic_config[name]) for name in ("dx", "dy", "dz"))
     lower = tuple(float(dynamic_config[f"{axis}_min"]) for axis in ("x", "y", "z"))

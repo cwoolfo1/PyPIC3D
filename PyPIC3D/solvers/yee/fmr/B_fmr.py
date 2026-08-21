@@ -50,7 +50,7 @@ def fmr_curl_e_to_b(E_levels, static_parameters, dynamic_parameters):
     parent_data, fine_data = dynamic_parameters.fmr.levels
 
     # Fine-owned E is first restricted into the coarse shadow. The same current
-    # coarse state then supplies the cubic fine-interface values.
+    # coarse state then supplies the fourth-order fine-interface values.
     E0_work, E1_work = synchronize_e_levels(E_levels, dynamic_parameters)
     E0_work = ghost_cells.update_tiled_vector_ghost_cells(
         E0_work,

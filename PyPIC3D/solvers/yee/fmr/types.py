@@ -10,9 +10,6 @@ from PyPIC3D.utilities.parameters import GridParameters
 E_FIELD_LOCATIONS = (("V", "C", "C"), ("C", "V", "C"), ("C", "C", "V"))
 B_FIELD_LOCATIONS = (("C", "V", "V"), ("V", "C", "V"), ("V", "V", "C"))
 
-FMR_DEFAULT_INTERPOLATION_ORDER = 3
-FMR_SUPPORTED_INTERPOLATION_ORDERS = (3,)
-
 
 class FMRLevel(NamedTuple):
     """Small, hashable geometry record for one fixed refinement level."""
