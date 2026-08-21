@@ -57,7 +57,7 @@ def build_field_active_masks(
     return tuple(parent_masks), tuple(fine_masks)
 
 
-def _fine_e_active_masks(fine_level, e_fine_halo_maps, guard_cells):
+def _fine_e_active_masks(fine_level, e_coarse_to_fine_maps, guard_cells):
     """Build E ownership without borrowing the component-wise B shapes."""
 
     g = int(guard_cells)
@@ -66,7 +66,7 @@ def _fine_e_active_masks(fine_level, e_fine_halo_maps, guard_cells):
     fine_shape_array = jnp.asarray(fine_shape, dtype=jnp.int32)
 
     masks = []
-    for interpolation_map in e_fine_halo_maps:
+    for interpolation_map in e_coarse_to_fine_maps:
         mask = jnp.ones(weight_shape, dtype=bool)
         target = interpolation_map.target_indices - g
         physical = jnp.all((target >= 0) & (target < fine_shape_array), axis=1)
@@ -163,7 +163,7 @@ def build_fmr_metric_weights(
     fine_level,
     parent_grids,
     fine_grids,
-    e_fine_halo_maps,
+    e_coarse_to_fine_maps,
     parent_b_masks,
     fine_b_masks,
     guard_cells,
@@ -186,7 +186,7 @@ def build_fmr_metric_weights(
 
     fine_e_masks = _fine_e_active_masks(
         fine_level,
-        e_fine_halo_maps,
+        e_coarse_to_fine_maps,
         guard_cells,
     )
     fine_e_weights = tuple(fine_volume * mask for mask in fine_e_masks)

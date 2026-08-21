@@ -2,7 +2,7 @@
 
 from PyPIC3D.boundary_conditions import ghost_cells
 
-from .interpolation import fill_b_coarse_halo, fill_b_fine_halo
+from .interpolation import interpolate_coarse_to_fine, interpolate_fine_to_coarse
 
 
 def _backward_difference(field, axis, spacing, guard_cells):
@@ -52,25 +52,25 @@ def fmr_curl_b_to_e(B_levels, E_template, static_parameters, dynamic_parameters)
     parent_level, fine_level = static_parameters.fmr_levels
     parent_data, fine_data = dynamic_parameters.fmr.levels
 
-    # Refresh only the covered coarse values needed by an active curl or by the
-    # fine-halo interpolation.  Root tile and physical ghosts remain a separate
-    # operation, after which the current coarse field supplies every fine value
-    # read across the refinement boundary.
+    # Refresh only the covered coarse ghost cells needed by an active curl or
+    # the coarse-to-fine interpolation.  Root tile and physical ghost cells are
+    # a separate operation, after which the current coarse field supplies every
+    # fine value read across the refinement boundary.
     B0_work, B1_work = B_levels
-    B0_work = fill_b_coarse_halo(
+    B0_work = interpolate_fine_to_coarse(
         B1_work,
         B0_work,
-        fine_data.b_coarse_halo_maps,
+        fine_data.b_fine_to_coarse_maps,
     )
     B0_work = ghost_cells.update_tiled_vector_ghost_cells(
         B0_work,
         static_parameters,
         g,
     )
-    B1_work = fill_b_fine_halo(
+    B1_work = interpolate_coarse_to_fine(
         B0_work,
         B1_work,
-        fine_data.b_fine_halo_maps,
+        fine_data.b_coarse_to_fine_maps,
     )
 
     curl0 = _curl_b_to_e(B0_work, parent_level.spacing, g)

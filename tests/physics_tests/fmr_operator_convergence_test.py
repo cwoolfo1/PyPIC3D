@@ -9,10 +9,8 @@ from PyPIC3D.solvers.yee.fmr import (
     E_FIELD_LOCATIONS,
     fmr_curl_b_to_e,
     fmr_curl_e_to_b,
-    fill_b_coarse_halo,
-    fill_b_fine_halo,
-    fill_e_coarse_halo,
-    fill_e_fine_halo,
+    interpolate_coarse_to_fine,
+    interpolate_fine_to_coarse,
     update_B_fmr,
     update_E_fmr,
 )
@@ -162,58 +160,58 @@ def _run_transfers(resolution):
     parent_E = _manufactured_e(parent_data.grids)
     exact_fine_E = _manufactured_e(fine_data.grids)
     fine_E = tuple(jnp.zeros_like(component) for component in exact_fine_E)
-    supplied_fine_E = fill_e_fine_halo(
+    supplied_fine_E = interpolate_coarse_to_fine(
         parent_E,
         fine_E,
-        fine_data.e_fine_halo_maps,
+        fine_data.e_coarse_to_fine_maps,
     )
 
     parent_B = _manufactured_b(parent_data.grids)
     exact_fine_B = _manufactured_b(fine_data.grids)
     fine_B = tuple(jnp.zeros_like(component) for component in exact_fine_B)
-    supplied_fine_B = fill_b_fine_halo(
+    supplied_fine_B = interpolate_coarse_to_fine(
         parent_B,
         fine_B,
-        fine_data.b_fine_halo_maps,
+        fine_data.b_coarse_to_fine_maps,
     )
 
     fine_E = _manufactured_e(fine_data.grids)
     exact_parent_E = _manufactured_e(parent_data.grids)
     parent_E = tuple(jnp.zeros_like(component) for component in exact_parent_E)
-    supplied_parent_E = fill_e_coarse_halo(
+    supplied_parent_E = interpolate_fine_to_coarse(
         fine_E,
         parent_E,
-        fine_data.e_coarse_halo_maps,
+        fine_data.e_fine_to_coarse_maps,
     )
 
     fine_B = _manufactured_b(fine_data.grids)
     exact_parent_B = _manufactured_b(parent_data.grids)
     parent_B = tuple(jnp.zeros_like(component) for component in exact_parent_B)
-    supplied_parent_B = fill_b_coarse_halo(
+    supplied_parent_B = interpolate_fine_to_coarse(
         fine_B,
         parent_B,
-        fine_data.b_coarse_halo_maps,
+        fine_data.b_fine_to_coarse_maps,
     )
     return {
         "E_prolongation": _transfer_norms(
             supplied_fine_E,
             exact_fine_E,
-            fine_data.e_fine_halo_maps,
+            fine_data.e_coarse_to_fine_maps,
         ),
         "B_prolongation": _transfer_norms(
             supplied_fine_B,
             exact_fine_B,
-            fine_data.b_fine_halo_maps,
+            fine_data.b_coarse_to_fine_maps,
         ),
         "E_restriction": _transfer_norms(
             supplied_parent_E,
             exact_parent_E,
-            fine_data.e_coarse_halo_maps,
+            fine_data.e_fine_to_coarse_maps,
         ),
         "B_restriction": _transfer_norms(
             supplied_parent_B,
             exact_parent_B,
-            fine_data.b_coarse_halo_maps,
+            fine_data.b_fine_to_coarse_maps,
         ),
     }
 

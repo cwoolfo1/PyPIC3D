@@ -1,4 +1,4 @@
-"""Fixed stagger-aware halo transfers for one 2:1 Yee refinement patch."""
+"""Fixed stagger-aware ghost-cell transfers for one 2:1 Yee refinement patch."""
 
 from itertools import product
 
@@ -146,30 +146,30 @@ def _deep_shadow_indices(
     parent_axes,
     bounds,
     tolerance,
-    coarse_halo,
+    coarse_ghost,
     guard_cells,
 ):
     physical = _physical_indices(parent_level, guard_cells)
     covered = physical[_indices_strictly_inside(physical, parent_axes, bounds, tolerance)]
 
-    halo_mask = jnp.zeros(
+    ghost_mask = jnp.zeros(
         (parent_level.Nx, parent_level.Ny, parent_level.Nz),
         dtype=bool,
     )
     g = int(guard_cells)
-    local_halo = coarse_halo - g
-    halo_mask = halo_mask.at[
-        local_halo[:, 0],
-        local_halo[:, 1],
-        local_halo[:, 2],
+    local_ghost = coarse_ghost - g
+    ghost_mask = ghost_mask.at[
+        local_ghost[:, 0],
+        local_ghost[:, 1],
+        local_ghost[:, 2],
     ].set(True, unique_indices=True)
     local_covered = covered - g
-    in_halo = halo_mask[
+    in_ghost = ghost_mask[
         local_covered[:, 0],
         local_covered[:, 1],
         local_covered[:, 2],
     ]
-    return covered[~in_halo]
+    return covered[~in_ghost]
 
 
 def _build_component_maps(
@@ -203,8 +203,8 @@ def _build_component_maps(
         guard_cells,
         fine=True,
     )
-    fine_halo_maps = []
-    coarse_halo_maps = []
+    coarse_to_fine_maps = []
+    fine_to_coarse_maps = []
     deep_shadow_indices = []
 
     for locations in field_locations:
@@ -221,7 +221,7 @@ def _build_component_maps(
             axis=-1,
         ).reshape((-1, 3))
 
-        component = len(fine_halo_maps)
+        component = len(coarse_to_fine_maps)
         fine_reads = _curl_read_indices(
             fine_output_active,
             component,
@@ -233,25 +233,26 @@ def _build_component_maps(
             bounds,
             tolerance,
         )
-        fine_halo = _unique_indices(fine_interface, fine_reads[~fine_read_is_owned])
+        fine_ghost = _unique_indices(fine_interface, fine_reads[~fine_read_is_owned])
 
         # Build the coarse-to-fine stencil first.  Its covered donors, together
         # with covered values read by the active coarse curl, define the narrow
-        # coarse halo that must be refreshed from the current fine solution.
-        fine_halo_map = _build_transfer_map(
+        # coarse ghost region that must be refreshed from the current fine
+        # solution.
+        coarse_to_fine_map = _build_transfer_map(
             parent_axes,
             fine_axes,
             parent_all,
-            fine_halo,
+            fine_ghost,
             _fourth_order_lagrange_axis_stencil,
         )
-        fine_halo_donors = jnp.unique(
-            fine_halo_map.source_indices.reshape((-1, 3)),
+        fine_ghost_donors = jnp.unique(
+            coarse_to_fine_map.source_indices.reshape((-1, 3)),
             axis=0,
         )
-        covered_fine_halo_donors = fine_halo_donors[
+        covered_fine_ghost_donors = fine_ghost_donors[
             _indices_strictly_inside(
-                fine_halo_donors,
+                fine_ghost_donors,
                 parent_axes,
                 bounds,
                 tolerance,
@@ -271,38 +272,38 @@ def _build_component_maps(
                 tolerance,
             )
         ]
-        coarse_halo = _unique_indices(
-            covered_fine_halo_donors,
+        coarse_ghost = _unique_indices(
+            covered_fine_ghost_donors,
             covered_parent_reads,
         )
 
         # Four-point Lagrange values leave O(h^4) transfer error before either
         # Yee curl.  The fine-to-coarse map reads only fine-owned values; the
-        # coarse-to-fine map reads only coarse-owned or refreshed-halo values.
-        coarse_halo_map = _build_transfer_map(
+        # coarse-to-fine map reads only coarse-owned or refreshed ghost values.
+        fine_to_coarse_map = _build_transfer_map(
             fine_axes,
             parent_axes,
             fine_interior,
-            coarse_halo,
+            coarse_ghost,
             _fourth_order_lagrange_axis_stencil,
         )
 
-        fine_halo_maps.append(fine_halo_map)
-        coarse_halo_maps.append(coarse_halo_map)
+        coarse_to_fine_maps.append(coarse_to_fine_map)
+        fine_to_coarse_maps.append(fine_to_coarse_map)
         deep_shadow_indices.append(
             _deep_shadow_indices(
                 parent_level,
                 parent_axes,
                 bounds,
                 tolerance,
-                coarse_halo,
+                coarse_ghost,
                 guard_cells,
             )
         )
 
     return (
-        tuple(fine_halo_maps),
-        tuple(coarse_halo_maps),
+        tuple(coarse_to_fine_maps),
+        tuple(fine_to_coarse_maps),
         tuple(deep_shadow_indices),
     )
 
@@ -345,53 +346,27 @@ def _apply_component_map(source_component, target_component, transfer_map):
     ].set(values, unique_indices=True)
 
 
-def fill_e_fine_halo(parent_E, fine_E, e_fine_halo_maps):
-    """Fill coarse-controlled fine Ex(VCC), Ey(CVC), and Ez(CCV) halos."""
+def interpolate_coarse_to_fine(coarse_fields, fine_fields, interpolation_maps):
+    """Interpolate a staggered field into fine refinement ghost cells."""
 
-    parent_Ex, parent_Ey, parent_Ez = parent_E
-    fine_Ex, fine_Ey, fine_Ez = fine_E
-    Ex_map, Ey_map, Ez_map = e_fine_halo_maps
-    return (
-        _apply_component_map(parent_Ex, fine_Ex, Ex_map),
-        _apply_component_map(parent_Ey, fine_Ey, Ey_map),
-        _apply_component_map(parent_Ez, fine_Ez, Ez_map),
+    return tuple(
+        _apply_component_map(coarse, fine, interpolation_map)
+        for coarse, fine, interpolation_map in zip(
+            coarse_fields,
+            fine_fields,
+            interpolation_maps,
+        )
     )
 
 
-def fill_b_fine_halo(parent_B, fine_B, b_fine_halo_maps):
-    """Fill coarse-controlled fine Bx(CVV), By(VCV), and Bz(VVC) halos."""
+def interpolate_fine_to_coarse(fine_fields, coarse_fields, interpolation_maps):
+    """Interpolate a staggered field into covered coarse ghost cells."""
 
-    parent_Bx, parent_By, parent_Bz = parent_B
-    fine_Bx, fine_By, fine_Bz = fine_B
-    Bx_map, By_map, Bz_map = b_fine_halo_maps
-    return (
-        _apply_component_map(parent_Bx, fine_Bx, Bx_map),
-        _apply_component_map(parent_By, fine_By, By_map),
-        _apply_component_map(parent_Bz, fine_Bz, Bz_map),
-    )
-
-
-def fill_e_coarse_halo(fine_E, parent_E, e_coarse_halo_maps):
-    """Fill only the covered coarse Ex(VCC), Ey(CVC), and Ez(CCV) halo."""
-
-    fine_Ex, fine_Ey, fine_Ez = fine_E
-    parent_Ex, parent_Ey, parent_Ez = parent_E
-    Ex_map, Ey_map, Ez_map = e_coarse_halo_maps
-    return (
-        _apply_component_map(fine_Ex, parent_Ex, Ex_map),
-        _apply_component_map(fine_Ey, parent_Ey, Ey_map),
-        _apply_component_map(fine_Ez, parent_Ez, Ez_map),
-    )
-
-
-def fill_b_coarse_halo(fine_B, parent_B, b_coarse_halo_maps):
-    """Fill only the covered coarse Bx(CVV), By(VCV), and Bz(VVC) halo."""
-
-    fine_Bx, fine_By, fine_Bz = fine_B
-    parent_Bx, parent_By, parent_Bz = parent_B
-    Bx_map, By_map, Bz_map = b_coarse_halo_maps
-    return (
-        _apply_component_map(fine_Bx, parent_Bx, Bx_map),
-        _apply_component_map(fine_By, parent_By, By_map),
-        _apply_component_map(fine_Bz, parent_Bz, Bz_map),
+    return tuple(
+        _apply_component_map(fine, coarse, interpolation_map)
+        for fine, coarse, interpolation_map in zip(
+            fine_fields,
+            coarse_fields,
+            interpolation_maps,
+        )
     )

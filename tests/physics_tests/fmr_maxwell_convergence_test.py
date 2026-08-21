@@ -18,8 +18,8 @@ from PyPIC3D.solvers.yee.fmr import (
     E_FIELD_LOCATIONS,
     build_fmr_fields,
     build_fmr_parameters,
+    interpolate_coarse_to_fine,
     load_fmr_from_toml,
-    fill_e_fine_halo,
     synchronize_e_levels,
     time_loop_electrodynamic_fmr_fields,
 )
@@ -519,16 +519,16 @@ def _magnetic_divergence_norms(
 
 
 def _interface_constraint_residual(E_levels, dynamic_parameters):
-    prolonged = fill_e_fine_halo(
+    prolonged = interpolate_coarse_to_fine(
         E_levels[0],
         E_levels[1],
-        dynamic_parameters.fmr.levels[1].e_fine_halo_maps,
+        dynamic_parameters.fmr.levels[1].e_coarse_to_fine_maps,
     )
     residual = 0.0
     for actual, expected, interpolation_map in zip(
         E_levels[1],
         prolonged,
-        dynamic_parameters.fmr.levels[1].e_fine_halo_maps,
+        dynamic_parameters.fmr.levels[1].e_coarse_to_fine_maps,
     ):
         target = interpolation_map.target_indices
         difference = actual[
@@ -684,7 +684,7 @@ def _run_problem(
         jnp.asarray(False),
     )
 
-    interface_maps = dynamic_parameters.fmr.levels[1].e_fine_halo_maps
+    interface_maps = dynamic_parameters.fmr.levels[1].e_coarse_to_fine_maps
     interface_parent_indices = tuple(
         jnp.unique(interpolation_map.source_indices.reshape((-1, 3)), axis=0)
         for interpolation_map in interface_maps

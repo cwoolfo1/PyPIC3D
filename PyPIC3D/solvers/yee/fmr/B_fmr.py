@@ -3,7 +3,7 @@
 from PyPIC3D.boundary_conditions import ghost_cells
 from PyPIC3D.solvers.yee.first_order_yee import _forward_difference
 
-from .interpolation import fill_e_coarse_halo, fill_e_fine_halo
+from .interpolation import interpolate_coarse_to_fine, interpolate_fine_to_coarse
 
 
 def _curl_e_to_b(E, spacing, guard_cells):
@@ -37,25 +37,25 @@ def fmr_curl_e_to_b(E_levels, static_parameters, dynamic_parameters):
     parent_level, fine_level = static_parameters.fmr_levels
     parent_data, fine_data = dynamic_parameters.fmr.levels
 
-    # Refresh only the covered coarse values needed by an active curl or by the
-    # fine-halo interpolation.  Root tile and physical ghosts remain a separate
-    # operation, after which the current coarse field supplies every fine value
-    # read across the refinement boundary.
+    # Refresh only the covered coarse ghost cells needed by an active curl or
+    # the coarse-to-fine interpolation.  Root tile and physical ghost cells are
+    # a separate operation, after which the current coarse field supplies every
+    # fine value read across the refinement boundary.
     E0_work, E1_work = E_levels
-    E0_work = fill_e_coarse_halo(
+    E0_work = interpolate_fine_to_coarse(
         E1_work,
         E0_work,
-        fine_data.e_coarse_halo_maps,
+        fine_data.e_fine_to_coarse_maps,
     )
     E0_work = ghost_cells.update_tiled_vector_ghost_cells(
         E0_work,
         static_parameters,
         g,
     )
-    E1_work = fill_e_fine_halo(
+    E1_work = interpolate_coarse_to_fine(
         E0_work,
         E1_work,
-        fine_data.e_fine_halo_maps,
+        fine_data.e_coarse_to_fine_maps,
     )
 
     curl0 = _curl_e_to_b(E0_work, parent_level.spacing, g)

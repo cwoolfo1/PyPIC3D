@@ -14,10 +14,8 @@ from .fields import (
 from .interpolation import (
     build_b_transfer_maps,
     build_e_transfer_maps,
-    fill_b_coarse_halo,
-    fill_b_fine_halo,
-    fill_e_coarse_halo,
-    fill_e_fine_halo,
+    interpolate_coarse_to_fine,
+    interpolate_fine_to_coarse,
 )
 from .time_loop import (
     time_loop_electrodynamic_fmr_fields,
@@ -47,12 +45,10 @@ __all__ = [
     "build_fmr_fields",
     "build_fmr_metric_weights",
     "build_fmr_parameters",
-    "fill_b_coarse_halo",
-    "fill_b_fine_halo",
-    "fill_e_coarse_halo",
-    "fill_e_fine_halo",
     "fmr_curl_b_to_e",
     "fmr_curl_e_to_b",
+    "interpolate_coarse_to_fine",
+    "interpolate_fine_to_coarse",
     "load_fmr_from_toml",
     "synchronize_b_levels",
     "synchronize_e_levels",

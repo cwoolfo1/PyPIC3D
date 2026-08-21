@@ -14,12 +14,10 @@ from PyPIC3D.solvers.yee.fmr import (
     E_FIELD_LOCATIONS,
     build_fmr_fields,
     build_fmr_parameters,
-    fill_b_coarse_halo,
-    fill_b_fine_halo,
-    fill_e_coarse_halo,
-    fill_e_fine_halo,
     fmr_curl_b_to_e,
     fmr_curl_e_to_b,
+    interpolate_coarse_to_fine,
+    interpolate_fine_to_coarse,
     load_fmr_from_toml,
     synchronize_b_levels,
     synchronize_e_levels,
@@ -205,16 +203,16 @@ class TestFMRConfiguration(unittest.TestCase):
 
 
 class TestFMRTransfers(unittest.TestCase):
-    def test_fourth_order_fine_halo_maps_are_exact_through_degree_three(self):
+    def test_fourth_order_coarse_to_fine_maps_are_exact_through_degree_three(self):
         _, dynamic, E, B, *_ = _fmr_case()
         parent_data, fine_data = dynamic.fmr.levels
-        for locations, templates, maps, fill in (
-            (E_FIELD_LOCATIONS, E, fine_data.e_fine_halo_maps, fill_e_fine_halo),
-            (B_FIELD_LOCATIONS, B, fine_data.b_fine_halo_maps, fill_b_fine_halo),
+        for locations, templates, maps in (
+            (E_FIELD_LOCATIONS, E, fine_data.e_coarse_to_fine_maps),
+            (B_FIELD_LOCATIONS, B, fine_data.b_coarse_to_fine_maps),
         ):
             parent = _polynomial_vector(parent_data.grids, locations, degree=3)
             exact = _polynomial_vector(fine_data.grids, locations, degree=3)
-            actual = fill(
+            actual = interpolate_coarse_to_fine(
                 parent,
                 tuple(jnp.zeros_like(component) for component in templates[1]),
                 maps,
@@ -252,16 +250,16 @@ class TestFMRTransfers(unittest.TestCase):
                             atol=2.0e-14,
                         ))
 
-    def test_fourth_order_coarse_halo_maps_are_exact_through_degree_three(self):
+    def test_fourth_order_fine_to_coarse_maps_are_exact_through_degree_three(self):
         _, dynamic, E, B, *_ = _fmr_case()
         parent_data, fine_data = dynamic.fmr.levels
-        for locations, templates, maps, fill in (
-            (E_FIELD_LOCATIONS, E, fine_data.e_coarse_halo_maps, fill_e_coarse_halo),
-            (B_FIELD_LOCATIONS, B, fine_data.b_coarse_halo_maps, fill_b_coarse_halo),
+        for locations, templates, maps in (
+            (E_FIELD_LOCATIONS, E, fine_data.e_fine_to_coarse_maps),
+            (B_FIELD_LOCATIONS, B, fine_data.b_fine_to_coarse_maps),
         ):
             fine = _polynomial_vector(fine_data.grids, locations, degree=3)
             exact = _polynomial_vector(parent_data.grids, locations, degree=3)
-            actual = fill(
+            actual = interpolate_fine_to_coarse(
                 fine,
                 tuple(jnp.zeros_like(component) for component in templates[0]),
                 maps,
@@ -277,7 +275,7 @@ class TestFMRTransfers(unittest.TestCase):
                         atol=2.0e-12,
                     ))
 
-    def test_fine_halos_cover_face_edge_and_corner_neighborhoods(self):
+    def test_fine_ghost_cells_cover_face_edge_and_corner_neighborhoods(self):
         static, dynamic, *_ = _fmr_case()
         fine_level = static.fmr_levels[1]
         fine_data = dynamic.fmr.levels[1]
@@ -287,11 +285,11 @@ class TestFMRTransfers(unittest.TestCase):
             (fine_level.z_min, fine_level.z_max),
         )
 
-        for locations_tuple, fine_halo_maps in (
-            (E_FIELD_LOCATIONS, fine_data.e_fine_halo_maps),
-            (B_FIELD_LOCATIONS, fine_data.b_fine_halo_maps),
+        for locations_tuple, coarse_to_fine_maps in (
+            (E_FIELD_LOCATIONS, fine_data.e_coarse_to_fine_maps),
+            (B_FIELD_LOCATIONS, fine_data.b_coarse_to_fine_maps),
         ):
-            for locations, transfer_map in zip(locations_tuple, fine_halo_maps):
+            for locations, transfer_map in zip(locations_tuple, coarse_to_fine_maps):
                 axes = _component_coordinate_axes(fine_data.grids, locations)
                 target = np.asarray(transfer_map.target_indices)
                 near_interface = np.zeros(target.shape[0], dtype=np.int32)
@@ -302,10 +300,10 @@ class TestFMRTransfers(unittest.TestCase):
 
                 # Yee components do not generally lie exactly at geometric
                 # corners.  The half-cell staggered values adjacent to all
-                # three faces are the component-specific corner halo values.
+                # three faces are the component-specific corner ghost values.
                 self.assertTrue({1, 2, 3}.issubset(set(near_interface.tolist())))
 
-    def test_active_curl_reads_and_fine_halo_donors_are_refreshed(self):
+    def test_active_curl_reads_and_fine_ghost_donors_are_refreshed(self):
         static, dynamic, *_ = _fmr_case()
         parent_level, fine_level = static.fmr_levels
         parent_data = dynamic.fmr.levels[0]
@@ -322,16 +320,16 @@ class TestFMRTransfers(unittest.TestCase):
                 E_FIELD_LOCATIONS,
                 B_FIELD_LOCATIONS,
                 1,
-                fine_data.e_fine_halo_maps,
-                fine_data.e_coarse_halo_maps,
+                fine_data.e_coarse_to_fine_maps,
+                fine_data.e_fine_to_coarse_maps,
                 fine_data.e_deep_shadow_indices,
             ),
             (
                 B_FIELD_LOCATIONS,
                 E_FIELD_LOCATIONS,
                 -1,
-                fine_data.b_fine_halo_maps,
-                fine_data.b_coarse_halo_maps,
+                fine_data.b_coarse_to_fine_maps,
+                fine_data.b_fine_to_coarse_maps,
                 fine_data.b_deep_shadow_indices,
             ),
         ):
@@ -350,12 +348,12 @@ class TestFMRTransfers(unittest.TestCase):
                 tolerance = _coordinate_tolerance(*parent_axes, *fine_axes)
 
                 fine_reads = _curl_read_indices(fine_output_active, component, offset)
-                fine_halo_reads = fine_reads[~_indices_strictly_inside(
+                fine_ghost_reads = fine_reads[~_indices_strictly_inside(
                     fine_reads, fine_axes, bounds, tolerance
                 )]
                 fine_targets = {tuple(index) for index in np.asarray(fine_map.target_indices)}
                 self.assertTrue(
-                    {tuple(index) for index in np.asarray(fine_halo_reads)}.issubset(fine_targets)
+                    {tuple(index) for index in np.asarray(fine_ghost_reads)}.issubset(fine_targets)
                 )
 
                 parent_reads = _curl_read_indices(parent_output_active, component, offset)
@@ -400,7 +398,7 @@ class TestFMRTransfers(unittest.TestCase):
         for actual, exact, transfer_map in zip(
             synchronized[1],
             exact_fine,
-            fine_data.e_fine_halo_maps,
+            fine_data.e_coarse_to_fine_maps,
         ):
             residual = max(
                 residual,
@@ -440,7 +438,7 @@ class TestFMRTransfers(unittest.TestCase):
             ):
                 self.assertTrue(jnp.allclose(actual, expected, rtol=0.0, atol=2.0e-14))
 
-    def test_deep_shadow_sentinels_do_not_affect_active_curls_or_fine_halos(self):
+    def test_deep_shadow_sentinels_do_not_affect_active_curls_or_fine_ghosts(self):
         static, dynamic, *_ = _fmr_case()
         parent_data, fine_data = dynamic.fmr.levels
         E = (
@@ -474,8 +472,16 @@ class TestFMRTransfers(unittest.TestCase):
                 self.assertTrue(jnp.allclose(actual, expected, rtol=0.0, atol=2.0e-14))
 
         for reference, perturbed, maps in (
-            (synchronize_e_levels(E, dynamic), synchronize_e_levels(E_sentinel, dynamic), fine_data.e_fine_halo_maps),
-            (synchronize_b_levels(B, dynamic), synchronize_b_levels(B_sentinel, dynamic), fine_data.b_fine_halo_maps),
+            (
+                synchronize_e_levels(E, dynamic),
+                synchronize_e_levels(E_sentinel, dynamic),
+                fine_data.e_coarse_to_fine_maps,
+            ),
+            (
+                synchronize_b_levels(B, dynamic),
+                synchronize_b_levels(B_sentinel, dynamic),
+                fine_data.b_coarse_to_fine_maps,
+            ),
         ):
             for reference_component, perturbed_component, transfer_map in zip(
                 reference[1], perturbed[1], maps
