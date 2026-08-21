@@ -44,10 +44,12 @@ class FMRLevelData(NamedTuple):
     """JAX-array data associated with one statically described level."""
 
     grids: GridParameters
-    e_interface_maps: tuple
-    b_interface_maps: tuple
-    e_restriction_maps: tuple
-    b_restriction_maps: tuple
+    e_fine_halo_maps: tuple
+    b_fine_halo_maps: tuple
+    e_coarse_halo_maps: tuple
+    b_coarse_halo_maps: tuple
+    e_deep_shadow_indices: tuple
+    b_deep_shadow_indices: tuple
     e_active_masks: tuple
     b_active_masks: tuple
     e_weights: tuple

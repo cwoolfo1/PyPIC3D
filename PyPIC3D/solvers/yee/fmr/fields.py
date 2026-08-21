@@ -6,10 +6,10 @@ from .grids import _build_level_grids
 from .interpolation import (
     build_b_transfer_maps,
     build_e_transfer_maps,
-    prolong_b_to_fine_interface,
-    prolong_e_to_fine_interface,
-    restrict_b_to_coarse_shadow,
-    restrict_e_to_coarse_shadow,
+    fill_b_coarse_halo,
+    fill_b_fine_halo,
+    fill_e_coarse_halo,
+    fill_e_fine_halo,
 )
 from .types import B_FIELD_LOCATIONS, E_FIELD_LOCATIONS, FMRLevelData, FMRParameters
 from .weights import build_field_active_masks, build_fmr_metric_weights
@@ -27,14 +27,22 @@ def build_fmr_parameters(static_parameters, dynamic_parameters):
 
     parent_level, fine_level = static_parameters.fmr_levels
     fine_grids = _build_level_grids(fine_level, static_parameters.guard_cells)
-    e_interface_maps, e_restriction_maps = build_e_transfer_maps(
+    (
+        e_fine_halo_maps,
+        e_coarse_halo_maps,
+        e_deep_shadow_indices,
+    ) = build_e_transfer_maps(
         parent_level,
         fine_level,
         dynamic_parameters.grids,
         fine_grids,
         static_parameters.guard_cells,
     )
-    b_interface_maps, b_restriction_maps = build_b_transfer_maps(
+    (
+        b_fine_halo_maps,
+        b_coarse_halo_maps,
+        b_deep_shadow_indices,
+    ) = build_b_transfer_maps(
         parent_level,
         fine_level,
         dynamic_parameters.grids,
@@ -67,7 +75,7 @@ def build_fmr_parameters(static_parameters, dynamic_parameters):
         fine_level,
         dynamic_parameters.grids,
         fine_grids,
-        e_interface_maps,
+        e_fine_halo_maps,
         parent_b_masks,
         fine_b_masks,
         static_parameters.guard_cells,
@@ -75,10 +83,12 @@ def build_fmr_parameters(static_parameters, dynamic_parameters):
 
     parent_data = FMRLevelData(
         grids=dynamic_parameters.grids,
-        e_interface_maps=(),
-        b_interface_maps=(),
-        e_restriction_maps=(),
-        b_restriction_maps=(),
+        e_fine_halo_maps=(),
+        b_fine_halo_maps=(),
+        e_coarse_halo_maps=(),
+        b_coarse_halo_maps=(),
+        e_deep_shadow_indices=(),
+        b_deep_shadow_indices=(),
         e_active_masks=parent_e_masks,
         b_active_masks=parent_b_masks,
         e_weights=parent_e_weights,
@@ -86,10 +96,12 @@ def build_fmr_parameters(static_parameters, dynamic_parameters):
     )
     fine_data = FMRLevelData(
         grids=fine_grids,
-        e_interface_maps=e_interface_maps,
-        b_interface_maps=b_interface_maps,
-        e_restriction_maps=e_restriction_maps,
-        b_restriction_maps=b_restriction_maps,
+        e_fine_halo_maps=e_fine_halo_maps,
+        b_fine_halo_maps=b_fine_halo_maps,
+        e_coarse_halo_maps=e_coarse_halo_maps,
+        b_coarse_halo_maps=b_coarse_halo_maps,
+        e_deep_shadow_indices=e_deep_shadow_indices,
+        b_deep_shadow_indices=b_deep_shadow_indices,
         e_active_masks=fine_e_masks,
         b_active_masks=fine_b_masks,
         e_weights=fine_e_weights,
@@ -112,32 +124,31 @@ def build_fmr_fields(E0, B0, J0, static_parameters, dynamic_parameters):
     B1 = _fine_vector(fine_level, static_parameters.guard_cells, B0)
     J1 = _fine_vector(fine_level, static_parameters.guard_cells, J0)
 
-    # Initialize the constrained fine E interface. The fine interior is zero in
-    # the general runtime path, so shadow restriction starts only after callers
-    # have populated or evolved a fine state.
-    E1 = prolong_e_to_fine_interface(
+    # Initialize the constrained fine E interface and curl-reachable halo.  The
+    # fine-owned interior remains zero until the caller populates or evolves it.
+    E1 = fill_e_fine_halo(
         E0,
         E1,
-        dynamic_parameters.fmr.levels[1].e_interface_maps,
+        dynamic_parameters.fmr.levels[1].e_fine_halo_maps,
     )
     return (E0, E1), (B0, B1), (J0, J1)
 
 
 def synchronize_e_levels(E_levels, dynamic_parameters):
-    """Synchronize the inactive coarse E shadow, then its fine interface."""
+    """Fill the coarse and fine E refinement halos without touching deep shadow."""
 
     E0, E1 = E_levels
     fine_data = dynamic_parameters.fmr.levels[1]
-    E0 = restrict_e_to_coarse_shadow(E1, E0, fine_data.e_restriction_maps)
-    E1 = prolong_e_to_fine_interface(E0, E1, fine_data.e_interface_maps)
+    E0 = fill_e_coarse_halo(E1, E0, fine_data.e_coarse_halo_maps)
+    E1 = fill_e_fine_halo(E0, E1, fine_data.e_fine_halo_maps)
     return E0, E1
 
 
 def synchronize_b_levels(B_levels, dynamic_parameters):
-    """Synchronize the inactive coarse B shadow, then its fine interface."""
+    """Fill the coarse and fine B refinement halos without touching deep shadow."""
 
     B0, B1 = B_levels
     fine_data = dynamic_parameters.fmr.levels[1]
-    B0 = restrict_b_to_coarse_shadow(B1, B0, fine_data.b_restriction_maps)
-    B1 = prolong_b_to_fine_interface(B0, B1, fine_data.b_interface_maps)
+    B0 = fill_b_coarse_halo(B1, B0, fine_data.b_coarse_halo_maps)
+    B1 = fill_b_fine_halo(B0, B1, fine_data.b_fine_halo_maps)
     return B0, B1

@@ -1,20 +1,8 @@
 """Explicit two-level Yee curl used by ``dE/dt = C**2 curl(B) - J/eps``."""
 
 from PyPIC3D.boundary_conditions import ghost_cells
-from PyPIC3D.boundary_conditions.grid_and_stencil import BC_CONSTANT
 
-from .fields import synchronize_b_levels
-from .interpolation import prolong_b_to_fine_interface
-
-
-def _fine_static_view(static_parameters):
-    fine_level = static_parameters.fmr_levels[1]
-    return static_parameters._replace(
-        tile_shape=fine_level.tile_shape,
-        boundary_conditions=(BC_CONSTANT, BC_CONSTANT, BC_CONSTANT),
-        fmr_enabled=False,
-        fmr_levels=(),
-    )
+from .interpolation import fill_b_coarse_halo, fill_b_fine_halo
 
 
 def _backward_difference(field, axis, spacing, guard_cells):
@@ -64,24 +52,25 @@ def fmr_curl_b_to_e(B_levels, E_template, static_parameters, dynamic_parameters)
     parent_level, fine_level = static_parameters.fmr_levels
     parent_data, fine_data = dynamic_parameters.fmr.levels
 
-    # Fine-owned magnetic values reconstruct the inactive coarse shadow. The
-    # resulting current coarse field then controls the fine B interface needed
-    # by the first interior backward difference.
-    B0_work, B1_work = synchronize_b_levels(B_levels, dynamic_parameters)
+    # Refresh only the covered coarse values needed by an active curl or by the
+    # fine-halo interpolation.  Root tile and physical ghosts remain a separate
+    # operation, after which the current coarse field supplies every fine value
+    # read across the refinement boundary.
+    B0_work, B1_work = B_levels
+    B0_work = fill_b_coarse_halo(
+        B1_work,
+        B0_work,
+        fine_data.b_coarse_halo_maps,
+    )
     B0_work = ghost_cells.update_tiled_vector_ghost_cells(
         B0_work,
         static_parameters,
         g,
     )
-    B1_work = ghost_cells.update_tiled_vector_ghost_cells(
-        B1_work,
-        _fine_static_view(static_parameters),
-        g,
-    )
-    B1_work = prolong_b_to_fine_interface(
+    B1_work = fill_b_fine_halo(
         B0_work,
         B1_work,
-        fine_data.b_interface_maps,
+        fine_data.b_fine_halo_maps,
     )
 
     curl0 = _curl_b_to_e(B0_work, parent_level.spacing, g)

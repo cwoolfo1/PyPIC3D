@@ -1,21 +1,9 @@
 """Explicit two-level Yee curl used by ``dB/dt = -curl(E)``."""
 
 from PyPIC3D.boundary_conditions import ghost_cells
-from PyPIC3D.boundary_conditions.grid_and_stencil import BC_CONSTANT
 from PyPIC3D.solvers.yee.first_order_yee import _forward_difference
 
-from .fields import synchronize_e_levels
-from .interpolation import prolong_e_to_fine_interface
-
-
-def _fine_static_view(static_parameters):
-    fine_level = static_parameters.fmr_levels[1]
-    return static_parameters._replace(
-        tile_shape=fine_level.tile_shape,
-        boundary_conditions=(BC_CONSTANT, BC_CONSTANT, BC_CONSTANT),
-        fmr_enabled=False,
-        fmr_levels=(),
-    )
+from .interpolation import fill_e_coarse_halo, fill_e_fine_halo
 
 
 def _curl_e_to_b(E, spacing, guard_cells):
@@ -49,26 +37,25 @@ def fmr_curl_e_to_b(E_levels, static_parameters, dynamic_parameters):
     parent_level, fine_level = static_parameters.fmr_levels
     parent_data, fine_data = dynamic_parameters.fmr.levels
 
-    # Fine-owned E is first restricted into the coarse shadow. The same current
-    # coarse state then supplies the fourth-order fine-interface values.
-    E0_work, E1_work = synchronize_e_levels(E_levels, dynamic_parameters)
+    # Refresh only the covered coarse values needed by an active curl or by the
+    # fine-halo interpolation.  Root tile and physical ghosts remain a separate
+    # operation, after which the current coarse field supplies every fine value
+    # read across the refinement boundary.
+    E0_work, E1_work = E_levels
+    E0_work = fill_e_coarse_halo(
+        E1_work,
+        E0_work,
+        fine_data.e_coarse_halo_maps,
+    )
     E0_work = ghost_cells.update_tiled_vector_ghost_cells(
         E0_work,
         static_parameters,
         g,
     )
-    E1_work = ghost_cells.update_tiled_vector_ghost_cells(
-        E1_work,
-        _fine_static_view(static_parameters),
-        g,
-    )
-    # Some Yee interface coordinates live in the first fine ghost layer (for
-    # example a C coordinate at the upper patch face). Set them after the
-    # constant halo refresh so the physical interface value is not extrapolated.
-    E1_work = prolong_e_to_fine_interface(
+    E1_work = fill_e_fine_halo(
         E0_work,
         E1_work,
-        fine_data.e_interface_maps,
+        fine_data.e_fine_halo_maps,
     )
 
     curl0 = _curl_e_to_b(E0_work, parent_level.spacing, g)

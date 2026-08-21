@@ -294,10 +294,10 @@ class TestInitializationFunctions(unittest.TestCase):
         self.assertNotIn("fmr_interpolation_order", static_parameters._fields)
         fine_data = dynamic_parameters.fmr.levels[1]
         for maps in (
-            fine_data.e_interface_maps,
-            fine_data.b_interface_maps,
-            fine_data.e_restriction_maps,
-            fine_data.b_restriction_maps,
+            fine_data.e_fine_halo_maps,
+            fine_data.b_fine_halo_maps,
+            fine_data.e_coarse_halo_maps,
+            fine_data.b_coarse_halo_maps,
         ):
             for interpolation_map in maps:
                 self.assertEqual(interpolation_map.source_indices.shape[1:], (64, 3))

@@ -14,13 +14,13 @@ from PyPIC3D.solvers.yee.fmr import (
     E_FIELD_LOCATIONS,
     build_fmr_fields,
     build_fmr_parameters,
+    fill_b_coarse_halo,
+    fill_b_fine_halo,
+    fill_e_coarse_halo,
+    fill_e_fine_halo,
     fmr_curl_b_to_e,
     fmr_curl_e_to_b,
     load_fmr_from_toml,
-    prolong_b_to_fine_interface,
-    prolong_e_to_fine_interface,
-    restrict_b_to_coarse_shadow,
-    restrict_e_to_coarse_shadow,
     synchronize_b_levels,
     synchronize_e_levels,
     update_B_fmr,
@@ -29,6 +29,12 @@ from PyPIC3D.solvers.yee.fmr import (
 )
 from PyPIC3D.solvers.yee.fmr.grids import _component_coordinate_axes
 from PyPIC3D.solvers.yee.fmr.grids import _coordinate_tolerance
+from PyPIC3D.solvers.yee.fmr.interpolation import (
+    _active_component_indices,
+    _curl_read_indices,
+    _indices_strictly_inside,
+    _strict_interior_indices,
+)
 from tests.kernel_fixtures import kernel_parameters
 
 
@@ -199,16 +205,16 @@ class TestFMRConfiguration(unittest.TestCase):
 
 
 class TestFMRTransfers(unittest.TestCase):
-    def test_fourth_order_interface_maps_are_exact_through_degree_three(self):
+    def test_fourth_order_fine_halo_maps_are_exact_through_degree_three(self):
         _, dynamic, E, B, *_ = _fmr_case()
         parent_data, fine_data = dynamic.fmr.levels
-        for locations, templates, maps, prolong in (
-            (E_FIELD_LOCATIONS, E, fine_data.e_interface_maps, prolong_e_to_fine_interface),
-            (B_FIELD_LOCATIONS, B, fine_data.b_interface_maps, prolong_b_to_fine_interface),
+        for locations, templates, maps, fill in (
+            (E_FIELD_LOCATIONS, E, fine_data.e_fine_halo_maps, fill_e_fine_halo),
+            (B_FIELD_LOCATIONS, B, fine_data.b_fine_halo_maps, fill_b_fine_halo),
         ):
             parent = _polynomial_vector(parent_data.grids, locations, degree=3)
             exact = _polynomial_vector(fine_data.grids, locations, degree=3)
-            actual = prolong(
+            actual = fill(
                 parent,
                 tuple(jnp.zeros_like(component) for component in templates[1]),
                 maps,
@@ -246,16 +252,16 @@ class TestFMRTransfers(unittest.TestCase):
                             atol=2.0e-14,
                         ))
 
-    def test_fourth_order_shadow_maps_are_exact_through_degree_three(self):
+    def test_fourth_order_coarse_halo_maps_are_exact_through_degree_three(self):
         _, dynamic, E, B, *_ = _fmr_case()
         parent_data, fine_data = dynamic.fmr.levels
-        for locations, templates, maps, restrict in (
-            (E_FIELD_LOCATIONS, E, fine_data.e_restriction_maps, restrict_e_to_coarse_shadow),
-            (B_FIELD_LOCATIONS, B, fine_data.b_restriction_maps, restrict_b_to_coarse_shadow),
+        for locations, templates, maps, fill in (
+            (E_FIELD_LOCATIONS, E, fine_data.e_coarse_halo_maps, fill_e_coarse_halo),
+            (B_FIELD_LOCATIONS, B, fine_data.b_coarse_halo_maps, fill_b_coarse_halo),
         ):
             fine = _polynomial_vector(fine_data.grids, locations, degree=3)
             exact = _polynomial_vector(parent_data.grids, locations, degree=3)
-            actual = restrict(
+            actual = fill(
                 fine,
                 tuple(jnp.zeros_like(component) for component in templates[0]),
                 maps,
@@ -271,46 +277,215 @@ class TestFMRTransfers(unittest.TestCase):
                         atol=2.0e-12,
                     ))
 
-    def test_every_shadow_interface_donor_is_synchronized(self):
-        _, dynamic, *_ = _fmr_case()
-        parent_data = dynamic.fmr.levels[0]
+    def test_fine_halos_cover_face_edge_and_corner_neighborhoods(self):
+        static, dynamic, *_ = _fmr_case()
+        fine_level = static.fmr_levels[1]
         fine_data = dynamic.fmr.levels[1]
-        fine_level = _fmr_case()[0].fmr_levels[1]
         bounds = (
             (fine_level.x_min, fine_level.x_max),
             (fine_level.y_min, fine_level.y_max),
             (fine_level.z_min, fine_level.z_max),
         )
 
-        for locations_tuple, interface_maps, restriction_maps in (
-            (E_FIELD_LOCATIONS, fine_data.e_interface_maps, fine_data.e_restriction_maps),
-            (B_FIELD_LOCATIONS, fine_data.b_interface_maps, fine_data.b_restriction_maps),
+        for locations_tuple, fine_halo_maps in (
+            (E_FIELD_LOCATIONS, fine_data.e_fine_halo_maps),
+            (B_FIELD_LOCATIONS, fine_data.b_fine_halo_maps),
         ):
-            for locations, interface_map, restriction_map in zip(
-                locations_tuple,
-                interface_maps,
-                restriction_maps,
-            ):
-                synchronized = {tuple(index) for index in np.asarray(restriction_map.target_indices)}
-                axes = _component_coordinate_axes(parent_data.grids, locations)
-                tolerance = float(_coordinate_tolerance(*axes))
-                donors = {
-                    tuple(index)
-                    for index in np.asarray(interface_map.source_indices).reshape((-1, 3))
-                }
-                shadow_donors = {
-                    index
-                    for index in donors
-                    if all(
-                        lower + tolerance < float(axes[axis][index[axis]]) < upper - tolerance
-                        for axis, (lower, upper) in enumerate(bounds)
-                    )
-                }
+            for locations, transfer_map in zip(locations_tuple, fine_halo_maps):
+                axes = _component_coordinate_axes(fine_data.grids, locations)
+                target = np.asarray(transfer_map.target_indices)
+                near_interface = np.zeros(target.shape[0], dtype=np.int32)
+                for axis, (lower, upper) in enumerate(bounds):
+                    coordinates = np.asarray(axes[axis])[target[:, axis]]
+                    distance = np.minimum(np.abs(coordinates - lower), np.abs(coordinates - upper))
+                    near_interface += distance <= 0.5 * fine_level.spacing[axis] + 2.0e-14
 
-                # Every donor under the patch is reconstructed from the current
-                # fine solution before it is used for interface prolongation.
-                self.assertTrue(shadow_donors)
-                self.assertTrue(shadow_donors.issubset(synchronized))
+                # Yee components do not generally lie exactly at geometric
+                # corners.  The half-cell staggered values adjacent to all
+                # three faces are the component-specific corner halo values.
+                self.assertTrue({1, 2, 3}.issubset(set(near_interface.tolist())))
+
+    def test_active_curl_reads_and_fine_halo_donors_are_refreshed(self):
+        static, dynamic, *_ = _fmr_case()
+        parent_level, fine_level = static.fmr_levels
+        parent_data = dynamic.fmr.levels[0]
+        fine_data = dynamic.fmr.levels[1]
+        g = static.guard_cells
+        bounds = (
+            (fine_level.x_min, fine_level.x_max),
+            (fine_level.y_min, fine_level.y_max),
+            (fine_level.z_min, fine_level.z_max),
+        )
+
+        for locations_tuple, output_locations, offset, fine_maps, coarse_maps, deep_sets in (
+            (
+                E_FIELD_LOCATIONS,
+                B_FIELD_LOCATIONS,
+                1,
+                fine_data.e_fine_halo_maps,
+                fine_data.e_coarse_halo_maps,
+                fine_data.e_deep_shadow_indices,
+            ),
+            (
+                B_FIELD_LOCATIONS,
+                E_FIELD_LOCATIONS,
+                -1,
+                fine_data.b_fine_halo_maps,
+                fine_data.b_coarse_halo_maps,
+                fine_data.b_deep_shadow_indices,
+            ),
+        ):
+            parent_output_active = _active_component_indices(
+                parent_level, parent_data.grids, output_locations, bounds, g, fine=False
+            )
+            fine_output_active = _active_component_indices(
+                fine_level, fine_data.grids, output_locations, bounds, g, fine=True
+            )
+
+            for component, (locations, fine_map, coarse_map, deep) in enumerate(zip(
+                locations_tuple, fine_maps, coarse_maps, deep_sets
+            )):
+                fine_axes = _component_coordinate_axes(fine_data.grids, locations)
+                parent_axes = _component_coordinate_axes(parent_data.grids, locations)
+                tolerance = _coordinate_tolerance(*parent_axes, *fine_axes)
+
+                fine_reads = _curl_read_indices(fine_output_active, component, offset)
+                fine_halo_reads = fine_reads[~_indices_strictly_inside(
+                    fine_reads, fine_axes, bounds, tolerance
+                )]
+                fine_targets = {tuple(index) for index in np.asarray(fine_map.target_indices)}
+                self.assertTrue(
+                    {tuple(index) for index in np.asarray(fine_halo_reads)}.issubset(fine_targets)
+                )
+
+                parent_reads = _curl_read_indices(parent_output_active, component, offset)
+                covered_parent_reads = parent_reads[_indices_strictly_inside(
+                    parent_reads, parent_axes, bounds, tolerance
+                )]
+                coarse_targets = {tuple(index) for index in np.asarray(coarse_map.target_indices)}
+                self.assertTrue(
+                    {tuple(index) for index in np.asarray(covered_parent_reads)}.issubset(coarse_targets)
+                )
+
+                donors = jnp.unique(fine_map.source_indices.reshape((-1, 3)), axis=0)
+                covered_donors = donors[_indices_strictly_inside(
+                    donors, parent_axes, bounds, tolerance
+                )]
+                covered_donors = {tuple(index) for index in np.asarray(covered_donors)}
+                deep = {tuple(index) for index in np.asarray(deep)}
+                self.assertTrue(covered_donors.issubset(coarse_targets))
+                self.assertTrue(covered_donors.isdisjoint(deep))
+                self.assertTrue(deep)
+
+                covered = {
+                    tuple(index)
+                    for index in np.asarray(_strict_interior_indices(
+                        parent_axes, bounds, tolerance
+                    ))
+                }
+                self.assertEqual(covered, coarse_targets | deep)
+                self.assertTrue(coarse_targets.isdisjoint(deep))
+
+    def test_manufactured_e_interface_constraint_is_at_roundoff(self):
+        _, dynamic, *_ = _fmr_case()
+        parent_data, fine_data = dynamic.fmr.levels
+        exact_fine = _polynomial_vector(fine_data.grids, E_FIELD_LOCATIONS, degree=3)
+        E = (
+            _polynomial_vector(parent_data.grids, E_FIELD_LOCATIONS, degree=3),
+            exact_fine,
+        )
+        synchronized = synchronize_e_levels(E, dynamic)
+
+        residual = 0.0
+        for actual, exact, transfer_map in zip(
+            synchronized[1],
+            exact_fine,
+            fine_data.e_fine_halo_maps,
+        ):
+            residual = max(
+                residual,
+                float(jnp.max(jnp.abs(
+                    _map_values(actual, transfer_map)
+                    - _map_values(exact, transfer_map)
+                ))),
+            )
+        self.assertLess(residual, 2.0e-12)
+
+    def test_synchronization_preserves_deep_shadow_and_is_idempotent(self):
+        _, dynamic, E, B, *_ = _fmr_case()
+        parent_data, fine_data = dynamic.fmr.levels
+
+        for locations, deep_sets, synchronize in (
+            (E_FIELD_LOCATIONS, fine_data.e_deep_shadow_indices, synchronize_e_levels),
+            (B_FIELD_LOCATIONS, fine_data.b_deep_shadow_indices, synchronize_b_levels),
+        ):
+            parent = list(_polynomial_vector(parent_data.grids, locations, degree=2))
+            fine = _polynomial_vector(fine_data.grids, locations, degree=3)
+            for component, deep in enumerate(deep_sets):
+                parent[component] = parent[component].at[
+                    0, 0, 0, deep[:, 0], deep[:, 1], deep[:, 2]
+                ].set(1000.0 + component, unique_indices=True)
+
+            synchronized = synchronize((tuple(parent), fine), dynamic)
+            synchronized_twice = synchronize(synchronized, dynamic)
+            for component, deep in enumerate(deep_sets):
+                self.assertTrue(jnp.all(
+                    synchronized[0][component][
+                        0, 0, 0, deep[:, 0], deep[:, 1], deep[:, 2]
+                    ] == 1000.0 + component
+                ))
+            for actual, expected in zip(
+                jax.tree_util.tree_leaves(synchronized),
+                jax.tree_util.tree_leaves(synchronized_twice),
+            ):
+                self.assertTrue(jnp.allclose(actual, expected, rtol=0.0, atol=2.0e-14))
+
+    def test_deep_shadow_sentinels_do_not_affect_active_curls_or_fine_halos(self):
+        static, dynamic, *_ = _fmr_case()
+        parent_data, fine_data = dynamic.fmr.levels
+        E = (
+            _polynomial_vector(parent_data.grids, E_FIELD_LOCATIONS, degree=2),
+            _polynomial_vector(fine_data.grids, E_FIELD_LOCATIONS, degree=2),
+        )
+        B = (
+            _polynomial_vector(parent_data.grids, B_FIELD_LOCATIONS, degree=2),
+            _polynomial_vector(fine_data.grids, B_FIELD_LOCATIONS, degree=2),
+        )
+
+        def with_sentinels(levels, deep_sets, base):
+            parent = list(levels[0])
+            for component, deep in enumerate(deep_sets):
+                parent[component] = parent[component].at[
+                    0, 0, 0, deep[:, 0], deep[:, 1], deep[:, 2]
+                ].set(base + 10.0 * component, unique_indices=True)
+            return tuple(parent), levels[1]
+
+        E_sentinel = with_sentinels(E, fine_data.e_deep_shadow_indices, 10000.0)
+        B_sentinel = with_sentinels(B, fine_data.b_deep_shadow_indices, -10000.0)
+
+        for reference, perturbed in (
+            (fmr_curl_e_to_b(E, static, dynamic), fmr_curl_e_to_b(E_sentinel, static, dynamic)),
+            (fmr_curl_b_to_e(B, E, static, dynamic), fmr_curl_b_to_e(B_sentinel, E, static, dynamic)),
+        ):
+            for actual, expected in zip(
+                jax.tree_util.tree_leaves(reference),
+                jax.tree_util.tree_leaves(perturbed),
+            ):
+                self.assertTrue(jnp.allclose(actual, expected, rtol=0.0, atol=2.0e-14))
+
+        for reference, perturbed, maps in (
+            (synchronize_e_levels(E, dynamic), synchronize_e_levels(E_sentinel, dynamic), fine_data.e_fine_halo_maps),
+            (synchronize_b_levels(B, dynamic), synchronize_b_levels(B_sentinel, dynamic), fine_data.b_fine_halo_maps),
+        ):
+            for reference_component, perturbed_component, transfer_map in zip(
+                reference[1], perturbed[1], maps
+            ):
+                self.assertTrue(jnp.allclose(
+                    _map_values(reference_component, transfer_map),
+                    _map_values(perturbed_component, transfer_map),
+                    rtol=0.0,
+                    atol=2.0e-14,
+                ))
 
 
 class TestFMRExplicitCurlsAndUpdates(unittest.TestCase):
@@ -352,14 +527,25 @@ class TestFMRExplicitCurlsAndUpdates(unittest.TestCase):
             _polynomial_vector(fine_data.grids, B_FIELD_LOCATIONS, degree=2),
         )
         shapes = tuple(leaf.shape for leaf in jax.tree_util.tree_leaves((E, B)))
+        dtypes = tuple(leaf.dtype for leaf in jax.tree_util.tree_leaves((E, B)))
 
-        B_after = update_B_fmr(E, B, static, dynamic)
-        E_after = update_E_fmr(E, B_after, J, static, dynamic)
-        B_after = update_B_fmr(E_after, B_after, static, dynamic)
+        advance_B = jax.jit(lambda E_levels, B_levels: update_B_fmr(
+            E_levels, B_levels, static, dynamic
+        ))
+        advance_E = jax.jit(lambda E_levels, B_levels, J_levels: update_E_fmr(
+            E_levels, B_levels, J_levels, static, dynamic
+        ))
+        B_after = advance_B(E, B)
+        E_after = advance_E(E, B_after, J)
+        B_after = advance_B(E_after, B_after)
 
         self.assertEqual(
             tuple(leaf.shape for leaf in jax.tree_util.tree_leaves((E_after, B_after))),
             shapes,
+        )
+        self.assertEqual(
+            tuple(leaf.dtype for leaf in jax.tree_util.tree_leaves((E_after, B_after))),
+            dtypes,
         )
         for leaf in jax.tree_util.tree_leaves((E_after, B_after)):
             self.assertTrue(jnp.all(jnp.isfinite(leaf)))

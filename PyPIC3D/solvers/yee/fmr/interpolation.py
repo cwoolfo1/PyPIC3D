@@ -1,4 +1,4 @@
-"""Fixed stagger-aware transfers for one 2:1 rectangular Yee refinement patch."""
+"""Fixed stagger-aware halo transfers for one 2:1 Yee refinement patch."""
 
 from itertools import product
 
@@ -25,6 +25,33 @@ def _strict_interior_indices(axes, bounds, tolerance):
     for coordinate, (lower, upper) in zip(coordinates, bounds):
         inside &= (coordinate > lower + tolerance) & (coordinate < upper - tolerance)
     return jnp.argwhere(inside).astype(jnp.int32)
+
+
+def _physical_indices(level, guard_cells):
+    g = int(guard_cells)
+    shape = (level.Nx, level.Ny, level.Nz)
+    return jnp.stack(
+        jnp.meshgrid(
+            *(jnp.arange(g, g + cells, dtype=jnp.int32) for cells in shape),
+            indexing="ij",
+        ),
+        axis=-1,
+    ).reshape((-1, 3))
+
+
+def _indices_strictly_inside(indices, axes, bounds, tolerance):
+    inside = jnp.ones(indices.shape[0], dtype=bool)
+    for axis, (lower, upper) in enumerate(bounds):
+        coordinate = axes[axis][indices[:, axis]]
+        inside &= (coordinate > lower + tolerance) & (coordinate < upper - tolerance)
+    return inside
+
+
+def _unique_indices(*index_sets):
+    nonempty = tuple(indices for indices in index_sets if indices.shape[0] != 0)
+    if not nonempty:
+        return jnp.zeros((0, 3), dtype=jnp.int32)
+    return jnp.unique(jnp.concatenate(nonempty, axis=0), axis=0).astype(jnp.int32)
 
 
 def _nearest_indices(source_axis, source_indices, targets, width):
@@ -82,21 +109,109 @@ def _build_transfer_map(source_axes, target_axes, source_indices, target_indices
     return FMRInterpolationMap(target_indices, donor_indices, weights)
 
 
-def _build_component_maps(fine_level, parent_grids, fine_grids, field_locations):
+_CURL_COMPONENT_READS = (
+    ((2, 1), (1, 2)),
+    ((0, 2), (2, 0)),
+    ((1, 0), (0, 1)),
+)
+
+
+def _curl_read_indices(output_active_indices, input_component, offset):
+    """Return one field component's indices read by an active Yee curl."""
+
+    reads = []
+    for output_component, component_reads in enumerate(_CURL_COMPONENT_READS):
+        output_indices = output_active_indices[output_component]
+        for component, axis in component_reads:
+            if component != input_component:
+                continue
+            shifted = output_indices.at[:, axis].add(offset)
+            reads.extend((output_indices, shifted))
+    return _unique_indices(*reads)
+
+
+def _active_component_indices(level, grids, field_locations, bounds, guard_cells, fine):
+    physical = _physical_indices(level, guard_cells)
+    result = []
+    for locations in field_locations:
+        axes = _component_coordinate_axes(grids, locations)
+        tolerance = _coordinate_tolerance(*axes)
+        inside = _indices_strictly_inside(physical, axes, bounds, tolerance)
+        result.append(physical[inside] if fine else physical[~inside])
+    return tuple(result)
+
+
+def _deep_shadow_indices(
+    parent_level,
+    parent_axes,
+    bounds,
+    tolerance,
+    coarse_halo,
+    guard_cells,
+):
+    physical = _physical_indices(parent_level, guard_cells)
+    covered = physical[_indices_strictly_inside(physical, parent_axes, bounds, tolerance)]
+
+    halo_mask = jnp.zeros(
+        (parent_level.Nx, parent_level.Ny, parent_level.Nz),
+        dtype=bool,
+    )
+    g = int(guard_cells)
+    local_halo = coarse_halo - g
+    halo_mask = halo_mask.at[
+        local_halo[:, 0],
+        local_halo[:, 1],
+        local_halo[:, 2],
+    ].set(True, unique_indices=True)
+    local_covered = covered - g
+    in_halo = halo_mask[
+        local_covered[:, 0],
+        local_covered[:, 1],
+        local_covered[:, 2],
+    ]
+    return covered[~in_halo]
+
+
+def _build_component_maps(
+    parent_level,
+    fine_level,
+    parent_grids,
+    fine_grids,
+    field_locations,
+    curl_output_locations,
+    curl_offset,
+    guard_cells,
+):
     bounds = (
         (fine_level.x_min, fine_level.x_max),
         (fine_level.y_min, fine_level.y_max),
         (fine_level.z_min, fine_level.z_max),
     )
-    interface_maps = []
-    restriction_maps = []
+    parent_output_active = _active_component_indices(
+        parent_level,
+        parent_grids,
+        curl_output_locations,
+        bounds,
+        guard_cells,
+        fine=False,
+    )
+    fine_output_active = _active_component_indices(
+        fine_level,
+        fine_grids,
+        curl_output_locations,
+        bounds,
+        guard_cells,
+        fine=True,
+    )
+    fine_halo_maps = []
+    coarse_halo_maps = []
+    deep_shadow_indices = []
 
     for locations in field_locations:
         parent_axes = _component_coordinate_axes(parent_grids, locations)
         fine_axes = _component_coordinate_axes(fine_grids, locations)
         tolerance = _coordinate_tolerance(*parent_axes, *fine_axes)
         fine_interface = _closed_interface_indices(fine_axes, bounds, tolerance)
-        parent_interior = _strict_interior_indices(parent_axes, bounds, tolerance)
         fine_interior = _strict_interior_indices(fine_axes, bounds, tolerance)
         parent_all = jnp.stack(
             jnp.meshgrid(
@@ -106,48 +221,115 @@ def _build_component_maps(fine_level, parent_grids, fine_grids, field_locations)
             axis=-1,
         ).reshape((-1, 3))
 
-        # Four-point Lagrange values leave O(h^4) transfer error before either
-        # Yee curl. Both transfer directions therefore remain at least
-        # second-order consistent at the interface after differentiation.
-        interface_maps.append(
-            _build_transfer_map(
-                parent_axes,
-                fine_axes,
-                parent_all,
-                fine_interface,
-                _fourth_order_lagrange_axis_stencil,
-            )
+        component = len(fine_halo_maps)
+        fine_reads = _curl_read_indices(
+            fine_output_active,
+            component,
+            curl_offset,
         )
-        restriction_maps.append(
-            _build_transfer_map(
-                fine_axes,
+        fine_read_is_owned = _indices_strictly_inside(
+            fine_reads,
+            fine_axes,
+            bounds,
+            tolerance,
+        )
+        fine_halo = _unique_indices(fine_interface, fine_reads[~fine_read_is_owned])
+
+        # Build the coarse-to-fine stencil first.  Its covered donors, together
+        # with covered values read by the active coarse curl, define the narrow
+        # coarse halo that must be refreshed from the current fine solution.
+        fine_halo_map = _build_transfer_map(
+            parent_axes,
+            fine_axes,
+            parent_all,
+            fine_halo,
+            _fourth_order_lagrange_axis_stencil,
+        )
+        fine_halo_donors = jnp.unique(
+            fine_halo_map.source_indices.reshape((-1, 3)),
+            axis=0,
+        )
+        covered_fine_halo_donors = fine_halo_donors[
+            _indices_strictly_inside(
+                fine_halo_donors,
                 parent_axes,
-                fine_interior,
-                parent_interior,
-                _fourth_order_lagrange_axis_stencil,
+                bounds,
+                tolerance,
+            )
+        ]
+
+        parent_reads = _curl_read_indices(
+            parent_output_active,
+            component,
+            curl_offset,
+        )
+        covered_parent_reads = parent_reads[
+            _indices_strictly_inside(
+                parent_reads,
+                parent_axes,
+                bounds,
+                tolerance,
+            )
+        ]
+        coarse_halo = _unique_indices(
+            covered_fine_halo_donors,
+            covered_parent_reads,
+        )
+
+        # Four-point Lagrange values leave O(h^4) transfer error before either
+        # Yee curl.  The fine-to-coarse map reads only fine-owned values; the
+        # coarse-to-fine map reads only coarse-owned or refreshed-halo values.
+        coarse_halo_map = _build_transfer_map(
+            fine_axes,
+            parent_axes,
+            fine_interior,
+            coarse_halo,
+            _fourth_order_lagrange_axis_stencil,
+        )
+
+        fine_halo_maps.append(fine_halo_map)
+        coarse_halo_maps.append(coarse_halo_map)
+        deep_shadow_indices.append(
+            _deep_shadow_indices(
+                parent_level,
+                parent_axes,
+                bounds,
+                tolerance,
+                coarse_halo,
+                guard_cells,
             )
         )
 
-    return tuple(interface_maps), tuple(restriction_maps)
+    return (
+        tuple(fine_halo_maps),
+        tuple(coarse_halo_maps),
+        tuple(deep_shadow_indices),
+    )
 
 
 def build_e_transfer_maps(parent_level, fine_level, parent_grids, fine_grids, guard_cells):
-    del parent_level, guard_cells
     return _build_component_maps(
+        parent_level,
         fine_level,
         parent_grids,
         fine_grids,
         E_FIELD_LOCATIONS,
+        B_FIELD_LOCATIONS,
+        1,
+        guard_cells,
     )
 
 
 def build_b_transfer_maps(parent_level, fine_level, parent_grids, fine_grids, guard_cells):
-    del parent_level, guard_cells
     return _build_component_maps(
+        parent_level,
         fine_level,
         parent_grids,
         fine_grids,
         B_FIELD_LOCATIONS,
+        E_FIELD_LOCATIONS,
+        -1,
+        guard_cells,
     )
 
 
@@ -163,12 +345,12 @@ def _apply_component_map(source_component, target_component, transfer_map):
     ].set(values, unique_indices=True)
 
 
-def prolong_e_to_fine_interface(parent_E, fine_E, e_interface_maps):
-    """Set coarse-controlled fine Ex(VCC), Ey(CVC), and Ez(CCV) values."""
+def fill_e_fine_halo(parent_E, fine_E, e_fine_halo_maps):
+    """Fill coarse-controlled fine Ex(VCC), Ey(CVC), and Ez(CCV) halos."""
 
     parent_Ex, parent_Ey, parent_Ez = parent_E
     fine_Ex, fine_Ey, fine_Ez = fine_E
-    Ex_map, Ey_map, Ez_map = e_interface_maps
+    Ex_map, Ey_map, Ez_map = e_fine_halo_maps
     return (
         _apply_component_map(parent_Ex, fine_Ex, Ex_map),
         _apply_component_map(parent_Ey, fine_Ey, Ey_map),
@@ -176,12 +358,12 @@ def prolong_e_to_fine_interface(parent_E, fine_E, e_interface_maps):
     )
 
 
-def prolong_b_to_fine_interface(parent_B, fine_B, b_interface_maps):
-    """Set coarse-controlled fine Bx(CVV), By(VCV), and Bz(VVC) values."""
+def fill_b_fine_halo(parent_B, fine_B, b_fine_halo_maps):
+    """Fill coarse-controlled fine Bx(CVV), By(VCV), and Bz(VVC) halos."""
 
     parent_Bx, parent_By, parent_Bz = parent_B
     fine_Bx, fine_By, fine_Bz = fine_B
-    Bx_map, By_map, Bz_map = b_interface_maps
+    Bx_map, By_map, Bz_map = b_fine_halo_maps
     return (
         _apply_component_map(parent_Bx, fine_Bx, Bx_map),
         _apply_component_map(parent_By, fine_By, By_map),
@@ -189,12 +371,12 @@ def prolong_b_to_fine_interface(parent_B, fine_B, b_interface_maps):
     )
 
 
-def restrict_e_to_coarse_shadow(fine_E, parent_E, e_restriction_maps):
-    """Reconstruct current Ex(VCC), Ey(CVC), and Ez(CCV) in the coarse shadow."""
+def fill_e_coarse_halo(fine_E, parent_E, e_coarse_halo_maps):
+    """Fill only the covered coarse Ex(VCC), Ey(CVC), and Ez(CCV) halo."""
 
     fine_Ex, fine_Ey, fine_Ez = fine_E
     parent_Ex, parent_Ey, parent_Ez = parent_E
-    Ex_map, Ey_map, Ez_map = e_restriction_maps
+    Ex_map, Ey_map, Ez_map = e_coarse_halo_maps
     return (
         _apply_component_map(fine_Ex, parent_Ex, Ex_map),
         _apply_component_map(fine_Ey, parent_Ey, Ey_map),
@@ -202,12 +384,12 @@ def restrict_e_to_coarse_shadow(fine_E, parent_E, e_restriction_maps):
     )
 
 
-def restrict_b_to_coarse_shadow(fine_B, parent_B, b_restriction_maps):
-    """Reconstruct current Bx(CVV), By(VCV), and Bz(VVC) in the coarse shadow."""
+def fill_b_coarse_halo(fine_B, parent_B, b_coarse_halo_maps):
+    """Fill only the covered coarse Bx(CVV), By(VCV), and Bz(VVC) halo."""
 
     fine_Bx, fine_By, fine_Bz = fine_B
     parent_Bx, parent_By, parent_Bz = parent_B
-    Bx_map, By_map, Bz_map = b_restriction_maps
+    Bx_map, By_map, Bz_map = b_coarse_halo_maps
     return (
         _apply_component_map(fine_Bx, parent_Bx, Bx_map),
         _apply_component_map(fine_By, parent_By, By_map),
