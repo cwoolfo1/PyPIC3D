@@ -1,5 +1,6 @@
 import unittest
 from types import SimpleNamespace
+from typing import NamedTuple
 
 import numpy as np
 
@@ -17,6 +18,13 @@ from PyPIC3D.utilities.grids import build_yee_grid
 jax.config.update("jax_enable_x64", True)
 
 
+class _HashableStaticParameters(NamedTuple):
+    tile_shape: tuple
+    guard_cells: int
+    particle_boundary_conditions: tuple
+    field_mesh: object
+
+
 def _mesh(mesh_shape):
     n_devices = int(np.prod(mesh_shape))
     devices = jax.devices()
@@ -27,6 +35,15 @@ def _mesh(mesh_shape):
 
 def _static_parameters(mesh_shape, tile_shape, particle_bcs=(BC_PERIODIC, BC_PERIODIC, BC_PERIODIC)):
     return SimpleNamespace(
+        tile_shape=tuple(int(width) for width in tile_shape),
+        guard_cells=2,
+        particle_boundary_conditions=tuple(int(bc) for bc in particle_bcs),
+        field_mesh=_mesh(mesh_shape),
+    )
+
+
+def _hashable_static_parameters(mesh_shape, tile_shape, particle_bcs=(BC_PERIODIC, BC_PERIODIC, BC_PERIODIC)):
+    return _HashableStaticParameters(
         tile_shape=tuple(int(width) for width in tile_shape),
         guard_cells=2,
         particle_boundary_conditions=tuple(int(bc) for bc in particle_bcs),
@@ -92,8 +109,73 @@ def _shard_particles(particles, static_parameters):
 
 
 class TestDistributedParticleRefresh(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        particle_comm._cached_distributed_particle_refresher.cache_clear()
+
+    @classmethod
+    def tearDownClass(cls):
+        particle_comm._cached_distributed_particle_refresher.cache_clear()
+
     def assert_allclose(self, actual, expected):
         self.assertTrue(jnp.allclose(actual, expected, rtol=1.0e-12, atol=1.0e-12), msg=f"\n{actual}\n!=\n{expected}")
+
+    def test_hashable_static_parameters_reuse_identical_refresher(self):
+        static_parameters = _hashable_static_parameters((1, 1, 1), (2, 1, 1))
+
+        first = particle_comm.make_distributed_particle_refresher(static_parameters)
+        second = particle_comm.make_distributed_particle_refresher(static_parameters)
+
+        self.assertIs(first, second)
+
+    def test_unhashable_static_parameters_use_working_uncached_fallback(self):
+        mesh_shape = (1, 1, 1)
+        tile_shape = (2, 1, 1)
+        static_parameters = _static_parameters(mesh_shape, tile_shape)
+        dynamic_parameters = _dynamic_parameters(mesh_shape, tile_shape)
+        particles = _put_particle(_empty_particles(mesh_shape), (0, 0, 0), 0, (0.25, 0.0, 0.0))
+        particles = _shard_particles(particles, static_parameters)
+
+        first = particle_comm.make_distributed_particle_refresher(static_parameters)
+        second = particle_comm.make_distributed_particle_refresher(static_parameters)
+        refreshed, overflow = first(particles, dynamic_parameters)
+
+        self.assertIsNot(first, second)
+        self.assertFalse(bool(overflow))
+        self.assertEqual(int(jnp.sum(refreshed.active)), 1)
+
+    def test_cached_refresher_uses_current_particle_values(self):
+        mesh_shape = (2, 1, 1)
+        tile_shape = (2, 1, 1)
+        static_parameters = _hashable_static_parameters(mesh_shape, tile_shape)
+        dynamic_parameters = _dynamic_parameters(mesh_shape, tile_shape)
+        first_particles = _put_particle(
+            _empty_particles(mesh_shape),
+            (0, 0, 0),
+            0,
+            (0.25, 0.0, 0.0),
+            u=(1.0, 0.0, 0.0),
+        )
+        second_particles = _put_particle(
+            _empty_particles(mesh_shape),
+            (0, 0, 0),
+            0,
+            (0.75, 0.0, 0.0),
+            u=(2.0, 0.0, 0.0),
+        )
+        first_particles = _shard_particles(first_particles, static_parameters)
+        second_particles = _shard_particles(second_particles, static_parameters)
+        refresher = particle_comm.make_distributed_particle_refresher(static_parameters)
+
+        first, first_overflow = refresher(first_particles, dynamic_parameters)
+        second, second_overflow = refresher(second_particles, dynamic_parameters)
+
+        self.assertFalse(bool(first_overflow))
+        self.assertFalse(bool(second_overflow))
+        self.assert_allclose(first.x[1, 0, 0, 0, 0, 0], 0.25)
+        self.assert_allclose(second.x[1, 0, 0, 0, 0, 0], 0.75)
+        self.assert_allclose(first.u[1, 0, 0, 0, 0, 0], 1.0)
+        self.assert_allclose(second.u[1, 0, 0, 0, 0, 0], 2.0)
 
     def test_particle_sharding_places_one_logical_tile_on_each_device(self):
         mesh_shape = (2, 1, 1)
@@ -119,9 +201,11 @@ class TestDistributedParticleRefresh(unittest.TestCase):
         )(particles)
 
         self.assertFalse(bool(overflow))
-        self.assertEqual(refreshed.x.sharding, particles.x.sharding)
-        self.assertEqual(refreshed.active.sharding.mesh, static_parameters.field_mesh)
+        self.assertTrue(refreshed.x.sharding.is_equivalent_to(particles.x.sharding, refreshed.x.ndim))
+        self.assertTrue(refreshed.u.sharding.is_equivalent_to(particles.u.sharding, refreshed.u.ndim))
+        self.assertTrue(refreshed.active.sharding.is_equivalent_to(particles.active.sharding, refreshed.active.ndim))
         self.assertEqual(len(refreshed.active.addressable_shards), int(np.prod(mesh_shape)))
+        self.assertEqual(int(jnp.sum(refreshed.active)), int(jnp.sum(particles.active)))
         self.assertEqual(int(jnp.sum(refreshed.active[0, 0, 0, 0])), 0)
         self.assertEqual(int(jnp.sum(refreshed.active[1, 0, 0, 0])), 1)
         self.assert_allclose(refreshed.x[1, 0, 0, 0, 0, 0], 0.25)

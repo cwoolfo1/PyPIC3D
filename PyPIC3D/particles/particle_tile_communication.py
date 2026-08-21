@@ -1,3 +1,5 @@
+import functools
+
 import jax
 import jax.numpy as jnp
 from jax.sharding import NamedSharding, PartitionSpec as P
@@ -100,20 +102,10 @@ def _send_negative_permutation(axis_size, boundary_condition):
     return tuple((i, i - 1) for i in range(1, axis_size))
 
 
-def _send_axis_stream(stream, offset, axis_name, axis_size, boundary_condition):
+def _send_axis_stream(stream, offset, axis_name, axis_size, permutation):
     if axis_size == 1 or offset == 0:
         return stream
-    if offset == 1:
-        return jax.lax.ppermute(
-            stream,
-            axis_name,
-            _send_positive_permutation(axis_size, boundary_condition),
-        )
-    return jax.lax.ppermute(
-        stream,
-        axis_name,
-        _send_negative_permutation(axis_size, boundary_condition),
-    )
+    return jax.lax.ppermute(stream, axis_name, permutation)
 
 
 def _adjacent_tile_offset(dest_tile, source_tile, tile_count):
@@ -204,8 +196,9 @@ def _exchange_particle_axis(
     cell_width,
     tile_width,
     tile_count,
-    tile_shape,
-    boundary_condition,
+    packet_layout,
+    negative_permutation,
+    positive_permutation,
 ):
     """Move particles across the two immediate faces of one mesh axis."""
 
@@ -236,9 +229,7 @@ def _exchange_particle_axis(
     if tile_count == 2:
         packet_capacity = _particle_face_packet_capacity(
             n_slots,
-            tile_shape,
-            axis,
-            n_directions=2,
+            *packet_layout,
         )
         packet, packet_overflow = _pack_particle_packet(
             x,
@@ -254,8 +245,7 @@ def _exchange_particle_axis(
     else:
         packet_capacity = _particle_face_packet_capacity(
             n_slots,
-            tile_shape,
-            axis,
+            *packet_layout,
         )
         negative_packet, negative_overflow = _pack_particle_packet(
             x,
@@ -274,14 +264,14 @@ def _exchange_particle_axis(
             -1,
             axis_name,
             tile_count,
-            boundary_condition,
+            negative_permutation,
         )
         incoming_positive = _send_axis_stream(
             positive_packet,
             1,
             axis_name,
             tile_count,
-            boundary_condition,
+            positive_permutation,
         )
         incoming_packet = jnp.concatenate(
             (incoming_negative, incoming_positive),
@@ -412,10 +402,28 @@ def _apply_local_particle_boundaries(local_x, local_u, local_active, static_para
     return bounded_x, bounded_u, bounded_active
 
 
-def make_distributed_particle_refresher(static_parameters):
+def _build_distributed_particle_refresher(static_parameters):
+    """Build one mapped refresher from static communication topology."""
+
     mesh = static_parameters.field_mesh
     mesh_shape = tuple(int(width) for width in mesh.devices.shape)
+    tile_shape = tuple(int(width) for width in static_parameters.tile_shape)
     particle_boundary_conditions = tuple(int(bc) for bc in static_parameters.particle_boundary_conditions)
+    axis_communication = tuple(
+        (
+            axis,
+            tile_shape[axis],
+            mesh_shape[axis],
+            (
+                tile_shape,
+                axis,
+                2 if mesh_shape[axis] == 2 else 1,
+            ),
+            _send_negative_permutation(mesh_shape[axis], particle_boundary_conditions[axis]),
+            _send_positive_permutation(mesh_shape[axis], particle_boundary_conditions[axis]),
+        )
+        for axis in range(3)
+    )
 
     def local_refresh(local_x_tiles, local_u_tiles, local_active_tiles, dynamic_parameters):
         local_x = local_x_tiles[0, 0, 0]
@@ -438,7 +446,14 @@ def make_distributed_particle_refresher(static_parameters):
         )
         x, u, active = bounded_x, bounded_u, bounded_active
         overflow = jnp.asarray(False)
-        for axis in range(3):
+        for (
+            axis,
+            tile_width,
+            tile_count,
+            packet_layout,
+            negative_permutation,
+            positive_permutation,
+        ) in axis_communication:
             x, u, active, axis_overflow = _exchange_particle_axis(
                 x,
                 u,
@@ -446,10 +461,11 @@ def make_distributed_particle_refresher(static_parameters):
                 axis=axis,
                 axis_min=bounds[axis][0],
                 cell_width=cell_widths[axis],
-                tile_width=static_parameters.tile_shape[axis],
-                tile_count=mesh_shape[axis],
-                tile_shape=static_parameters.tile_shape,
-                boundary_condition=particle_boundary_conditions[axis],
+                tile_width=tile_width,
+                tile_count=tile_count,
+                packet_layout=packet_layout,
+                negative_permutation=negative_permutation,
+                positive_permutation=positive_permutation,
             )
             overflow = overflow | axis_overflow
 
@@ -462,25 +478,26 @@ def make_distributed_particle_refresher(static_parameters):
             overflow,
         )
 
+    mapped_refresh = jax.shard_map(
+        local_refresh,
+        mesh=mesh,
+        in_specs=(
+            PARTICLE_STATE_TILE_SPEC,
+            PARTICLE_STATE_TILE_SPEC,
+            PARTICLE_ACTIVE_TILE_SPEC,
+            None,
+        ),
+        out_specs=(
+            PARTICLE_STATE_TILE_SPEC,
+            PARTICLE_STATE_TILE_SPEC,
+            PARTICLE_ACTIVE_TILE_SPEC,
+            P(),
+        ),
+        check_vma=False,
+    )
+
     def refresh(tiled_particles, dynamic_parameters):
         _validate_particle_tile_topology(tiled_particles, mesh)
-        mapped_refresh = jax.shard_map(
-            local_refresh,
-            mesh=mesh,
-            in_specs=(
-                PARTICLE_STATE_TILE_SPEC,
-                PARTICLE_STATE_TILE_SPEC,
-                PARTICLE_ACTIVE_TILE_SPEC,
-                None,
-            ),
-            out_specs=(
-                PARTICLE_STATE_TILE_SPEC,
-                PARTICLE_STATE_TILE_SPEC,
-                PARTICLE_ACTIVE_TILE_SPEC,
-                P(),
-            ),
-            check_vma=False,
-        )
         x, u, active, overflow = mapped_refresh(
             tiled_particles.x,
             tiled_particles.u,
@@ -490,6 +507,19 @@ def make_distributed_particle_refresher(static_parameters):
         return TiledParticles(x=x, u=u, active=active), overflow
 
     return refresh
+
+
+@functools.lru_cache(maxsize=16)
+def _cached_distributed_particle_refresher(static_parameters):
+    return _build_distributed_particle_refresher(static_parameters)
+
+
+def make_distributed_particle_refresher(static_parameters):
+    try:
+        hash(static_parameters)
+    except TypeError:
+        return _build_distributed_particle_refresher(static_parameters)
+    return _cached_distributed_particle_refresher(static_parameters)
 
 
 def _refresh_tiled_particle_tiles_sparse(tiled_particles, static_parameters, dynamic_parameters):
