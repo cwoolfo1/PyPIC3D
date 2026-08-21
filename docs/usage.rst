@@ -113,10 +113,14 @@ Numerical Choices
 - ``particle_pusher`` is ``boris`` or ``higuera_cary``. The ``relativistic``
   switch selects relativistic or non-relativistic Boris; Higuera-Cary uses its
   relativistic update.
-- ``particle_batch_size`` is the positive, static number of active particle
-  slots pushed at once inside each tile. If omitted, it is exactly
-  ``max(1, total_particles // 4)`` and is reduced to the tile slot capacity
-  during initialization when necessary.
+- ``particle_batch_size`` is the positive, static number of active particles
+  processed at once inside each tile. An explicit value is reduced to the tile
+  slot capacity when necessary. If omitted, initialization uses every active
+  particle for a one-tile run. For a multi-tile CPU run it targets 128
+  particles per scheduler-visible logical CPU thread assigned to each local
+  mesh device, capped by the largest active tile population. Other accelerator
+  backends use a conservative target of 1024 particles. The resolved value is
+  printed before JIT compilation.
 - ``shape_factor`` is ``1`` or ``2``.
 - ``current_calculation`` is ``j_from_rhov`` or ``esirkepov``.
 - ``filter_j`` is ``none``, ``digital``, or ``bilinear`` for direct current.

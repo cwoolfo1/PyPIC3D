@@ -153,46 +153,100 @@ def _validate_tiled_yee_configuration(static_config, dynamic_config):
             raise ValueError("Yee runtime requires the shared tile shape to divide Nx/Ny/Nz exactly")
 
 
-def _configured_total_particles(config, dynamic_config):
-    """Count the particles requested across the configured species blocks."""
-
-    total_particles = 0
-    grid_cells = int(dynamic_config["Nx"]) * int(dynamic_config["Ny"]) * int(dynamic_config["Nz"])
-
-    for key, species in config.items():
-        if not key.startswith("particle") or not isinstance(species, dict):
-            continue
-        if "N_particles" in species:
-            total_particles += int(species["N_particles"])
-        elif "N_per_cell" in species:
-            total_particles += int(species["N_per_cell"] * grid_cells)
-
-    return total_particles
+_CPU_PARTICLES_PER_LOGICAL_THREAD = 128
+_ACCELERATOR_PARTICLE_BATCH_TARGET = 1024
 
 
-def _resolve_particle_batch_size(static_config, dynamic_config, config):
-    """Resolve the static pusher batch shape from the optional run setting."""
+def _validate_requested_particle_batch_size(particle_batch_size):
+    """Accept automatic mode or a positive explicit batch size."""
 
-    particle_batch_size = static_config.get("particle_batch_size")
     if particle_batch_size is None:
-        total_particles = _configured_total_particles(config, dynamic_config)
-        particle_batch_size = max(100, total_particles // 4)
-
+        return
     if isinstance(particle_batch_size, bool) or not isinstance(particle_batch_size, Integral):
         raise ValueError("particle_batch_size must be a positive integer.")
     if particle_batch_size <= 0:
         raise ValueError("particle_batch_size must be a positive integer.")
 
-    static_config["particle_batch_size"] = int(particle_batch_size)
+
+def _available_cpu_threads():
+    """Return the logical CPU allocation visible to this process."""
+
+    try:
+        cpu_threads = len(os.sched_getaffinity(0))
+    except (AttributeError, OSError):
+        cpu_threads = os.cpu_count()
+    return max(1, int(cpu_threads or 1))
 
 
-def _effective_particle_batch_size(particles, configured_batch_size):
-    """Limit a configured batch to the fixed particle-slot capacity of one tile."""
+def _local_mesh_device_count(field_mesh):
+    """Count mesh devices owned by this JAX process."""
+
+    process_index = int(jax.process_index())
+    local_devices = sum(
+        int(device.process_index) == process_index
+        for device in field_mesh.devices.flat
+    )
+    return max(1, int(local_devices))
+
+
+def _resolve_particle_batch_size(
+    particles,
+    requested_batch_size,
+    field_mesh=None,
+    *,
+    platform=None,
+    available_cpu_threads=None,
+    local_device_count=None,
+):
+    """Resolve a static batch size from actual occupancy and backend parallelism."""
+
+    _validate_requested_particle_batch_size(requested_batch_size)
 
     tile_capacity = int(particles.active.shape[-2]) * int(particles.active.shape[-1])
     if tile_capacity == 0:
-        return 1
-    return min(int(configured_batch_size), tile_capacity)
+        return 1, "empty particle storage"
+
+    if requested_batch_size is not None:
+        resolved = min(int(requested_batch_size), tile_capacity)
+        return resolved, f"explicit request {int(requested_batch_size)}, tile capacity {tile_capacity}"
+
+    active = jnp.asarray(jax.device_get(particles.active), dtype=bool)
+    active_per_tile = jnp.count_nonzero(active, axis=(-2, -1))
+    max_active_per_tile = int(jnp.max(active_per_tile)) if active_per_tile.size else 0
+    tile_count = int(active_per_tile.size)
+
+    if tile_count <= 1:
+        resolved = max(1, min(max_active_per_tile, tile_capacity))
+        return resolved, f"one tile, {max_active_per_tile} active particles"
+
+    if platform is None:
+        if field_mesh is None:
+            raise ValueError("field_mesh is required to resolve an automatic multi-tile particle batch size.")
+        platform = str(field_mesh.devices.flat[0].platform)
+
+    if platform == "cpu":
+        if available_cpu_threads is None:
+            available_cpu_threads = _available_cpu_threads()
+        if local_device_count is None:
+            if field_mesh is None:
+                raise ValueError("field_mesh is required to determine the local CPU device count.")
+            local_device_count = _local_mesh_device_count(field_mesh)
+        available_cpu_threads = max(1, int(available_cpu_threads))
+        local_device_count = max(1, int(local_device_count))
+        threads_per_device = max(1, available_cpu_threads // local_device_count)
+        compute_target = _CPU_PARTICLES_PER_LOGICAL_THREAD * threads_per_device
+        reason = (
+            f"cpu, {available_cpu_threads} logical threads / {local_device_count} local devices, "
+            f"target {compute_target}, max active tile {max_active_per_tile}"
+        )
+    else:
+        compute_target = _ACCELERATOR_PARTICLE_BATCH_TARGET
+        reason = (
+            f"{platform}, target {compute_target}, max active tile {max_active_per_tile}"
+        )
+
+    resolved = max(1, min(max_active_per_tile, compute_target, tile_capacity))
+    return resolved, reason
 
 
 def _apply_pml_field_boundaries(static_config, pml_config):
@@ -397,7 +451,14 @@ def initialize_simulation(toml_file):
     if static_config["particle_tile_nz"] is None:
         static_config["particle_tile_nz"] = int(Nz)
 
-    _resolve_particle_batch_size(static_config, dynamic_config, config)
+    requested_particle_batch_size = static_config.get("particle_batch_size")
+    _validate_requested_particle_batch_size(requested_particle_batch_size)
+    # Particle packing needs a complete StaticParameters value, but automatic
+    # sizing depends on the packed active population.  The placeholder is
+    # replaced before particles are sharded or timestep kernels are compiled.
+    static_config["particle_batch_size"] = (
+        1 if requested_particle_batch_size is None else int(requested_particle_batch_size)
+    )
 
     guard_cells = int(static_config["guard_cells"])
     if guard_cells < 1:
@@ -517,15 +578,23 @@ def initialize_simulation(toml_file):
         static_parameters,
         dynamic_parameters,
     )
-    effective_batch_size = _effective_particle_batch_size(
+    effective_batch_size, batch_size_reason = _resolve_particle_batch_size(
         particles,
-        static_parameters.particle_batch_size,
+        requested_particle_batch_size,
+        static_parameters.field_mesh,
     )
-    if effective_batch_size != static_parameters.particle_batch_size:
+    if requested_particle_batch_size is None:
+        print(
+            f"Using automatic particle_batch_size {effective_batch_size} "
+            f"({batch_size_reason})."
+        )
+    elif effective_batch_size != static_parameters.particle_batch_size:
         print(
             "Reducing particle_batch_size from "
             f"{static_parameters.particle_batch_size} to tile capacity {effective_batch_size}."
         )
+    static_config["particle_batch_size"] = effective_batch_size
+    if effective_batch_size != static_parameters.particle_batch_size:
         static_parameters = static_parameters._replace(
             particle_batch_size=effective_batch_size,
         )

@@ -8,11 +8,11 @@ import toml
 import jax
 import jax.numpy as jnp
 from PyPIC3D.initialization import (
-    _configured_total_particles,
+    _available_cpu_threads,
     _encode_field_bc,
     _encode_particle_bc,
-    _effective_particle_batch_size,
     _resolve_particle_batch_size,
+    _validate_requested_particle_batch_size,
     default_parameters,
     initialize_simulation,
     setup_write_dir,
@@ -55,52 +55,105 @@ class TestInitializationFunctions(unittest.TestCase):
         self.assertEqual(sim["particle_y_bc"], "periodic")
         self.assertEqual(sim["particle_z_bc"], "periodic")
         self.assertEqual(sim["guard_cells"], 2)
+        self.assertIsNone(sim["particle_batch_size"])
         self.assertFalse(plotting["plotchargedensity"])
         self.assertIn('eps', dynamic)
         # check that the default parameters contain expected keys
 
-    def test_particle_batch_size_defaults_to_one_quarter_of_total_particles(self):
-        dynamic = {"Nx": 10, "Ny": 5, "Nz": 2}
-        config = {
-            "simulation_parameters": {},
-            "particle1": {"N_particles": 3000},
-            "particle2": {"N_per_cell": 10},
-        }
-        static = {"particle_batch_size": None}
+    @staticmethod
+    def _particles_with_active(active):
+        active = jnp.asarray(active, dtype=bool)
+        state_shape = active.shape + (3,)
+        return TiledParticles(
+            x=jnp.zeros(state_shape),
+            u=jnp.zeros(state_shape),
+            active=active,
+        )
 
-        self.assertEqual(_configured_total_particles(config, dynamic), 4000)
-        _resolve_particle_batch_size(static, dynamic, config)
-        self.assertEqual(static["particle_batch_size"], 1000)
+    def test_automatic_particle_batch_size_uses_all_active_particles_on_one_tile(self):
+        active = np.zeros((1, 1, 1, 2, 8), dtype=bool)
+        active[0, 0, 0, 0, :5] = True
+        active[0, 0, 0, 1, :3] = True
+        particles = self._particles_with_active(active)
 
-        small_static = {"particle_batch_size": None}
-        small_config = {"particle1": {"N_particles": 3}}
-        _resolve_particle_batch_size(small_static, dynamic, small_config)
-        self.assertEqual(small_static["particle_batch_size"], 1)
+        batch_size, reason = _resolve_particle_batch_size(particles, None)
+
+        self.assertEqual(batch_size, 8)
+        self.assertIn("one tile", reason)
+
+    def test_automatic_particle_batch_size_uses_cpu_threads_per_local_device(self):
+        active = np.zeros((2, 2, 1, 1, 1000), dtype=bool)
+        active[..., :900] = True
+        particles = self._particles_with_active(active)
+
+        wider, _ = _resolve_particle_batch_size(
+            particles,
+            None,
+            platform="cpu",
+            available_cpu_threads=16,
+            local_device_count=4,
+        )
+        narrower, _ = _resolve_particle_batch_size(
+            particles,
+            None,
+            platform="cpu",
+            available_cpu_threads=8,
+            local_device_count=4,
+        )
+
+        self.assertEqual(wider, 512)
+        self.assertEqual(narrower, 256)
+
+    def test_available_cpu_threads_falls_back_to_os_cpu_count(self):
+        with patch("PyPIC3D.initialization.os.sched_getaffinity", side_effect=OSError):
+            with patch("PyPIC3D.initialization.os.cpu_count", return_value=12):
+                self.assertEqual(_available_cpu_threads(), 12)
+
+    def test_automatic_particle_batch_size_uses_accelerator_fallback(self):
+        active = np.zeros((2, 1, 1, 1, 2048), dtype=bool)
+        active[..., :1500] = True
+        particles = self._particles_with_active(active)
+
+        batch_size, reason = _resolve_particle_batch_size(particles, None, platform="gpu")
+
+        self.assertEqual(batch_size, 1024)
+        self.assertIn("gpu", reason)
+
+    def test_automatic_particle_batch_size_uses_largest_active_tile(self):
+        active = np.zeros((2, 1, 1, 1, 32), dtype=bool)
+        active[0, 0, 0, 0, :7] = True
+        active[1, 0, 0, 0, :13] = True
+        particles = self._particles_with_active(active)
+
+        batch_size, _ = _resolve_particle_batch_size(
+            particles,
+            None,
+            platform="cpu",
+            available_cpu_threads=64,
+            local_device_count=2,
+        )
+
+        self.assertEqual(batch_size, 13)
+
+    def test_automatic_particle_batch_size_is_one_for_zero_particles(self):
+        particles = self._particles_with_active(np.zeros((1, 1, 1, 1, 4), dtype=bool))
+
+        batch_size, _ = _resolve_particle_batch_size(particles, None)
+
+        self.assertEqual(batch_size, 1)
 
     def test_explicit_particle_batch_size_must_be_a_positive_integer(self):
-        dynamic = {"Nx": 1, "Ny": 1, "Nz": 1}
-        config = {"particle1": {"N_particles": 16}}
+        particles = self._particles_with_active(np.ones((1, 1, 1, 2, 7), dtype=bool))
 
-        static = {"particle_batch_size": 7}
-        _resolve_particle_batch_size(static, dynamic, config)
-        self.assertEqual(static["particle_batch_size"], 7)
+        batch_size, _ = _resolve_particle_batch_size(particles, 7)
+        clamped_batch_size, _ = _resolve_particle_batch_size(particles, 512)
+        self.assertEqual(batch_size, 7)
+        self.assertEqual(clamped_batch_size, 14)
 
         for invalid_batch_size in (0, -1, 1.5, True):
             with self.subTest(particle_batch_size=invalid_batch_size):
                 with self.assertRaisesRegex(ValueError, "positive integer"):
-                    _resolve_particle_batch_size(
-                        {"particle_batch_size": invalid_batch_size},
-                        dynamic,
-                        config,
-                    )
-
-    def test_particle_batch_size_is_limited_to_tile_slot_capacity(self):
-        particles = TiledParticles(
-            x=jnp.zeros((1, 1, 1, 2, 7, 3)),
-            u=jnp.zeros((1, 1, 1, 2, 7, 3)),
-            active=jnp.zeros((1, 1, 1, 2, 7), dtype=bool),
-        )
-        self.assertEqual(_effective_particle_batch_size(particles, 512), 14)
+                    _validate_requested_particle_batch_size(invalid_batch_size)
 
     def test_encode_field_bc_accepts_constant_boundary(self):
         self.assertEqual(_encode_field_bc("constant"), BC_CONSTANT)
@@ -182,7 +235,7 @@ class TestInitializationFunctions(unittest.TestCase):
             self.assertEqual(len(particles.x.addressable_shards), 2)
             self.assertEqual(parameter_set.solver, "electrodynamic_yee")
             self.assertEqual(tuple(parameter_set.tile_shape), (2, 1, 1))
-            self.assertEqual(parameter_set.particle_batch_size, 1)
+            self.assertEqual(parameter_set.particle_batch_size, 2)
             self.assertNotIn("particle_species_names", parameter_set)
             self.assertNotIn("particle_species_metadata", parameter_set)
             self.assertEqual(plotting_parameters["particle_species_names"], ("electrons",))
