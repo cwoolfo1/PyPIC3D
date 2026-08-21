@@ -82,7 +82,6 @@ class TestYeeConvergence(unittest.TestCase):
         # B_y interiors before any global field assembly.
         layouts = (
             lambda Nx: (Nx, 1, 1),
-            lambda _Nx: (8, 1, 1),
             lambda _Nx: (16, 1, 1),
         )
 

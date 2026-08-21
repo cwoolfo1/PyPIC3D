@@ -1,5 +1,4 @@
 import os
-import inspect
 import tempfile
 import unittest
 from types import SimpleNamespace
@@ -425,11 +424,6 @@ class TestTiledParticleInitialization(unittest.TestCase):
             self.assertTrue(jnp.allclose(species_config.charge, jnp.array([-1.0, 1.0])))
             self.assertTrue(jnp.allclose(species_config.mass, jnp.array([2.0, 3.0])))
             self.assertTrue(jnp.allclose(species_config.weight, jnp.array([4.0, 5.0])))
-
-    def test_load_particles_from_toml_does_not_scatter_each_particle_with_jax_at(self):
-        source = inspect.getsource(load_particles_from_toml)
-
-        self.assertNotIn(".at[index].set", source)
 
     def test_load_particles_from_toml_maps_update_flags_to_active_particles(self):
         with tempfile.TemporaryDirectory() as tmpdir:

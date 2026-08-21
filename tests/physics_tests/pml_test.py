@@ -630,7 +630,7 @@ class TestPMLFDTDBehavior(unittest.TestCase):
         )
 
         parameter_set["tile_shape"] = tile_shape
-        parameter_set["field_mesh"] = ghost_cells.make_field_mesh((4, 2, 2))
+        parameter_set["field_mesh"] = ghost_cells.make_field_mesh((2, 2, 2))
         tiled_static_parameters, tiled_dynamic_parameters = kernel_parameters_from_values(parameter_set, dynamic_values)
         tiled_pml_state = initialize_tiled_pml_state(
             tiled_static_parameters,
@@ -675,9 +675,9 @@ class TestPMLFDTDBehavior(unittest.TestCase):
             dynamic_values,
         )
         parameter_set["boundary_conditions"]["x"] = BC_CONDUCTING
-        tile_shape = (4, 1, 1)
+        tile_shape = (8, 1, 1)
         parameter_set["tile_shape"] = tile_shape
-        parameter_set["field_mesh"] = ghost_cells.make_field_mesh((10, 1, 1))
+        parameter_set["field_mesh"] = ghost_cells.make_field_mesh((5, 1, 1))
         static_parameters, dynamic_parameters = kernel_parameters_from_values(parameter_set, dynamic_values)
         tiled_pml_state = initialize_tiled_pml_state(
             static_parameters,
@@ -770,9 +770,9 @@ class TestPMLFDTDBehavior(unittest.TestCase):
             dynamic_values,
         )
         parameter_set["boundary_conditions"]["x"] = BC_CONDUCTING
-        tile_shape = (2, 1, 1)
+        tile_shape = (4, 1, 1)
         parameter_set["tile_shape"] = tile_shape
-        parameter_set["field_mesh"] = ghost_cells.make_field_mesh((4, 1, 1))
+        parameter_set["field_mesh"] = ghost_cells.make_field_mesh((2, 1, 1))
         E, B, J = _empty_global_fields(parameter_set)
         Ex, Ey, Ez = E
         Bx, By, Bz = B

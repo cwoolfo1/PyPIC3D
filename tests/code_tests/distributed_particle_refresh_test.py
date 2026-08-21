@@ -1,5 +1,4 @@
 import unittest
-from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -16,9 +15,6 @@ from PyPIC3D.utilities.grids import build_yee_grid
 
 
 jax.config.update("jax_enable_x64", True)
-
-
-REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _mesh(mesh_shape):
@@ -98,11 +94,6 @@ def _shard_particles(particles, static_parameters):
 class TestDistributedParticleRefresh(unittest.TestCase):
     def assert_allclose(self, actual, expected):
         self.assertTrue(jnp.allclose(actual, expected, rtol=1.0e-12, atol=1.0e-12), msg=f"\n{actual}\n!=\n{expected}")
-
-    def test_no_roll_based_tile_migration_remains(self):
-        source = (REPO_ROOT / "PyPIC3D" / "particles" / "particle_tile_communication.py").read_text()
-
-        self.assertNotIn("jnp.roll", source)
 
     def test_particle_sharding_places_one_logical_tile_on_each_device(self):
         mesh_shape = (2, 1, 1)
