@@ -4,7 +4,7 @@ from PyPIC3D.boundary_conditions import ghost_cells
 from PyPIC3D.boundary_conditions.grid_and_stencil import BC_CONDUCTING
 
 from .curls import fmr_curl_b_to_e, fmr_curl_e_to_b
-from .fields import synchronize_b_levels, synchronize_e_levels
+from .hierarchy import synchronize_b_levels, synchronize_e_levels
 
 
 def update_B_fmr(E_levels, B_levels, static_parameters, dynamic_parameters):
@@ -49,7 +49,6 @@ def update_E_fmr(E_levels, B_levels, J_levels, static_parameters, dynamic_parame
     active = slice(g, -g)
     curl_B_levels = fmr_curl_b_to_e(
         B_levels,
-        E_levels,
         static_parameters,
         dynamic_parameters,
     )

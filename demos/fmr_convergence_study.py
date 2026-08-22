@@ -3,7 +3,7 @@
 import argparse
 import math
 
-from tests.physics_tests.fmr_maxwell_convergence_test import (
+from tests.fmr_support import (
     REGIONS,
     _observed_orders,
     _regional_vector_error,

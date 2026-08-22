@@ -9,9 +9,9 @@ from PyPIC3D.initialization import initialize_fields
 from PyPIC3D.solvers.yee.fmr import (
     B_FIELD_LOCATIONS,
     E_FIELD_LOCATIONS,
-    build_fmr_fields,
-    build_fmr_parameters,
-    load_fmr_from_toml,
+    build_fmr_hierarchy,
+    initialize_fmr_field_levels,
+    load_fmr_levels,
     time_loop_electrodynamic_fmr_fields,
 )
 from tests.kernel_fixtures import kernel_parameters
@@ -88,7 +88,7 @@ class TestFMRWaveCrossing(unittest.TestCase):
             "z_min": 0.0,
             "z_max": float(nz),
         }
-        fmr_levels = load_fmr_from_toml(
+        fmr_levels = load_fmr_levels(
             fmr_config,
             geometry_values,
             static_parameters.tile_shape,
@@ -98,11 +98,11 @@ class TestFMRWaveCrossing(unittest.TestCase):
             fmr_levels=fmr_levels,
         )
         dynamic_parameters = dynamic_parameters._replace(
-            fmr=build_fmr_parameters(static_parameters, dynamic_parameters)
+            fmr=build_fmr_hierarchy(static_parameters, dynamic_parameters)
         )
 
         E0, B0, J0, phi, rho = initialize_fields(static_parameters, dynamic_parameters)
-        E_levels, B_levels, J_levels = build_fmr_fields(
+        E_levels, B_levels, J_levels = initialize_fmr_field_levels(
             E0,
             B0,
             J0,

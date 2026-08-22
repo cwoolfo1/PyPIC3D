@@ -3,13 +3,17 @@ import tempfile
 import unittest
 from types import SimpleNamespace
 
+import jax
 import jax.numpy as jnp
 import numpy as np
 import openpmd_api as io
 
-from PyPIC3D.diagnostics import openPMD
 from PyPIC3D.diagnostics.async_writer import AsyncFMROpenPMDFieldWriter
-from PyPIC3D.solvers.yee.fmr import load_fmr_from_toml
+from PyPIC3D.diagnostics import fmr_openpmd
+from PyPIC3D.solvers.yee.fmr import load_fmr_levels
+
+
+jax.config.update("jax_enable_x64", True)
 
 
 def _fmr_levels():
@@ -38,17 +42,17 @@ def _fmr_levels():
         "z_min": 5.0,
         "z_max": 12.5,
     }
-    return load_fmr_from_toml(config, geometry, root_tile_shape=(5, 5, 5))
+    return load_fmr_levels(config, geometry, root_tile_shape=(5, 5, 5))
 
 
 def _component(level, guard_cells, value_offset):
+    tile_grid = tuple(
+        cells // tile_cells
+        for cells, tile_cells in zip(level.shape, level.tile_shape)
+    )
     shape = (
-        1,
-        1,
-        1,
-        int(level.Nx) + 2*guard_cells,
-        int(level.Ny) + 2*guard_cells,
-        int(level.Nz) + 2*guard_cells,
+        *tile_grid,
+        *(int(cells) + 2*guard_cells for cells in level.tile_shape),
     )
     values = jnp.arange(np.prod(shape), dtype=jnp.float64).reshape(shape)
     return values + float(value_offset)
@@ -59,7 +63,7 @@ def _field_map(levels, guard_cells=2):
     for field_index, name in enumerate(("E", "B", "J")):
         field_map[name] = tuple(
             tuple(
-                _component(level, guard_cells, 10000*field_index + 1000*level.level + component)
+                _component(level, guard_cells, 10000*field_index + 1000*level.index + component)
                 for component in range(3)
             )
             for level in levels
@@ -94,6 +98,7 @@ class FMROpenPMDTests(unittest.TestCase):
 
     def test_fmr_patch_series_preserves_geometry_staggering_and_field_data(self):
         levels = _fmr_levels()
+        patches = fmr_openpmd.build_fmr_patch_descriptors(levels, guard_cells=2)
         field_map = _field_map(levels)
         original_fields = tuple(
             np.array(component)
@@ -106,13 +111,14 @@ class FMROpenPMDTests(unittest.TestCase):
             self._write_step(output_dir, levels, field_map, step=0, physical_time=0.0)
 
             mesh_names = []
-            for level in levels:
-                filename = openPMD._fmr_iteration_filename(level.level, 0, 0)
+            for patch in patches:
+                level = patch.level
+                filename = fmr_openpmd.fmr_iteration_filename(patch, 0)
                 series, iteration = _read_patch(os.path.join(output_dir, filename), step=0)
                 mesh_names.append(set(iteration.meshes))
 
                 self.assertEqual(mesh_names[-1], {"E", "B", "J"})
-                self.assertEqual(int(iteration.get_attribute("fmrLevel")), level.level)
+                self.assertEqual(int(iteration.get_attribute("fmrLevel")), level.index)
                 self.assertEqual(int(iteration.get_attribute("fmrPatch")), 0)
                 self.assertEqual(int(iteration.get_attribute("fmrParent")), level.parent)
                 self.assertEqual(
@@ -137,28 +143,28 @@ class FMROpenPMDTests(unittest.TestCase):
                     np.testing.assert_allclose(mesh.grid_spacing, level.spacing, rtol=0.0, atol=0.0)
                     np.testing.assert_allclose(
                         mesh.grid_global_offset,
-                        (level.x_min, level.y_min, level.z_min),
+                        level.lower,
                         rtol=0.0,
                         atol=0.0,
                     )
 
                     locations = (
-                        openPMD.B_FIELD_LOCATIONS
+                        fmr_openpmd.B_FIELD_LOCATIONS
                         if name == "B"
-                        else openPMD.E_FIELD_LOCATIONS
+                        else fmr_openpmd.E_FIELD_LOCATIONS
                     )
                     for component_name, location in zip(("x", "y", "z"), locations):
                         record = mesh[component_name]
                         self.assertEqual(
                             list(record.position),
-                            openPMD._fmr_component_position(location),
+                            fmr_openpmd.fmr_component_position(location),
                         )
                         self.assertEqual(
                             tuple(record.shape),
-                            (int(level.Nx), int(level.Ny), int(level.Nz)),
+                            level.shape,
                         )
 
-                source = field_map["E"][level.level][0]
+                source = field_map["E"][level.index][0]
                 expected = np.asarray(source[0, 0, 0, 2:-2, 2:-2, 2:-2])
                 stored = iteration.meshes["E"]["x"].load_chunk()
                 series.flush()
@@ -168,8 +174,8 @@ class FMROpenPMDTests(unittest.TestCase):
             self.assertEqual(mesh_names[0], mesh_names[1])
             np.testing.assert_allclose(levels[1].spacing, np.asarray(levels[0].spacing)/2)
             np.testing.assert_allclose(
-                (levels[1].x_min, levels[1].y_min, levels[1].z_min),
-                np.asarray((levels[0].x_min, levels[0].y_min, levels[0].z_min))
+                levels[1].lower,
+                np.asarray(levels[0].lower)
                 + np.asarray(levels[1].parent_start)*np.asarray(levels[0].spacing),
             )
 
@@ -186,6 +192,7 @@ class FMROpenPMDTests(unittest.TestCase):
 
     def test_viewer_helpers_are_relative_ordered_and_restart_safe(self):
         levels = _fmr_levels()
+        patches = fmr_openpmd.build_fmr_patch_descriptors(levels, guard_cells=2)
         field_map = _field_map(levels)
 
         with tempfile.TemporaryDirectory() as output_dir:
@@ -193,11 +200,10 @@ class FMROpenPMDTests(unittest.TestCase):
             self._write_step(output_dir, levels, field_map, step=0, physical_time=0.0)
             self._write_step(output_dir, levels, field_map, step=0, physical_time=0.0)
 
-            for level in levels:
-                h5_name = openPMD._fmr_iteration_filename(level.level, 0, 0)
-                opmd_name = openPMD._fmr_iteration_filename(
-                    level.level,
-                    0,
+            for patch in patches:
+                h5_name = fmr_openpmd.fmr_iteration_filename(patch, 0)
+                opmd_name = fmr_openpmd.fmr_iteration_filename(
+                    patch,
                     0,
                     extension=".opmd",
                 )
@@ -206,12 +212,12 @@ class FMROpenPMDTests(unittest.TestCase):
 
                 pmd_path = os.path.join(
                     output_dir,
-                    openPMD._fmr_series_name(level.level) + ".pmd",
+                    fmr_openpmd.fmr_series_name(patch) + ".pmd",
                 )
                 with open(pmd_path) as input_file:
                     self.assertEqual(
                         input_file.read(),
-                        openPMD._fmr_series_pattern(level.level) + "\n",
+                        fmr_openpmd.fmr_series_pattern(patch) + "\n",
                     )
 
             manifest_path = os.path.join(output_dir, "fields.visit")
@@ -227,37 +233,77 @@ class FMROpenPMDTests(unittest.TestCase):
                 )
                 self.assertEqual(input_file.read(), expected)
 
-            openPMD.finalize_fmr_openpmd_viewer_step(
+            fmr_openpmd.finalize_fmr_openpmd_viewer_step(
                 output_dir,
-                levels,
+                patches,
                 step=0,
                 physical_time=0.0,
             )
             with open(manifest_path) as input_file:
                 self.assertEqual(input_file.read(), expected)
 
-    def test_viewer_helpers_reject_conflicting_alias_and_topology(self):
-        levels = _fmr_levels()
+    def test_fmr_writer_assembles_multiple_tiled_chunks_per_patch(self):
+        root, fine = _fmr_levels()
+        root = root._replace(tile_shape=(1, 5, 5))
+        fine = fine._replace(tile_shape=(3, 6, 6))
+        levels = (root, fine)
+        patches = fmr_openpmd.build_fmr_patch_descriptors(levels, guard_cells=2)
+        field_map = _field_map(levels)
 
         with tempfile.TemporaryDirectory() as output_dir:
-            root_h5 = openPMD._fmr_iteration_filename(0, 0, 0)
+            self._write_step(output_dir, levels, field_map, step=0, physical_time=0.0)
+
+            for patch in patches:
+                filename = fmr_openpmd.fmr_iteration_filename(patch, 0)
+                series, iteration = _read_patch(os.path.join(output_dir, filename), step=0)
+                stored = iteration.meshes["E"]["x"].load_chunk()
+                series.flush()
+
+                source = np.asarray(field_map["E"][patch.level.index][0])
+                tile_grid = source.shape[:3]
+                expected = np.empty(patch.level.shape, dtype=source.dtype)
+                for i in range(tile_grid[0]):
+                    for j in range(tile_grid[1]):
+                        for k in range(tile_grid[2]):
+                            tile = source[i, j, k, 2:-2, 2:-2, 2:-2]
+                            ni, nj, nk = tile.shape
+                            expected[
+                                i*ni:(i + 1)*ni,
+                                j*nj:(j + 1)*nj,
+                                k*nk:(k + 1)*nk,
+                            ] = tile
+
+                np.testing.assert_array_equal(np.asarray(stored), expected)
+                series.close()
+
+    def test_viewer_helpers_reject_conflicting_alias_and_topology(self):
+        levels = _fmr_levels()
+        patches = fmr_openpmd.build_fmr_patch_descriptors(levels, guard_cells=2)
+        root_patch = patches[0]
+
+        with tempfile.TemporaryDirectory() as output_dir:
+            root_h5 = fmr_openpmd.fmr_iteration_filename(root_patch, 0)
             with open(os.path.join(output_dir, root_h5), "w"):
                 pass
-            root_alias = openPMD._fmr_iteration_filename(0, 0, 0, extension=".opmd")
+            root_alias = fmr_openpmd.fmr_iteration_filename(
+                root_patch,
+                0,
+                extension=".opmd",
+            )
             with open(os.path.join(output_dir, root_alias), "w"):
                 pass
 
             with self.assertRaisesRegex(FileExistsError, "conflicting VisIt alias"):
-                openPMD._ensure_fmr_visit_alias(output_dir, 0, 0, 0)
+                fmr_openpmd.ensure_fmr_visit_alias(output_dir, root_patch, 0)
 
         with tempfile.TemporaryDirectory() as output_dir:
             with open(os.path.join(output_dir, "fields.visit"), "w") as output_file:
                 output_file.write("!NBLOCKS 3\n")
 
             with self.assertRaisesRegex(ValueError, "topology"):
-                openPMD.update_fmr_visit_manifest(
+                fmr_openpmd.update_fmr_visit_manifest(
                     output_dir,
-                    levels,
+                    patches,
                     step=0,
                     physical_time=0.0,
                 )

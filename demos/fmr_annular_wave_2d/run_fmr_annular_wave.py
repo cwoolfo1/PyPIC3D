@@ -1,4 +1,4 @@
-"""Run a small z-invariant x-y plane wave on the static FMR hierarchy."""
+"""Focus a z-invariant annular electromagnetic pulse through an FMR patch."""
 
 import argparse
 from pathlib import Path
@@ -22,12 +22,17 @@ from PyPIC3D.initialization import initialize_simulation
 from PyPIC3D.solvers.yee.fmr import (
     B_FIELD_LOCATIONS,
     E_FIELD_LOCATIONS,
+    synchronize_b_levels,
     synchronize_e_levels,
 )
 from PyPIC3D.solvers.yee.fmr.grids import component_coordinate_axes
 
 
-CONFIG_PATH = DEMO_DIR / "fmr_linear_wave_2d.toml"
+CONFIG_PATH = DEMO_DIR / "fmr_annular_wave_2d.toml"
+
+PULSE_RADIUS = 0.62
+PULSE_WIDTH = 0.08
+PULSE_WAVELENGTH = 0.16
 
 
 def component_coordinates(grids, locations):
@@ -41,31 +46,50 @@ def component_coordinates(grids, locations):
     )
 
 
-def linear_wave_fields(grids, wave_speed):
-    """Evaluate Ez and its transverse B field on the staggered Yee grids."""
+def annular_electric_field(x, y, z):
+    """Evaluate the radial wave packet while retaining the full slab shape."""
 
-    kx = 2.0 * jnp.pi
-    ky = 2.0 * jnp.pi
-    omega = wave_speed * jnp.sqrt(kx**2 + ky**2)
-
-    E = []
-    for amplitude, locations in zip((0.0, 0.0, 1.0), E_FIELD_LOCATIONS):
-        x, y, z = component_coordinates(grids, locations)
-        phase = kx * x + ky * y + 0.0 * z
-        E.append(amplitude * jnp.cos(phase))
-
-    B = []
-    magnetic_amplitudes = (ky / omega, -kx / omega, 0.0)
-    for amplitude, locations in zip(magnetic_amplitudes, B_FIELD_LOCATIONS):
-        x, y, z = component_coordinates(grids, locations)
-        phase = kx * x + ky * y + 0.0 * z
-        B.append(amplitude * jnp.cos(phase))
-
-    return tuple(E), tuple(B)
+    radius = jnp.sqrt(x**2 + y**2)
+    radial_offset = radius - PULSE_RADIUS
+    envelope = jnp.exp(-0.5 * (radial_offset / PULSE_WIDTH) ** 2)
+    carrier = jnp.cos(2.0 * jnp.pi * radial_offset / PULSE_WAVELENGTH)
+    return envelope * carrier + 0.0 * z
 
 
-def initialize_linear_wave(fields, static_parameters, dynamic_parameters):
-    """Populate both FMR levels at t=0 without changing the production layout."""
+def annular_wave_fields(grids, wave_speed, templates):
+    """Evaluate the inward TMz pulse on the staggered Yee component grids."""
+
+    E_template, B_template = templates
+    Ez_coordinates = component_coordinates(grids, E_FIELD_LOCATIONS[2])
+    Ez = annular_electric_field(*Ez_coordinates)
+    E = (
+        jnp.zeros_like(E_template[0]),
+        jnp.zeros_like(E_template[1]),
+        jnp.broadcast_to(Ez, E_template[2].shape),
+    )
+
+    x_Bx, y_Bx, z_Bx = component_coordinates(grids, B_FIELD_LOCATIONS[0])
+    radius_Bx = jnp.sqrt(x_Bx**2 + y_Bx**2)
+    safe_radius_Bx = jnp.where(radius_Bx > 0.0, radius_Bx, 1.0)
+    Bphi_Bx = annular_electric_field(x_Bx, y_Bx, z_Bx) / wave_speed
+    Bx = -y_Bx * Bphi_Bx / safe_radius_Bx
+
+    x_By, y_By, z_By = component_coordinates(grids, B_FIELD_LOCATIONS[1])
+    radius_By = jnp.sqrt(x_By**2 + y_By**2)
+    safe_radius_By = jnp.where(radius_By > 0.0, radius_By, 1.0)
+    Bphi_By = annular_electric_field(x_By, y_By, z_By) / wave_speed
+    By = x_By * Bphi_By / safe_radius_By
+
+    B = (
+        jnp.broadcast_to(Bx, B_template[0].shape),
+        jnp.broadcast_to(By, B_template[1].shape),
+        jnp.zeros_like(B_template[2]),
+    )
+    return E, B
+
+
+def initialize_annular_wave(fields, static_parameters, dynamic_parameters):
+    """Populate and synchronize both FMR levels at t=0."""
 
     E_levels, B_levels = fields[:2]
     g = int(static_parameters.guard_cells)
@@ -78,7 +102,11 @@ def initialize_linear_wave(fields, static_parameters, dynamic_parameters):
         B_levels,
         dynamic_parameters.fmr.levels,
     ):
-        exact_E, exact_B = linear_wave_fields(level_data.grids, dynamic_parameters.C)
+        exact_E, exact_B = annular_wave_fields(
+            level_data.grids,
+            dynamic_parameters.C,
+            (E_level, B_level),
+        )
 
         initialized_E.append(tuple(
             component.at[:, :, :, active, active, active].set(
@@ -98,7 +126,8 @@ def initialize_linear_wave(fields, static_parameters, dynamic_parameters):
         ))
 
     E_levels = synchronize_e_levels(tuple(initialized_E), dynamic_parameters)
-    return (E_levels, tuple(initialized_B), *fields[2:])
+    B_levels = synchronize_b_levels(tuple(initialized_B), dynamic_parameters)
+    return (E_levels, B_levels, *fields[2:])
 
 
 def run_demo(output_dir=None, number_of_steps=None):
@@ -117,18 +146,24 @@ def run_demo(output_dir=None, number_of_steps=None):
         _plasma_parameters,
         species_config,
     ) = initialize_simulation(config)
-    fields = initialize_linear_wave(fields, static_parameters, dynamic_parameters)
+    fields = initialize_annular_wave(fields, static_parameters, dynamic_parameters)
 
-    def advance_one_step(particles_now, fields_now):
-        return evolve_loop(
-            particles_now,
-            species_config,
-            fields_now,
-            static_parameters,
-            dynamic_parameters,
-        )
+    plotting_interval = int(plotting_parameters["plotting_interval"])
 
-    advance_one_step_jit = jax.jit(advance_one_step)
+    def advance_output_interval(state):
+        def advance_one_step(_step, state_now):
+            particles_now, fields_now = state_now
+            return evolve_loop(
+                particles_now,
+                species_config,
+                fields_now,
+                static_parameters,
+                dynamic_parameters,
+            )
+
+        return jax.lax.fori_loop(0, plotting_interval, advance_one_step, state)
+
+    advance_output_interval_jit = jax.jit(advance_output_interval)
     output_dir = DEMO_DIR / "data" if output_dir is None else Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     field_writer = create_async_fmr_openpmd_field_writer(
@@ -140,23 +175,34 @@ def run_demo(output_dir=None, number_of_steps=None):
 
     loop_error = None
     try:
-        plotting_interval = int(plotting_parameters["plotting_interval"])
+        E_levels, B_levels, J_levels = fields[:3]
+        enqueue_fmr_openpmd_field_output(
+            field_writer,
+            {"E": E_levels, "B": B_levels, "J": J_levels},
+            dynamic_parameters,
+            0,
+            0,
+        )
+
         if number_of_steps is None:
             number_of_steps = int(static_parameters.Nt)
         number_of_steps = min(int(number_of_steps), int(static_parameters.Nt))
-        for timestep in tqdm(range(number_of_steps), desc="FMR linear wave"):
-            if timestep % plotting_interval == 0:
-                plot_num = timestep // plotting_interval
-                E_levels, B_levels, J_levels = fields[:3]
-                enqueue_fmr_openpmd_field_output(
-                    field_writer,
-                    {"E": E_levels, "B": B_levels, "J": J_levels},
-                    dynamic_parameters,
-                    plot_num,
-                    timestep,
-                )
+        number_of_outputs = number_of_steps // plotting_interval
+        for output_index in tqdm(
+            range(1, number_of_outputs + 1),
+            desc="Inward FMR annular wave",
+        ):
+            particles, fields = advance_output_interval_jit((particles, fields))
+            timestep = output_index * plotting_interval
 
-            particles, fields = advance_one_step_jit(particles, fields)
+            E_levels, B_levels, J_levels = fields[:3]
+            enqueue_fmr_openpmd_field_output(
+                field_writer,
+                {"E": E_levels, "B": B_levels, "J": J_levels},
+                dynamic_parameters,
+                output_index,
+                timestep,
+            )
 
         jax.block_until_ready(fields)
     except BaseException as exc:

@@ -1,11 +1,11 @@
-"""Fixed stagger-aware ghost-cell transfers for one 2:1 Yee refinement patch."""
+"""Fixed stagger-aware transfers for one 2:1 Yee refinement interface."""
 
 from itertools import product
 
 import jax.numpy as jnp
 
-from .grids import _component_coordinate_axes, _coordinate_tolerance
-from .types import B_FIELD_LOCATIONS, E_FIELD_LOCATIONS, FMRInterpolationMap
+from .grids import SINGLE_TILE_INDEX, _coordinate_tolerance, component_coordinate_axes
+from .types import B_FIELD_LOCATIONS, E_FIELD_LOCATIONS, FMRTransferMap
 
 
 def _closed_interface_indices(axes, bounds, tolerance):
@@ -29,7 +29,7 @@ def _strict_interior_indices(axes, bounds, tolerance):
 
 def _physical_indices(level, guard_cells):
     g = int(guard_cells)
-    shape = (level.Nx, level.Ny, level.Nz)
+    shape = level.shape
     return jnp.stack(
         jnp.meshgrid(
             *(jnp.arange(g, g + cells, dtype=jnp.int32) for cells in shape),
@@ -106,7 +106,7 @@ def _build_transfer_map(source_axes, target_axes, source_indices, target_indices
         tuple(stencil[0] for stencil in axis_stencils),
         tuple(stencil[1] for stencil in axis_stencils),
     )
-    return FMRInterpolationMap(target_indices, donor_indices, weights)
+    return FMRTransferMap(target_indices, donor_indices, weights)
 
 
 _CURL_COMPONENT_READS = (
@@ -134,42 +134,11 @@ def _active_component_indices(level, grids, field_locations, bounds, guard_cells
     physical = _physical_indices(level, guard_cells)
     result = []
     for locations in field_locations:
-        axes = _component_coordinate_axes(grids, locations)
+        axes = component_coordinate_axes(grids, locations)
         tolerance = _coordinate_tolerance(*axes)
         inside = _indices_strictly_inside(physical, axes, bounds, tolerance)
         result.append(physical[inside] if fine else physical[~inside])
     return tuple(result)
-
-
-def _deep_shadow_indices(
-    parent_level,
-    parent_axes,
-    bounds,
-    tolerance,
-    coarse_ghost,
-    guard_cells,
-):
-    physical = _physical_indices(parent_level, guard_cells)
-    covered = physical[_indices_strictly_inside(physical, parent_axes, bounds, tolerance)]
-
-    ghost_mask = jnp.zeros(
-        (parent_level.Nx, parent_level.Ny, parent_level.Nz),
-        dtype=bool,
-    )
-    g = int(guard_cells)
-    local_ghost = coarse_ghost - g
-    ghost_mask = ghost_mask.at[
-        local_ghost[:, 0],
-        local_ghost[:, 1],
-        local_ghost[:, 2],
-    ].set(True, unique_indices=True)
-    local_covered = covered - g
-    in_ghost = ghost_mask[
-        local_covered[:, 0],
-        local_covered[:, 1],
-        local_covered[:, 2],
-    ]
-    return covered[~in_ghost]
 
 
 def _build_component_maps(
@@ -182,11 +151,7 @@ def _build_component_maps(
     curl_offset,
     guard_cells,
 ):
-    bounds = (
-        (fine_level.x_min, fine_level.x_max),
-        (fine_level.y_min, fine_level.y_max),
-        (fine_level.z_min, fine_level.z_max),
-    )
+    bounds = tuple(zip(fine_level.lower, fine_level.upper))
     parent_output_active = _active_component_indices(
         parent_level,
         parent_grids,
@@ -205,11 +170,9 @@ def _build_component_maps(
     )
     coarse_to_fine_maps = []
     fine_to_coarse_maps = []
-    deep_shadow_indices = []
-
     for locations in field_locations:
-        parent_axes = _component_coordinate_axes(parent_grids, locations)
-        fine_axes = _component_coordinate_axes(fine_grids, locations)
+        parent_axes = component_coordinate_axes(parent_grids, locations)
+        fine_axes = component_coordinate_axes(fine_grids, locations)
         tolerance = _coordinate_tolerance(*parent_axes, *fine_axes)
         fine_interface = _closed_interface_indices(fine_axes, bounds, tolerance)
         fine_interior = _strict_interior_indices(fine_axes, bounds, tolerance)
@@ -290,22 +253,7 @@ def _build_component_maps(
 
         coarse_to_fine_maps.append(coarse_to_fine_map)
         fine_to_coarse_maps.append(fine_to_coarse_map)
-        deep_shadow_indices.append(
-            _deep_shadow_indices(
-                parent_level,
-                parent_axes,
-                bounds,
-                tolerance,
-                coarse_ghost,
-                guard_cells,
-            )
-        )
-
-    return (
-        tuple(coarse_to_fine_maps),
-        tuple(fine_to_coarse_maps),
-        tuple(deep_shadow_indices),
-    )
+    return tuple(coarse_to_fine_maps), tuple(fine_to_coarse_maps)
 
 
 def build_e_transfer_maps(parent_level, fine_level, parent_grids, fine_grids, guard_cells):
@@ -337,12 +285,18 @@ def build_b_transfer_maps(parent_level, fine_level, parent_grids, fine_grids, gu
 def _apply_component_map(source_component, target_component, transfer_map):
     source = transfer_map.source_indices
     source_values = source_component[
-        0, 0, 0, source[:, :, 0], source[:, :, 1], source[:, :, 2]
+        *SINGLE_TILE_INDEX,
+        source[:, :, 0],
+        source[:, :, 1],
+        source[:, :, 2],
     ]
     values = jnp.sum(transfer_map.weights * source_values, axis=1)
     target = transfer_map.target_indices
     return target_component.at[
-        0, 0, 0, target[:, 0], target[:, 1], target[:, 2]
+        *SINGLE_TILE_INDEX,
+        target[:, 0],
+        target[:, 1],
+        target[:, 2],
     ].set(values, unique_indices=True)
 
 

@@ -8,10 +8,11 @@ import numpy as np
 from PyPIC3D.solvers.yee.fmr import (
     B_FIELD_LOCATIONS,
     E_FIELD_LOCATIONS,
-    build_fmr_parameters,
-    load_fmr_from_toml,
+    build_fmr_hierarchy,
+    load_fmr_levels,
 )
-from PyPIC3D.solvers.yee.fmr.grids import _component_coordinate_axes
+from PyPIC3D.solvers.yee.fmr.grids import component_coordinate_axes
+from PyPIC3D.solvers.yee.fmr.quadrature import build_fmr_quadrature_weights
 from tests.kernel_fixtures import kernel_parameters
 
 
@@ -22,7 +23,7 @@ DOMAIN_LENGTH = 1.0
 GUARD_CELLS = 2
 
 
-def _metric_case(resolution, refinement_ratio):
+def _quadrature_case(resolution, refinement_ratio):
     spacing = DOMAIN_LENGTH / resolution
     static_parameters, dynamic_parameters = kernel_parameters(
         Nx=resolution,
@@ -70,7 +71,7 @@ def _metric_case(resolution, refinement_ratio):
         "z_min": 0.0,
         "z_max": DOMAIN_LENGTH,
     }
-    levels = load_fmr_from_toml(
+    levels = load_fmr_levels(
         config,
         geometry,
         static_parameters.tile_shape,
@@ -80,9 +81,22 @@ def _metric_case(resolution, refinement_ratio):
         fmr_levels=levels,
     )
     dynamic_parameters = dynamic_parameters._replace(
-        fmr=build_fmr_parameters(static_parameters, dynamic_parameters)
+        fmr=build_fmr_hierarchy(static_parameters, dynamic_parameters)
     )
-    return static_parameters, dynamic_parameters
+    parent_level, fine_level = levels
+    parent_runtime, fine_runtime = dynamic_parameters.fmr.levels
+    interface = dynamic_parameters.fmr.interface
+    quadrature_weights = build_fmr_quadrature_weights(
+        parent_level,
+        fine_level,
+        parent_runtime.grids,
+        fine_runtime.grids,
+        interface.e_coarse_to_fine_maps,
+        parent_runtime.b_active_masks,
+        fine_runtime.b_active_masks,
+        static_parameters.guard_cells,
+    )
+    return static_parameters, dynamic_parameters, quadrature_weights
 
 
 def _active_component_axes(grids, locations, level):
@@ -90,8 +104,8 @@ def _active_component_axes(grids, locations, level):
     return tuple(
         np.asarray(axis[g:g + cells])
         for axis, cells in zip(
-            _component_coordinate_axes(grids, locations),
-            (level.Nx, level.Ny, level.Nz),
+            component_coordinate_axes(grids, locations),
+            level.shape,
         )
     )
 
@@ -116,7 +130,7 @@ def _index_at_coordinate(axis, coordinate):
     return int(matches[0])
 
 
-class TestFMRCompositeMetricWeights(unittest.TestCase):
+class TestFMRCompositeQuadrature(unittest.TestCase):
     def test_constant_fields_partition_the_domain_for_all_components(self):
         for resolution in (8, 16):
             for refinement_ratio in (2,):
@@ -124,15 +138,16 @@ class TestFMRCompositeMetricWeights(unittest.TestCase):
                     resolution=resolution,
                     refinement_ratio=refinement_ratio,
                 ):
-                    _, dynamic_parameters = _metric_case(
+                    _, dynamic_parameters, quadrature_weights = _quadrature_case(
                         resolution,
                         refinement_ratio,
                     )
                     parent_data, fine_data = dynamic_parameters.fmr.levels
 
-                    for field_name in ("e_weights", "b_weights"):
-                        parent_weights = getattr(parent_data, field_name)
-                        fine_weights = getattr(fine_data, field_name)
+                    for parent_weights, fine_weights in (
+                        (quadrature_weights[0], quadrature_weights[2]),
+                        (quadrature_weights[1], quadrature_weights[3]),
+                    ):
                         totals = [
                             float(jnp.sum(parent) + jnp.sum(fine))
                             for parent, fine in zip(parent_weights, fine_weights)
@@ -145,15 +160,15 @@ class TestFMRCompositeMetricWeights(unittest.TestCase):
                         ))
 
     def test_ratio_two_interface_weights_follow_live_yee_coordinates(self):
-        static_parameters, dynamic_parameters = _metric_case(8, 2)
+        static_parameters, dynamic_parameters, quadrature_weights = _quadrature_case(8, 2)
         parent_level, fine_level = static_parameters.fmr_levels
         parent_data = dynamic_parameters.fmr.levels[0]
         coarse_volume = np.prod(parent_level.spacing)
-        lower = fine_level.x_min
+        lower = fine_level.lower[0]
 
-        for field_name, locations_tuple in (
-            ("e_weights", E_FIELD_LOCATIONS),
-            ("b_weights", B_FIELD_LOCATIONS),
+        for field_name, locations_tuple, parent_weights in (
+            ("E", E_FIELD_LOCATIONS, quadrature_weights[0]),
+            ("B", B_FIELD_LOCATIONS, quadrature_weights[1]),
         ):
             for component, locations in enumerate(locations_tuple):
                 with self.subTest(field=field_name, component=component):
@@ -162,7 +177,7 @@ class TestFMRCompositeMetricWeights(unittest.TestCase):
                         locations,
                         parent_level,
                     )
-                    weights = np.asarray(getattr(parent_data, field_name)[component])[0, 0, 0]
+                    weights = np.asarray(parent_weights[component])[0, 0, 0]
 
                     outside = tuple(0 for _ in range(3))
                     self.assertAlmostEqual(weights[outside] / coarse_volume, 1.0, places=14)
@@ -206,34 +221,29 @@ class TestFMRCompositeMetricWeights(unittest.TestCase):
     def test_active_weights_are_strictly_positive_and_inactive_weights_are_zero(self):
         for refinement_ratio in (2,):
             with self.subTest(refinement_ratio=refinement_ratio):
-                _, dynamic_parameters = _metric_case(8, refinement_ratio)
+                _, dynamic_parameters, quadrature_weights = _quadrature_case(8, refinement_ratio)
                 parent_data, fine_data = dynamic_parameters.fmr.levels
 
-                for weights in (
-                    parent_data.e_weights,
-                    parent_data.b_weights,
-                    fine_data.e_weights,
-                    fine_data.b_weights,
-                ):
+                for weights in quadrature_weights:
                     for weight in weights:
                         values = np.asarray(weight)
                         self.assertTrue(np.all(np.isfinite(values)))
                         self.assertTrue(np.all(values >= 0.0))
                         self.assertTrue(np.all(values[values != 0.0] > 0.0))
 
-                coarse_volume = float(np.max(np.asarray(parent_data.e_weights[0])))
-                for weights in (parent_data.e_weights, parent_data.b_weights):
+                coarse_volume = float(np.max(np.asarray(quadrature_weights[0][0])))
+                for weights in quadrature_weights[:2]:
                     for weight in weights:
                         positive = np.asarray(weight)[np.asarray(weight) > 0.0]
                         self.assertTrue(np.all(positive >= 0.5 * coarse_volume))
 
                 for weight, mask in zip(
-                    parent_data.b_weights,
+                    quadrature_weights[1],
                     parent_data.b_active_masks,
                 ):
                     self.assertTrue(np.all(np.asarray(weight)[~np.asarray(mask)] == 0.0))
                 for weight, mask in zip(
-                    fine_data.b_weights,
+                    quadrature_weights[3],
                     fine_data.b_active_masks,
                 ):
                     self.assertTrue(np.all(np.asarray(weight)[~np.asarray(mask)] == 0.0))
@@ -244,16 +254,16 @@ class TestFMRCompositeMetricWeights(unittest.TestCase):
         errors = {name: [[] for _ in range(3)] for name in ("E", "B")}
 
         for resolution in resolutions:
-            static_parameters, dynamic_parameters = _metric_case(resolution, 2)
+            static_parameters, dynamic_parameters, quadrature_weights = _quadrature_case(
+                resolution, 2
+            )
             parent_level, fine_level = static_parameters.fmr_levels
             parent_data, fine_data = dynamic_parameters.fmr.levels
 
-            for name, locations_tuple, weight_name in (
-                ("E", E_FIELD_LOCATIONS, "e_weights"),
-                ("B", B_FIELD_LOCATIONS, "b_weights"),
+            for name, locations_tuple, parent_weights, fine_weights in (
+                ("E", E_FIELD_LOCATIONS, quadrature_weights[0], quadrature_weights[2]),
+                ("B", B_FIELD_LOCATIONS, quadrature_weights[1], quadrature_weights[3]),
             ):
-                parent_weights = getattr(parent_data, weight_name)
-                fine_weights = getattr(fine_data, weight_name)
                 for component, locations in enumerate(locations_tuple):
                     quadrature = _component_quadrature(
                         parent_data.grids,
@@ -269,7 +279,7 @@ class TestFMRCompositeMetricWeights(unittest.TestCase):
                     )
                     errors[name][component].append(abs(quadrature - exact_integral))
 
-        lines = ["Composite metric quadrature convergence"]
+        lines = ["Composite FMR quadrature convergence"]
         for name in ("E", "B"):
             for component in range(3):
                 component_errors = errors[name][component]

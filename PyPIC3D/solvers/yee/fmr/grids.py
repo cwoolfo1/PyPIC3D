@@ -8,20 +8,23 @@ from PyPIC3D.utilities.grids import build_tiled_yee_grids, build_yee_grid
 from PyPIC3D.utilities.parameters import GridParameters
 
 
+SINGLE_TILE_INDEX = (0, 0, 0)
+
+
 def _build_level_grids(level, guard_cells):
     dynamic_setup = SimpleNamespace(
         dx=level.spacing[0],
         dy=level.spacing[1],
         dz=level.spacing[2],
-        Nx=level.Nx,
-        Ny=level.Ny,
-        Nz=level.Nz,
-        x_wind=level.x_max - level.x_min,
-        y_wind=level.y_max - level.y_min,
-        z_wind=level.z_max - level.z_min,
-        x_min=level.x_min,
-        y_min=level.y_min,
-        z_min=level.z_min,
+        Nx=level.shape[0],
+        Ny=level.shape[1],
+        Nz=level.shape[2],
+        x_wind=level.upper[0] - level.lower[0],
+        y_wind=level.upper[1] - level.lower[1],
+        z_wind=level.upper[2] - level.lower[2],
+        x_min=level.lower[0],
+        y_min=level.lower[1],
+        z_min=level.lower[2],
     )
     center_grid, vertex_grid = build_yee_grid(dynamic_setup)
 
@@ -40,11 +43,13 @@ def _build_level_grids(level, guard_cells):
     )
 
 
-def _component_coordinate_axes(grids, locations):
+def component_coordinate_axes(grids, locations):
+    """Return the three logical axes for a component on the one live tile."""
+
     axes = []
     for axis, location in enumerate(locations):
         tiled_grid = grids.tiled_vertex_grid if location == "V" else grids.tiled_center_grid
-        axes.append(jnp.asarray(tiled_grid[axis][0, 0, 0]))
+        axes.append(jnp.asarray(tiled_grid[axis][SINGLE_TILE_INDEX]))
     return tuple(axes)
 
 

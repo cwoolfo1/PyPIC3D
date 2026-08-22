@@ -1,4 +1,4 @@
-"""Basic data structures and constants for field-only FMR."""
+"""Geometry and runtime records for the single-patch field-only FMR solver."""
 
 from typing import NamedTuple
 
@@ -12,27 +12,21 @@ B_FIELD_LOCATIONS = (("C", "V", "V"), ("V", "C", "V"), ("V", "V", "C"))
 
 
 class FMRLevel(NamedTuple):
-    """Small, hashable geometry record for one fixed refinement level."""
+    """Hashable geometry for one fixed refinement level."""
 
-    level: int
+    index: int
     parent: int
     refinement_ratio: int
     parent_start: tuple
     parent_stop: tuple
-    Nx: int
-    Ny: int
-    Nz: int
+    shape: tuple
     spacing: tuple
-    x_min: float
-    x_max: float
-    y_min: float
-    y_max: float
-    z_min: float
-    z_max: float
+    lower: tuple
+    upper: tuple
     tile_shape: tuple
 
 
-class FMRInterpolationMap(NamedTuple):
+class FMRTransferMap(NamedTuple):
     """Fixed transfer stencil for one staggered field component."""
 
     target_indices: jax.Array
@@ -40,23 +34,25 @@ class FMRInterpolationMap(NamedTuple):
     weights: jax.Array
 
 
-class FMRLevelData(NamedTuple):
-    """JAX-array data associated with one statically described level."""
+class FMRLevelRuntime(NamedTuple):
+    """Grids and active degrees of freedom for one level."""
 
     grids: GridParameters
+    e_active_masks: tuple
+    b_active_masks: tuple
+
+
+class FMRInterfaceData(NamedTuple):
+    """Bidirectional E/B transfers across the one coarse-fine interface."""
+
     e_coarse_to_fine_maps: tuple
     b_coarse_to_fine_maps: tuple
     e_fine_to_coarse_maps: tuple
     b_fine_to_coarse_maps: tuple
-    e_deep_shadow_indices: tuple
-    b_deep_shadow_indices: tuple
-    e_active_masks: tuple
-    b_active_masks: tuple
-    e_weights: tuple
-    b_weights: tuple
 
 
-class FMRParameters(NamedTuple):
-    """Dynamic FMR maps, masks, and coordinates, ordered by level."""
+class FMRHierarchy(NamedTuple):
+    """Runtime data for one root, one fine level, and their interface."""
 
     levels: tuple
+    interface: FMRInterfaceData

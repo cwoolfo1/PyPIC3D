@@ -7,18 +7,19 @@ import jax.numpy as jnp
 from PyPIC3D.solvers.yee.fmr import (
     B_FIELD_LOCATIONS,
     E_FIELD_LOCATIONS,
-    fmr_curl_b_to_e,
-    fmr_curl_e_to_b,
+)
+from PyPIC3D.solvers.yee.fmr.curls import fmr_curl_b_to_e, fmr_curl_e_to_b
+from PyPIC3D.solvers.yee.fmr.time_loop import update_B_fmr, update_E_fmr
+from PyPIC3D.solvers.yee.fmr.transfers import (
     interpolate_coarse_to_fine,
     interpolate_fine_to_coarse,
-    update_B_fmr,
-    update_E_fmr,
 )
-from tests.physics_tests.fmr_maxwell_convergence_test import (
+from tests.fmr_support import (
     REGIONS,
     _active_vector,
     _build_fmr_case,
     _build_vector_region_masks,
+    _composite_quadrature_weights,
     _component_coordinates,
     _periodic_fields,
 )
@@ -156,6 +157,7 @@ def _transfer_norms(actual, exact, transfer_maps):
 def _run_transfers(resolution):
     static, dynamic, _, _ = _build_fmr_case("periodic", resolution)
     parent_data, fine_data = dynamic.fmr.levels
+    interface = dynamic.fmr.interface
 
     parent_E = _manufactured_e(parent_data.grids)
     exact_fine_E = _manufactured_e(fine_data.grids)
@@ -163,7 +165,7 @@ def _run_transfers(resolution):
     supplied_fine_E = interpolate_coarse_to_fine(
         parent_E,
         fine_E,
-        fine_data.e_coarse_to_fine_maps,
+        interface.e_coarse_to_fine_maps,
     )
 
     parent_B = _manufactured_b(parent_data.grids)
@@ -172,7 +174,7 @@ def _run_transfers(resolution):
     supplied_fine_B = interpolate_coarse_to_fine(
         parent_B,
         fine_B,
-        fine_data.b_coarse_to_fine_maps,
+        interface.b_coarse_to_fine_maps,
     )
 
     fine_E = _manufactured_e(fine_data.grids)
@@ -181,7 +183,7 @@ def _run_transfers(resolution):
     supplied_parent_E = interpolate_fine_to_coarse(
         fine_E,
         parent_E,
-        fine_data.e_fine_to_coarse_maps,
+        interface.e_fine_to_coarse_maps,
     )
 
     fine_B = _manufactured_b(fine_data.grids)
@@ -190,28 +192,28 @@ def _run_transfers(resolution):
     supplied_parent_B = interpolate_fine_to_coarse(
         fine_B,
         parent_B,
-        fine_data.b_fine_to_coarse_maps,
+        interface.b_fine_to_coarse_maps,
     )
     return {
         "E_prolongation": _transfer_norms(
             supplied_fine_E,
             exact_fine_E,
-            fine_data.e_coarse_to_fine_maps,
+            interface.e_coarse_to_fine_maps,
         ),
         "B_prolongation": _transfer_norms(
             supplied_fine_B,
             exact_fine_B,
-            fine_data.b_coarse_to_fine_maps,
+            interface.b_coarse_to_fine_maps,
         ),
         "E_restriction": _transfer_norms(
             supplied_parent_E,
             exact_parent_E,
-            fine_data.e_fine_to_coarse_maps,
+            interface.e_fine_to_coarse_maps,
         ),
         "B_restriction": _transfer_norms(
             supplied_parent_B,
             exact_parent_B,
-            fine_data.b_fine_to_coarse_maps,
+            interface.b_fine_to_coarse_maps,
         ),
     }
 
@@ -222,11 +224,12 @@ def _run_curls(resolution):
     B = tuple(_manufactured_b(data.grids) for data in dynamic.fmr.levels)
     exact_curl_E = tuple(_exact_curl_e(data.grids) for data in dynamic.fmr.levels)
     exact_curl_B = tuple(_exact_curl_b(data.grids) for data in dynamic.fmr.levels)
-    E_masks = _build_vector_region_masks(E_FIELD_LOCATIONS, static, dynamic, True, "E")
-    B_masks = _build_vector_region_masks(B_FIELD_LOCATIONS, static, dynamic, True, "B")
+    E_weights, B_weights = _composite_quadrature_weights(static, dynamic)
+    E_masks = _build_vector_region_masks(E_FIELD_LOCATIONS, static, dynamic, True, E_weights)
+    B_masks = _build_vector_region_masks(B_FIELD_LOCATIONS, static, dynamic, True, B_weights)
 
     curl_E = fmr_curl_e_to_b(E, static, dynamic)
-    curl_B = fmr_curl_b_to_e(B, E, static, dynamic)
+    curl_B = fmr_curl_b_to_e(B, static, dynamic)
     return {
         "curl_E": _region_norms(
             curl_E,
@@ -256,8 +259,9 @@ def _run_stages(resolution):
     E0 = tuple(fields[0] for fields in initial)
     B0 = tuple(fields[1] for fields in initial)
     J = tuple(tuple(jnp.zeros_like(component) for component in level) for level in E0)
-    E_masks = _build_vector_region_masks(E_FIELD_LOCATIONS, static, dynamic, True, "E")
-    B_masks = _build_vector_region_masks(B_FIELD_LOCATIONS, static, dynamic, True, "B")
+    E_weights, B_weights = _composite_quadrature_weights(static, dynamic)
+    E_masks = _build_vector_region_masks(E_FIELD_LOCATIONS, static, dynamic, True, E_weights)
+    B_masks = _build_vector_region_masks(B_FIELD_LOCATIONS, static, dynamic, True, B_weights)
 
     B_half = update_B_fmr(E0, B0, static, dynamic)
     exact_B_half = tuple(

@@ -19,6 +19,12 @@ From the repository root, run:
 python demos/fmr_linear_wave_2d/run_fmr_linear_wave.py
 ```
 
+For a short headless smoke run without writing into the repository:
+
+```bash
+python demos/fmr_linear_wave_2d/run_fmr_linear_wave.py --steps 8 --output-dir /tmp/fmr-linear
+```
+
 The runner always resolves its configuration and output location relative to
 this directory. Open the generated collection in VisIt:
 

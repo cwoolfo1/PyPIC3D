@@ -22,6 +22,8 @@ PyPIC3D --config path/to/config.toml
 - Exchanges field halos and moving particles across a JAX device mesh.
 - Writes energy and momentum traces plus optional asynchronous openPMD field
   and particle output.
+- Supports a field-only, two-level fixed-mesh-refinement mode with one interior
+  fine patch on a single logical tile. See [FMR.md](FMR.md) for its exact scope.
 
 ## Installation
 
@@ -116,13 +118,16 @@ pip install -r docs/requirements.in
 python -m sphinx -b html -W --keep-going docs docs/_build/html
 ```
 
-## Next Stages ##
+## Next Stages
 - [ ] 3+1 Curvilinear PIC with static metrics.
 - [ ] 3+1 Curvilinear PIC with dynamic metrics using BSSN/Z4C.
 - [ ] Harris Current Sheet Demonstration.
 - [X] Orszag-Tang Vortex Demonstration.
 - [ ] Refactoring deposition to use single stencil call for deposition and interpolation.
-- [ ] Fixed mesh refinement for both standard and 3+1 curvilinear PIC.
+- [X] Single-tile, two-level, field-only fixed mesh refinement.
+- [ ] Resolve the strict periodic FMR fine-region convergence gate.
+- [ ] Extend FMR evolution to multitile fields and multiple fine patches.
+- [ ] Add FMR particles, PML, restart/external fields, and 3+1 curvilinear support.
 
 
 

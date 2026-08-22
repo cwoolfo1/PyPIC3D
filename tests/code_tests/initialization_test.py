@@ -250,10 +250,10 @@ class TestInitializationFunctions(unittest.TestCase):
         self.assertEqual(particles.active.shape[3], 0)
 
         fine_level = static_parameters.fmr_levels[1]
-        self.assertEqual((fine_level.Nx, fine_level.Ny, fine_level.Nz), (6, 6, 6))
+        self.assertEqual(fine_level.shape, (6, 6, 6))
         self.assertEqual(fine_level.spacing, (0.5, 0.5, 0.5))
         self.assertEqual(
-            (fine_level.x_min, fine_level.x_max),
+            (fine_level.lower[0], fine_level.upper[0]),
             (-2.0, 1.0),
         )
 
@@ -292,12 +292,12 @@ class TestInitializationFunctions(unittest.TestCase):
             _, _, _, static_parameters, dynamic_parameters, *_ = initialize_simulation(config)
 
         self.assertNotIn("fmr_interpolation_order", static_parameters._fields)
-        fine_data = dynamic_parameters.fmr.levels[1]
+        interface = dynamic_parameters.fmr.interface
         for maps in (
-            fine_data.e_coarse_to_fine_maps,
-            fine_data.b_coarse_to_fine_maps,
-            fine_data.e_fine_to_coarse_maps,
-            fine_data.b_fine_to_coarse_maps,
+            interface.e_coarse_to_fine_maps,
+            interface.b_coarse_to_fine_maps,
+            interface.e_fine_to_coarse_maps,
+            interface.b_fine_to_coarse_maps,
         ):
             for interpolation_map in maps:
                 self.assertEqual(interpolation_map.source_indices.shape[1:], (64, 3))
@@ -380,7 +380,7 @@ class TestInitializationFunctions(unittest.TestCase):
 
             config = self._fmr_config(tmpdir)
             config["simulation_parameters"]["particle_tile_nx"] = 4
-            with self.assertRaisesRegex(NotImplementedError, "root tile grid"):
+            with self.assertRaisesRegex(NotImplementedError, "one logical tile"):
                 initialize_simulation(config)
 
             for parent in (0.5, -0.5, "0", True):

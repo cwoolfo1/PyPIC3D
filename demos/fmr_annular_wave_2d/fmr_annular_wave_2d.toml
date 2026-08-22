@@ -1,0 +1,45 @@
+# Inward z-invariant annular electromagnetic pulse on a static FMR hierarchy.
+[simulation_parameters]
+name = "Inward FMR annular electromagnetic wave"
+solver = "electrodynamic_yee"
+
+Nx = 128
+Ny = 128
+Nz = 5
+x_min = -1.0
+x_max = 1.0
+y_min = -1.0
+y_max = 1.0
+z_min = -0.0390625
+z_max = 0.0390625
+
+Nt = 432
+cfl = 0.8
+C = 1.0
+eps = 1.0
+mu = 1.0
+
+x_bc = "periodic"
+y_bc = "periodic"
+z_bc = "periodic"
+guard_cells = 2
+shape_factor = 1
+
+# The first FMR implementation requires one root tile.
+particle_tile_nx = 128
+particle_tile_ny = 128
+particle_tile_nz = 5
+
+[plotting]
+plot_openpmd_fields = true
+plotting_interval = 8
+openpmd_field_queue_size = 2
+
+[fmr]
+enabled = true
+
+[[fmr.levels]]
+parent = 0
+refinement_ratio = 2
+coarse_start = [40, 40, 1]
+coarse_stop = [88, 88, 4]

@@ -9,11 +9,14 @@ import traceback
 import jax
 import numpy as np
 
-from PyPIC3D.diagnostics.openPMD import (
-    TiledMeshLayout,
+from PyPIC3D.diagnostics.fmr_openpmd import (
+    build_fmr_patch_descriptors,
     finalize_fmr_openpmd_viewer_step,
     setup_fmr_openpmd_viewer_files,
     write_fmr_patch_snapshot_openpmd,
+)
+from PyPIC3D.diagnostics.openPMD import (
+    TiledMeshLayout,
     write_tiled_field_snapshot_openpmd,
     write_tiled_particle_snapshot_openpmd,
 )
@@ -110,12 +113,8 @@ def prefetch_field_map_to_host(field_map):
         if hasattr(value, "copy_to_host_async"):
             value.copy_to_host_async()
 
-    for value in field_map.values():
-        if isinstance(value, (tuple, list)):
-            for component in value:
-                _prefetch(component)
-        else:
-            _prefetch(value)
+    for value in jax.tree_util.tree_leaves(field_map):
+        _prefetch(value)
 
 
 def make_tiled_field_snapshot(field_map, *, step, time):
@@ -133,14 +132,6 @@ def make_tiled_field_snapshot(field_map, *, step, time):
         time=float(time),
         fields=copied,
     )
-
-
-def prefetch_fmr_field_map_to_host(field_map):
-    for field_levels in field_map.values():
-        for level in field_levels:
-            for component in level:
-                if hasattr(component, "copy_to_host_async"):
-                    component.copy_to_host_async()
 
 
 def make_fmr_field_snapshot(field_map, *, step, time, level_count):
@@ -205,7 +196,82 @@ def make_tiled_particle_snapshot(
     )
 
 
-class AsyncTiledOpenPMDFieldWriter:
+class _AsyncSnapshotWriter:
+    """Shared bounded queue, worker lifecycle, and error propagation."""
+
+    def __init__(self, queue_size, error_label, raise_writer_errors_on_close):
+        self.raise_writer_errors_on_close = bool(raise_writer_errors_on_close)
+        self._error_label = str(error_label)
+        self._queue = queue.Queue(maxsize=max(1, int(queue_size)))
+        self._thread = None
+        self._closed = False
+        self._error = None
+        self._error_traceback = None
+
+    def start(self):
+        if self._thread is not None:
+            return
+
+        self._thread = threading.Thread(target=self._writer_loop, daemon=True)
+        self._thread.start()
+
+    def enqueue(self, snapshot, *, block=True):
+        if self._closed:
+            raise RuntimeError("Cannot enqueue after writer.close().")
+        if self._error is not None:
+            raise RuntimeError(
+                f"{self._error_label} failed. Original traceback:\n"
+                f"{self._error_traceback}"
+            ) from self._error
+
+        try:
+            self._queue.put(snapshot, block=block)
+            return True
+        except queue.Full:
+            return False
+
+    def close(self, raise_errors=None):
+        if self._closed:
+            return
+
+        self._closed = True
+        if self._thread is not None:
+            self._queue.put(None)
+            self._queue.join()
+            self._thread.join()
+            self._thread = None
+
+        if raise_errors is None:
+            raise_errors = self.raise_writer_errors_on_close
+        if self._error is not None and raise_errors:
+            raise RuntimeError(
+                f"{self._error_label} failed. Original traceback:\n"
+                f"{self._error_traceback}"
+            ) from self._error
+
+    def _write_snapshot(self, snapshot):
+        raise NotImplementedError
+
+    def _writer_loop(self):
+        while True:
+            item = self._queue.get()
+            try:
+                if item is None:
+                    return
+
+                if self._error is None:
+                    # Native openPMD/HDF5 writes are process-global and must not
+                    # overlap across independent field and particle streams.
+                    with _OPENPMD_WRITE_LOCK:
+                        self._write_snapshot(item)
+            except BaseException as exc:
+                self._error = exc
+                self._error_traceback = traceback.format_exc()
+            finally:
+                self._queue.task_done()
+
+
+class AsyncTiledOpenPMDFieldWriter(_AsyncSnapshotWriter):
     """
     Bounded background queue writer for tiled openPMD field output.
 
@@ -230,7 +296,11 @@ class AsyncTiledOpenPMDFieldWriter:
         queue_size=2,
         raise_writer_errors_on_close=True,
     ):
-        queue_size = max(1, int(queue_size))
+        super().__init__(
+            queue_size,
+            "Async openPMD writer",
+            raise_writer_errors_on_close,
+        )
 
         self.output_dir = output_dir
         self.filename = filename
@@ -244,88 +314,23 @@ class AsyncTiledOpenPMDFieldWriter:
             dtype=dtype,
         )
         self.file_extension = file_extension
-        self.raise_writer_errors_on_close = bool(raise_writer_errors_on_close)
-
-        self._queue = queue.Queue(maxsize=queue_size)
-        self._thread = None
-        self._closed = False
-        self._error = None
-        self._error_traceback = None
-
-    def start(self):
-        if self._thread is not None:
-            return
-
-        self._thread = threading.Thread(target=self._writer_loop, daemon=True)
-        self._thread.start()
-
-    def enqueue(self, snapshot, *, block=True):
-        if self._closed:
-            raise RuntimeError("Cannot enqueue after writer.close().")
-        if self._error is not None:
-            raise RuntimeError(
-                "Async openPMD writer failed. Original traceback:\n"
-                f"{self._error_traceback}"
-            ) from self._error
-
-        try:
-            self._queue.put(snapshot, block=block)
-            return True
-        except queue.Full:
-            return False
 
     def enqueue_fields(self, field_map, *, step, time, block=True):
         snapshot = make_tiled_field_snapshot(field_map, step=step, time=time)
         return self.enqueue(snapshot, block=block)
 
-    def close(self, raise_errors=None):
-        if self._closed:
-            return
-
-        self._closed = True
-        if self._thread is not None:
-            self._queue.put(None)
-            self._queue.join()
-            self._thread.join()
-            self._thread = None
-
-        if raise_errors is None:
-            raise_errors = self.raise_writer_errors_on_close
-        if self._error is not None and raise_errors:
-            raise RuntimeError(
-                "Async openPMD writer failed. Original traceback:\n"
-                f"{self._error_traceback}"
-            ) from self._error
-
-    def _writer_loop(self):
-        while True:
-            item = self._queue.get()
-            try:
-                if item is None:
-                    return
-
-                if self._error is None:
-                    # openPMD/HDF5 native writes are serialized across field and
-                    # particle diagnostics; host snapshot construction remains
-                    # outside this lock.
-                    with _OPENPMD_WRITE_LOCK:
-                        write_tiled_field_snapshot_openpmd(
-                            item,
-                            output_dir=self.output_dir,
-                            filename=self.filename,
-                            dynamic_parameters=self.dynamic_parameters,
-                            layout=self.layout,
-                            file_extension=self.file_extension,
-                        )
-
-            except BaseException as exc:
-                self._error = exc
-                self._error_traceback = traceback.format_exc()
-            finally:
-                self._queue.task_done()
+    def _write_snapshot(self, snapshot):
+        write_tiled_field_snapshot_openpmd(
+            snapshot,
+            output_dir=self.output_dir,
+            filename=self.filename,
+            dynamic_parameters=self.dynamic_parameters,
+            layout=self.layout,
+            file_extension=self.file_extension,
+        )
 
 
-class AsyncFMROpenPMDFieldWriter:
+class AsyncFMROpenPMDFieldWriter(_AsyncSnapshotWriter):
     """Bounded background writer for one openPMD series per FMR patch."""
 
     def __init__(
@@ -338,77 +343,28 @@ class AsyncFMROpenPMDFieldWriter:
         dtype=np.float64,
         raise_writer_errors_on_close=True,
     ):
-        queue_size = max(1, int(queue_size))
+        super().__init__(
+            queue_size,
+            "Async FMR openPMD writer",
+            raise_writer_errors_on_close,
+        )
 
         self.output_dir = output_dir
         self.static_parameters = static_parameters
         self.dynamic_parameters = dynamic_parameters
         self.levels = tuple(static_parameters.fmr_levels)
-        self.raise_writer_errors_on_close = bool(raise_writer_errors_on_close)
 
         if len(self.levels) != 2:
             raise ValueError("FMR openPMD output requires one root and one fine patch.")
 
-        root_level, fine_level = self.levels
-        expected_fine_origin = tuple(
-            root_origin + coarse_start * coarse_spacing
-            for root_origin, coarse_start, coarse_spacing in zip(
-                (root_level.x_min, root_level.y_min, root_level.z_min),
-                fine_level.parent_start,
-                root_level.spacing,
-            )
+        self.patches = build_fmr_patch_descriptors(
+            self.levels,
+            static_parameters.guard_cells,
+            dtype,
         )
-        actual_fine_origin = (fine_level.x_min, fine_level.y_min, fine_level.z_min)
-        if not np.allclose(actual_fine_origin, expected_fine_origin, rtol=0.0, atol=0.0):
-            raise ValueError("FMR fine-patch origin is inconsistent with its coarse bounds.")
-
-        guard_cells = int(static_parameters.guard_cells)
-        self.layouts = tuple(
-            TiledMeshLayout(
-                global_shape=(int(level.Nx), int(level.Ny), int(level.Nz)),
-                tile_shape=tuple(int(width) for width in level.tile_shape),
-                guard_cells=guard_cells,
-                active_dims=(1, 1, 1),
-                dtype=dtype,
-            )
-            for level in self.levels
-        )
-        for level, layout in zip(self.levels, self.layouts):
-            if layout.tile_shape != layout.global_shape:
-                raise ValueError(
-                    f"FMR openPMD output requires one tile for level {int(level.level)}."
-                )
 
         if jax.process_index() == 0:
-            setup_fmr_openpmd_viewer_files(self.output_dir, self.levels)
-
-        self._queue = queue.Queue(maxsize=queue_size)
-        self._thread = None
-        self._closed = False
-        self._error = None
-        self._error_traceback = None
-
-    def start(self):
-        if self._thread is not None:
-            return
-
-        self._thread = threading.Thread(target=self._writer_loop, daemon=True)
-        self._thread.start()
-
-    def enqueue(self, snapshot, *, block=True):
-        if self._closed:
-            raise RuntimeError("Cannot enqueue after writer.close().")
-        if self._error is not None:
-            raise RuntimeError(
-                "Async FMR openPMD writer failed. Original traceback:\n"
-                f"{self._error_traceback}"
-            ) from self._error
-
-        try:
-            self._queue.put(snapshot, block=block)
-            return True
-        except queue.Full:
-            return False
+            setup_fmr_openpmd_viewer_files(self.output_dir, self.patches)
 
     def enqueue_fields(self, field_map, *, step, time, block=True):
         snapshot = make_fmr_field_snapshot(
@@ -419,63 +375,25 @@ class AsyncFMROpenPMDFieldWriter:
         )
         return self.enqueue(snapshot, block=block)
 
-    def close(self, raise_errors=None):
-        if self._closed:
-            return
+    def _write_snapshot(self, snapshot):
+        for patch, level_snapshot in zip(self.patches, snapshot.levels):
+            write_fmr_patch_snapshot_openpmd(
+                level_snapshot,
+                output_dir=self.output_dir,
+                patch=patch,
+                dt=self.dynamic_parameters.dt,
+            )
 
-        self._closed = True
-        if self._thread is not None:
-            self._queue.put(None)
-            self._queue.join()
-            self._thread.join()
-            self._thread = None
-
-        if raise_errors is None:
-            raise_errors = self.raise_writer_errors_on_close
-        if self._error is not None and raise_errors:
-            raise RuntimeError(
-                "Async FMR openPMD writer failed. Original traceback:\n"
-                f"{self._error_traceback}"
-            ) from self._error
-
-    def _writer_loop(self):
-        while True:
-            item = self._queue.get()
-            try:
-                if item is None:
-                    return
-
-                if self._error is None:
-                    with _OPENPMD_WRITE_LOCK:
-                        for level, layout, level_snapshot in zip(
-                            self.levels,
-                            self.layouts,
-                            item.levels,
-                        ):
-                            write_fmr_patch_snapshot_openpmd(
-                                level_snapshot,
-                                output_dir=self.output_dir,
-                                level=level,
-                                layout=layout,
-                                dt=self.dynamic_parameters.dt,
-                            )
-
-                        if jax.process_index() == 0:
-                            finalize_fmr_openpmd_viewer_step(
-                                self.output_dir,
-                                self.levels,
-                                item.step,
-                                item.time,
-                            )
-
-            except BaseException as exc:
-                self._error = exc
-                self._error_traceback = traceback.format_exc()
-            finally:
-                self._queue.task_done()
+        if jax.process_index() == 0:
+            finalize_fmr_openpmd_viewer_step(
+                self.output_dir,
+                self.patches,
+                snapshot.step,
+                snapshot.time,
+            )
 
 
-class AsyncTiledOpenPMDParticleWriter:
+class AsyncTiledOpenPMDParticleWriter(_AsyncSnapshotWriter):
     """
     Bounded background queue writer for tiled openPMD particle output.
     """
@@ -492,7 +410,11 @@ class AsyncTiledOpenPMDParticleWriter:
         queue_size=2,
         raise_writer_errors_on_close=True,
     ):
-        queue_size = max(1, int(queue_size))
+        super().__init__(
+            queue_size,
+            "Async openPMD particle writer",
+            raise_writer_errors_on_close,
+        )
 
         self.output_dir = output_dir
         self.filename = filename
@@ -500,35 +422,6 @@ class AsyncTiledOpenPMDParticleWriter:
         self.dynamic_parameters = dynamic_parameters
         self.file_extension = file_extension
         self.dtype = dtype
-        self.raise_writer_errors_on_close = bool(raise_writer_errors_on_close)
-
-        self._queue = queue.Queue(maxsize=queue_size)
-        self._thread = None
-        self._closed = False
-        self._error = None
-        self._error_traceback = None
-
-    def start(self):
-        if self._thread is not None:
-            return
-
-        self._thread = threading.Thread(target=self._writer_loop, daemon=True)
-        self._thread.start()
-
-    def enqueue(self, snapshot, *, block=True):
-        if self._closed:
-            raise RuntimeError("Cannot enqueue after writer.close().")
-        if self._error is not None:
-            raise RuntimeError(
-                "Async openPMD particle writer failed. Original traceback:\n"
-                f"{self._error_traceback}"
-            ) from self._error
-
-        try:
-            self._queue.put(snapshot, block=block)
-            return True
-        except queue.Full:
-            return False
 
     def enqueue_particles(self, particles, *, step, time, species_config, species_names=None, block=True):
         snapshot = make_tiled_particle_snapshot(
@@ -540,51 +433,16 @@ class AsyncTiledOpenPMDParticleWriter:
         )
         return self.enqueue(snapshot, block=block)
 
-    def close(self, raise_errors=None):
-        if self._closed:
-            return
-
-        self._closed = True
-        if self._thread is not None:
-            self._queue.put(None)
-            self._queue.join()
-            self._thread.join()
-            self._thread = None
-
-        if raise_errors is None:
-            raise_errors = self.raise_writer_errors_on_close
-        if self._error is not None and raise_errors:
-            raise RuntimeError(
-                "Async openPMD particle writer failed. Original traceback:\n"
-                f"{self._error_traceback}"
-            ) from self._error
-
-    def _writer_loop(self):
-        while True:
-            item = self._queue.get()
-            try:
-                if item is None:
-                    return
-
-                if self._error is None:
-                    # Share the same native-write lock as field diagnostics so
-                    # independent output streams never enter openPMD concurrently.
-                    with _OPENPMD_WRITE_LOCK:
-                        write_tiled_particle_snapshot_openpmd(
-                            item,
-                            output_dir=self.output_dir,
-                            filename=self.filename,
-                            static_parameters=self.static_parameters,
-                            dynamic_parameters=self.dynamic_parameters,
-                            file_extension=self.file_extension,
-                            dtype=self.dtype,
-                        )
-
-            except BaseException as exc:
-                self._error = exc
-                self._error_traceback = traceback.format_exc()
-            finally:
-                self._queue.task_done()
+    def _write_snapshot(self, snapshot):
+        write_tiled_particle_snapshot_openpmd(
+            snapshot,
+            output_dir=self.output_dir,
+            filename=self.filename,
+            static_parameters=self.static_parameters,
+            dynamic_parameters=self.dynamic_parameters,
+            file_extension=self.file_extension,
+            dtype=self.dtype,
+        )
 
 
 def create_async_tiled_openpmd_field_writer(
@@ -661,7 +519,7 @@ def enqueue_openpmd_field_output(field_writer, field_map, dynamic_parameters, pl
 
 
 def enqueue_fmr_openpmd_field_output(field_writer, field_map, dynamic_parameters, plot_t, t, *, block=True):
-    prefetch_fmr_field_map_to_host(field_map)
+    prefetch_field_map_to_host(field_map)
     return field_writer.enqueue_fields(
         field_map,
         step=int(plot_t),

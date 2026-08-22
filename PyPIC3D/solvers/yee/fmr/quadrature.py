@@ -1,15 +1,15 @@
-"""Active composite-grid DOFs and diagonal inner-product weights M_E and M_B."""
+"""Active FMR degrees of freedom and diagnostic composite quadrature."""
 
 import jax.numpy as jnp
 
-from .grids import _component_coordinate_axes, _coordinate_tolerance
+from .grids import _coordinate_tolerance, component_coordinate_axes
 from .types import B_FIELD_LOCATIONS, E_FIELD_LOCATIONS
 
 
 def _component_inside_mask(grids, locations, level, refined_bounds, guard_cells):
     g = int(guard_cells)
-    axes = _component_coordinate_axes(grids, locations)
-    active_axes = tuple(axis[g:g + cells] for axis, cells in zip(axes, (level.Nx, level.Ny, level.Nz)))
+    axes = component_coordinate_axes(grids, locations)
+    active_axes = tuple(axis[g:g + cells] for axis, cells in zip(axes, level.shape))
     x, y, z = jnp.meshgrid(*active_axes, indexing="ij")
 
     tolerance = _coordinate_tolerance(*active_axes)
@@ -30,11 +30,7 @@ def build_field_active_masks(
 ):
     """Build component-specific ownership masks for either Yee vector."""
 
-    refined_bounds = (
-        (fine_level.x_min, fine_level.x_max),
-        (fine_level.y_min, fine_level.y_max),
-        (fine_level.z_min, fine_level.z_max),
-    )
+    refined_bounds = tuple(zip(fine_level.lower, fine_level.upper))
     parent_masks = []
     fine_masks = []
     for locations in field_locations:
@@ -61,7 +57,7 @@ def _fine_e_active_masks(fine_level, e_coarse_to_fine_maps, guard_cells):
     """Build E ownership without borrowing the component-wise B shapes."""
 
     g = int(guard_cells)
-    fine_shape = (fine_level.Nx, fine_level.Ny, fine_level.Nz)
+    fine_shape = fine_level.shape
     weight_shape = (1, 1, 1, *fine_shape)
     fine_shape_array = jnp.asarray(fine_shape, dtype=jnp.int32)
 
@@ -98,26 +94,22 @@ def _component_parent_composite_weights(
     parent_spacing = tuple(jnp.asarray(value) for value in parent_level.spacing)
     fine_spacing = tuple(jnp.asarray(value) for value in fine_level.spacing)
     parent_volume = jnp.prod(jnp.asarray(parent_level.spacing))
-    refined_bounds = (
-        (fine_level.x_min, fine_level.x_max),
-        (fine_level.y_min, fine_level.y_max),
-        (fine_level.z_min, fine_level.z_max),
-    )
+    refined_bounds = tuple(zip(fine_level.lower, fine_level.upper))
 
-    parent_axes = _component_coordinate_axes(parent_grids, locations)
+    parent_axes = component_coordinate_axes(parent_grids, locations)
     parent_axes = tuple(
         axis[g:g + cells]
         for axis, cells in zip(
             parent_axes,
-            (parent_level.Nx, parent_level.Ny, parent_level.Nz),
+            parent_level.shape,
         )
     )
-    fine_axes = _component_coordinate_axes(fine_grids, locations)
+    fine_axes = component_coordinate_axes(fine_grids, locations)
     fine_axes = tuple(
         axis[g:g + cells]
         for axis, cells in zip(
             fine_axes,
-            (fine_level.Nx, fine_level.Ny, fine_level.Nz),
+            fine_level.shape,
         )
     )
 
@@ -158,7 +150,7 @@ def _component_parent_composite_weights(
     return weight[jnp.newaxis, jnp.newaxis, jnp.newaxis, :, :, :]
 
 
-def build_fmr_metric_weights(
+def build_fmr_quadrature_weights(
     parent_level,
     fine_level,
     parent_grids,
@@ -168,7 +160,7 @@ def build_fmr_metric_weights(
     fine_b_masks,
     guard_cells,
 ):
-    """Build geometric two-level composite weights for E and B."""
+    """Build level-major geometric quadrature weights for E and B."""
 
     fine_volume = jnp.prod(jnp.asarray(fine_level.spacing))
 

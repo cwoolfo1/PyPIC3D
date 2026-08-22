@@ -6,32 +6,29 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-import PyPIC3D.solvers.yee.fmr.B_fmr as B_fmr_module
-import PyPIC3D.solvers.yee.fmr.E_fmr as E_fmr_module
+import PyPIC3D.solvers.yee.fmr.curls as curls_module
 from PyPIC3D.initialization import initialize_fields
 from PyPIC3D.solvers.yee.fmr import (
     B_FIELD_LOCATIONS,
     E_FIELD_LOCATIONS,
-    build_fmr_fields,
-    build_fmr_parameters,
-    fmr_curl_b_to_e,
-    fmr_curl_e_to_b,
-    interpolate_coarse_to_fine,
-    interpolate_fine_to_coarse,
-    load_fmr_from_toml,
+    build_fmr_hierarchy,
+    initialize_fmr_field_levels,
+    load_fmr_levels,
     synchronize_b_levels,
     synchronize_e_levels,
-    update_B_fmr,
-    update_E_fmr,
     validate_fmr_configuration,
 )
-from PyPIC3D.solvers.yee.fmr.grids import _component_coordinate_axes
+from PyPIC3D.solvers.yee.fmr.curls import fmr_curl_b_to_e, fmr_curl_e_to_b
 from PyPIC3D.solvers.yee.fmr.grids import _coordinate_tolerance
-from PyPIC3D.solvers.yee.fmr.interpolation import (
+from PyPIC3D.solvers.yee.fmr.grids import component_coordinate_axes
+from PyPIC3D.solvers.yee.fmr.time_loop import update_B_fmr, update_E_fmr
+from PyPIC3D.solvers.yee.fmr.transfers import (
     _active_component_indices,
     _curl_read_indices,
     _indices_strictly_inside,
     _strict_interior_indices,
+    interpolate_coarse_to_fine,
+    interpolate_fine_to_coarse,
 )
 from tests.kernel_fixtures import kernel_parameters
 
@@ -87,16 +84,16 @@ def _fmr_case():
         "z_min": 0.0,
         "z_max": 1.0,
     }
-    levels = load_fmr_from_toml(config, geometry, static_parameters.tile_shape)
+    levels = load_fmr_levels(config, geometry, static_parameters.tile_shape)
     static_parameters = static_parameters._replace(
         fmr_enabled=True,
         fmr_levels=levels,
     )
     dynamic_parameters = dynamic_parameters._replace(
-        fmr=build_fmr_parameters(static_parameters, dynamic_parameters)
+        fmr=build_fmr_hierarchy(static_parameters, dynamic_parameters)
     )
     E0, B0, J0, phi, rho = initialize_fields(static_parameters, dynamic_parameters)
-    E, B, J = build_fmr_fields(
+    E, B, J = initialize_fmr_field_levels(
         E0,
         B0,
         J0,
@@ -107,7 +104,7 @@ def _fmr_case():
 
 
 def _coordinates(grids, locations):
-    axes = _component_coordinate_axes(grids, locations)
+    axes = component_coordinate_axes(grids, locations)
     return (
         axes[0][None, None, None, :, None, None],
         axes[1][None, None, None, None, :, None],
@@ -132,6 +129,28 @@ def _map_values(component, transfer_map):
     return component[
         0, 0, 0, target[:, 0], target[:, 1], target[:, 2]
     ]
+
+
+def _deep_shadow_indices(static_parameters, dynamic_parameters, locations, maps):
+    """Derive test-only inactive coarse indices not refreshed by a transfer."""
+
+    parent_runtime = dynamic_parameters.fmr.levels[0]
+    fine_level = static_parameters.fmr_levels[1]
+    bounds = tuple(zip(fine_level.lower, fine_level.upper))
+    result = []
+    for component_locations, transfer_map in zip(locations, maps):
+        axes = component_coordinate_axes(parent_runtime.grids, component_locations)
+        tolerance = _coordinate_tolerance(*axes)
+        covered = {
+            tuple(index)
+            for index in np.asarray(_strict_interior_indices(axes, bounds, tolerance))
+        }
+        refreshed = {
+            tuple(index)
+            for index in np.asarray(transfer_map.target_indices)
+        }
+        result.append(jnp.asarray(sorted(covered - refreshed), dtype=jnp.int32))
+    return tuple(result)
 
 
 class TestFMRConfiguration(unittest.TestCase):
@@ -160,7 +179,7 @@ class TestFMRConfiguration(unittest.TestCase):
         with self.assertRaisesRegex(NotImplementedError, "interpolation_order"):
             validate_fmr_configuration(config, {"solver": "electrodynamic_yee"}, {})
         with self.assertRaisesRegex(NotImplementedError, "interpolation_order"):
-            load_fmr_from_toml(config, geometry, static.tile_shape)
+            load_fmr_levels(config, geometry, static.tile_shape)
 
         for ratio in (3, 4):
             config = {"fmr": {"enabled": True, "levels": [{
@@ -171,7 +190,7 @@ class TestFMRConfiguration(unittest.TestCase):
             }]}}
             with self.subTest(ratio=ratio):
                 with self.assertRaisesRegex(ValueError, "refinement_ratio = 2"):
-                    load_fmr_from_toml(config, geometry, static.tile_shape)
+                    load_fmr_levels(config, geometry, static.tile_shape)
 
     def test_fourth_order_transfer_requires_three_parent_cells_per_axis(self):
         geometry = {
@@ -189,11 +208,11 @@ class TestFMRConfiguration(unittest.TestCase):
             "coarse_stop": [4, 5, 5],
         }]}}
         with self.assertRaisesRegex(ValueError, "at least three parent cells"):
-            load_fmr_from_toml(config, geometry, (8, 8, 8))
+            load_fmr_levels(config, geometry, (8, 8, 8))
 
         config["fmr"]["levels"][0]["coarse_stop"] = [5, 5, 5]
-        levels = load_fmr_from_toml(config, geometry, (8, 8, 8))
-        self.assertEqual((levels[1].Nx, levels[1].Ny, levels[1].Nz), (6, 6, 6))
+        levels = load_fmr_levels(config, geometry, (8, 8, 8))
+        self.assertEqual(levels[1].shape, (6, 6, 6))
 
     def test_scope_validation_still_rejects_non_field_fmr(self):
         config = {"fmr": {"enabled": True, "levels": [{}]}}
@@ -206,9 +225,10 @@ class TestFMRTransfers(unittest.TestCase):
     def test_fourth_order_coarse_to_fine_maps_are_exact_through_degree_three(self):
         _, dynamic, E, B, *_ = _fmr_case()
         parent_data, fine_data = dynamic.fmr.levels
+        interface = dynamic.fmr.interface
         for locations, templates, maps in (
-            (E_FIELD_LOCATIONS, E, fine_data.e_coarse_to_fine_maps),
-            (B_FIELD_LOCATIONS, B, fine_data.b_coarse_to_fine_maps),
+            (E_FIELD_LOCATIONS, E, interface.e_coarse_to_fine_maps),
+            (B_FIELD_LOCATIONS, B, interface.b_coarse_to_fine_maps),
         ):
             parent = _polynomial_vector(parent_data.grids, locations, degree=3)
             exact = _polynomial_vector(fine_data.grids, locations, degree=3)
@@ -234,8 +254,8 @@ class TestFMRTransfers(unittest.TestCase):
                         atol=2.0e-12,
                     ))
 
-                    parent_axes = _component_coordinate_axes(parent_data.grids, component_locations)
-                    fine_axes = _component_coordinate_axes(fine_data.grids, component_locations)
+                    parent_axes = component_coordinate_axes(parent_data.grids, component_locations)
+                    fine_axes = component_coordinate_axes(fine_data.grids, component_locations)
                     source = transfer_map.source_indices
                     for axis in range(3):
                         interpolated_coordinate = jnp.sum(
@@ -253,9 +273,10 @@ class TestFMRTransfers(unittest.TestCase):
     def test_fourth_order_fine_to_coarse_maps_are_exact_through_degree_three(self):
         _, dynamic, E, B, *_ = _fmr_case()
         parent_data, fine_data = dynamic.fmr.levels
+        interface = dynamic.fmr.interface
         for locations, templates, maps in (
-            (E_FIELD_LOCATIONS, E, fine_data.e_fine_to_coarse_maps),
-            (B_FIELD_LOCATIONS, B, fine_data.b_fine_to_coarse_maps),
+            (E_FIELD_LOCATIONS, E, interface.e_fine_to_coarse_maps),
+            (B_FIELD_LOCATIONS, B, interface.b_fine_to_coarse_maps),
         ):
             fine = _polynomial_vector(fine_data.grids, locations, degree=3)
             exact = _polynomial_vector(parent_data.grids, locations, degree=3)
@@ -279,18 +300,15 @@ class TestFMRTransfers(unittest.TestCase):
         static, dynamic, *_ = _fmr_case()
         fine_level = static.fmr_levels[1]
         fine_data = dynamic.fmr.levels[1]
-        bounds = (
-            (fine_level.x_min, fine_level.x_max),
-            (fine_level.y_min, fine_level.y_max),
-            (fine_level.z_min, fine_level.z_max),
-        )
+        interface = dynamic.fmr.interface
+        bounds = tuple(zip(fine_level.lower, fine_level.upper))
 
         for locations_tuple, coarse_to_fine_maps in (
-            (E_FIELD_LOCATIONS, fine_data.e_coarse_to_fine_maps),
-            (B_FIELD_LOCATIONS, fine_data.b_coarse_to_fine_maps),
+            (E_FIELD_LOCATIONS, interface.e_coarse_to_fine_maps),
+            (B_FIELD_LOCATIONS, interface.b_coarse_to_fine_maps),
         ):
             for locations, transfer_map in zip(locations_tuple, coarse_to_fine_maps):
-                axes = _component_coordinate_axes(fine_data.grids, locations)
+                axes = component_coordinate_axes(fine_data.grids, locations)
                 target = np.asarray(transfer_map.target_indices)
                 near_interface = np.zeros(target.shape[0], dtype=np.int32)
                 for axis, (lower, upper) in enumerate(bounds):
@@ -308,11 +326,21 @@ class TestFMRTransfers(unittest.TestCase):
         parent_level, fine_level = static.fmr_levels
         parent_data = dynamic.fmr.levels[0]
         fine_data = dynamic.fmr.levels[1]
+        interface = dynamic.fmr.interface
         g = static.guard_cells
-        bounds = (
-            (fine_level.x_min, fine_level.x_max),
-            (fine_level.y_min, fine_level.y_max),
-            (fine_level.z_min, fine_level.z_max),
+        bounds = tuple(zip(fine_level.lower, fine_level.upper))
+
+        e_deep = _deep_shadow_indices(
+            static,
+            dynamic,
+            E_FIELD_LOCATIONS,
+            interface.e_fine_to_coarse_maps,
+        )
+        b_deep = _deep_shadow_indices(
+            static,
+            dynamic,
+            B_FIELD_LOCATIONS,
+            interface.b_fine_to_coarse_maps,
         )
 
         for locations_tuple, output_locations, offset, fine_maps, coarse_maps, deep_sets in (
@@ -320,17 +348,17 @@ class TestFMRTransfers(unittest.TestCase):
                 E_FIELD_LOCATIONS,
                 B_FIELD_LOCATIONS,
                 1,
-                fine_data.e_coarse_to_fine_maps,
-                fine_data.e_fine_to_coarse_maps,
-                fine_data.e_deep_shadow_indices,
+                interface.e_coarse_to_fine_maps,
+                interface.e_fine_to_coarse_maps,
+                e_deep,
             ),
             (
                 B_FIELD_LOCATIONS,
                 E_FIELD_LOCATIONS,
                 -1,
-                fine_data.b_coarse_to_fine_maps,
-                fine_data.b_fine_to_coarse_maps,
-                fine_data.b_deep_shadow_indices,
+                interface.b_coarse_to_fine_maps,
+                interface.b_fine_to_coarse_maps,
+                b_deep,
             ),
         ):
             parent_output_active = _active_component_indices(
@@ -343,8 +371,8 @@ class TestFMRTransfers(unittest.TestCase):
             for component, (locations, fine_map, coarse_map, deep) in enumerate(zip(
                 locations_tuple, fine_maps, coarse_maps, deep_sets
             )):
-                fine_axes = _component_coordinate_axes(fine_data.grids, locations)
-                parent_axes = _component_coordinate_axes(parent_data.grids, locations)
+                fine_axes = component_coordinate_axes(fine_data.grids, locations)
+                parent_axes = component_coordinate_axes(parent_data.grids, locations)
                 tolerance = _coordinate_tolerance(*parent_axes, *fine_axes)
 
                 fine_reads = _curl_read_indices(fine_output_active, component, offset)
@@ -387,6 +415,7 @@ class TestFMRTransfers(unittest.TestCase):
     def test_manufactured_e_interface_constraint_is_at_roundoff(self):
         _, dynamic, *_ = _fmr_case()
         parent_data, fine_data = dynamic.fmr.levels
+        interface = dynamic.fmr.interface
         exact_fine = _polynomial_vector(fine_data.grids, E_FIELD_LOCATIONS, degree=3)
         E = (
             _polynomial_vector(parent_data.grids, E_FIELD_LOCATIONS, degree=3),
@@ -398,7 +427,7 @@ class TestFMRTransfers(unittest.TestCase):
         for actual, exact, transfer_map in zip(
             synchronized[1],
             exact_fine,
-            fine_data.e_coarse_to_fine_maps,
+            interface.e_coarse_to_fine_maps,
         ):
             residual = max(
                 residual,
@@ -410,12 +439,19 @@ class TestFMRTransfers(unittest.TestCase):
         self.assertLess(residual, 2.0e-12)
 
     def test_synchronization_preserves_deep_shadow_and_is_idempotent(self):
-        _, dynamic, E, B, *_ = _fmr_case()
+        static, dynamic, E, B, *_ = _fmr_case()
         parent_data, fine_data = dynamic.fmr.levels
+        interface = dynamic.fmr.interface
+        e_deep = _deep_shadow_indices(
+            static, dynamic, E_FIELD_LOCATIONS, interface.e_fine_to_coarse_maps
+        )
+        b_deep = _deep_shadow_indices(
+            static, dynamic, B_FIELD_LOCATIONS, interface.b_fine_to_coarse_maps
+        )
 
         for locations, deep_sets, synchronize in (
-            (E_FIELD_LOCATIONS, fine_data.e_deep_shadow_indices, synchronize_e_levels),
-            (B_FIELD_LOCATIONS, fine_data.b_deep_shadow_indices, synchronize_b_levels),
+            (E_FIELD_LOCATIONS, e_deep, synchronize_e_levels),
+            (B_FIELD_LOCATIONS, b_deep, synchronize_b_levels),
         ):
             parent = list(_polynomial_vector(parent_data.grids, locations, degree=2))
             fine = _polynomial_vector(fine_data.grids, locations, degree=3)
@@ -441,6 +477,13 @@ class TestFMRTransfers(unittest.TestCase):
     def test_deep_shadow_sentinels_do_not_affect_active_curls_or_fine_ghosts(self):
         static, dynamic, *_ = _fmr_case()
         parent_data, fine_data = dynamic.fmr.levels
+        interface = dynamic.fmr.interface
+        e_deep = _deep_shadow_indices(
+            static, dynamic, E_FIELD_LOCATIONS, interface.e_fine_to_coarse_maps
+        )
+        b_deep = _deep_shadow_indices(
+            static, dynamic, B_FIELD_LOCATIONS, interface.b_fine_to_coarse_maps
+        )
         E = (
             _polynomial_vector(parent_data.grids, E_FIELD_LOCATIONS, degree=2),
             _polynomial_vector(fine_data.grids, E_FIELD_LOCATIONS, degree=2),
@@ -458,12 +501,12 @@ class TestFMRTransfers(unittest.TestCase):
                 ].set(base + 10.0 * component, unique_indices=True)
             return tuple(parent), levels[1]
 
-        E_sentinel = with_sentinels(E, fine_data.e_deep_shadow_indices, 10000.0)
-        B_sentinel = with_sentinels(B, fine_data.b_deep_shadow_indices, -10000.0)
+        E_sentinel = with_sentinels(E, e_deep, 10000.0)
+        B_sentinel = with_sentinels(B, b_deep, -10000.0)
 
         for reference, perturbed in (
             (fmr_curl_e_to_b(E, static, dynamic), fmr_curl_e_to_b(E_sentinel, static, dynamic)),
-            (fmr_curl_b_to_e(B, E, static, dynamic), fmr_curl_b_to_e(B_sentinel, E, static, dynamic)),
+            (fmr_curl_b_to_e(B, static, dynamic), fmr_curl_b_to_e(B_sentinel, static, dynamic)),
         ):
             for actual, expected in zip(
                 jax.tree_util.tree_leaves(reference),
@@ -475,12 +518,12 @@ class TestFMRTransfers(unittest.TestCase):
             (
                 synchronize_e_levels(E, dynamic),
                 synchronize_e_levels(E_sentinel, dynamic),
-                fine_data.e_coarse_to_fine_maps,
+                interface.e_coarse_to_fine_maps,
             ),
             (
                 synchronize_b_levels(B, dynamic),
                 synchronize_b_levels(B_sentinel, dynamic),
-                fine_data.b_coarse_to_fine_maps,
+                interface.b_coarse_to_fine_maps,
             ),
         ):
             for reference_component, perturbed_component, transfer_map in zip(
@@ -496,7 +539,7 @@ class TestFMRTransfers(unittest.TestCase):
 
 class TestFMRExplicitCurlsAndUpdates(unittest.TestCase):
     def test_production_fmr_modules_have_no_generated_transpose(self):
-        source = inspect.getsource(B_fmr_module) + inspect.getsource(E_fmr_module)
+        source = inspect.getsource(curls_module)
         for forbidden in ("linear_transpose", "jax.vjp", "jacobian"):
             self.assertNotIn(forbidden, source)
 
@@ -514,7 +557,7 @@ class TestFMRExplicitCurlsAndUpdates(unittest.TestCase):
         x, y, z = (
             axis[static.guard_cells + index]
             for axis, index in zip(
-                _component_coordinate_axes(parent_data.grids, B_FIELD_LOCATIONS[0]),
+                component_coordinate_axes(parent_data.grids, B_FIELD_LOCATIONS[0]),
                 (i, j, k),
             )
         )

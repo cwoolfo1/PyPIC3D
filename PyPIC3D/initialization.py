@@ -39,9 +39,9 @@ from PyPIC3D.boundary_conditions.ghost_cells import (
 from PyPIC3D.solvers.electrostatic.time_loop import time_loop_electrostatic
 from PyPIC3D.solvers.gr_static.time_loop import time_loop_static_metric
 from PyPIC3D.solvers.yee.fmr import (
-    build_fmr_fields,
-    build_fmr_parameters,
-    load_fmr_from_toml,
+    build_fmr_hierarchy,
+    initialize_fmr_field_levels,
+    load_fmr_levels,
     time_loop_electrodynamic_fmr_fields,
     validate_fmr_configuration,
 )
@@ -375,7 +375,7 @@ def initialize_simulation(toml_file):
     dynamic_config["dz"] = dz
 
     root_tile_shape = _tile_shape_from_static_config(static_config)
-    fmr_levels = load_fmr_from_toml(config, dynamic_config, root_tile_shape)
+    fmr_levels = load_fmr_levels(config, dynamic_config, root_tile_shape)
     fmr_enabled = bool(fmr_levels)
     static_config["fmr_enabled"] = fmr_enabled
     static_config["fmr_levels"] = fmr_levels
@@ -475,7 +475,7 @@ def initialize_simulation(toml_file):
     static_parameters = build_static_parameters(static_config)
     dynamic_parameters = build_dynamic_parameters(dynamic_config)
     dynamic_parameters = dynamic_parameters._replace(
-        fmr=build_fmr_parameters(static_parameters, dynamic_parameters)
+        fmr=build_fmr_hierarchy(static_parameters, dynamic_parameters)
     )
     plotting_parameters = convert_to_jax_compatible(plotting_parameters)
     metric = (
@@ -555,7 +555,13 @@ def initialize_simulation(toml_file):
     external_fields = (external_E, external_B)
 
     if fmr_enabled:
-        E, B, J = build_fmr_fields(E, B, J, static_parameters, dynamic_parameters)
+        E, B, J = initialize_fmr_field_levels(
+            E,
+            B,
+            J,
+            static_parameters,
+            dynamic_parameters,
+        )
         external_fields = (
             tuple(tuple(jnp.zeros_like(component) for component in level) for level in E),
             tuple(tuple(jnp.zeros_like(component) for component in level) for level in B),
