@@ -1,19 +1,19 @@
-# GPU pilot: 25.6 ion inertial lengths. Run from demos/ot_vortex.
+# Production spectrum case: 51.2 ion inertial lengths. Run from demos/ot_vortex.
 [simulation_parameters]
-name = "Orszag-Tang GPU pilot"
-output_dir = "runs/pilot"
+name = "Orszag-Tang MHD spectrum"
+output_dir = "runs/spectrum"
 solver = "electrodynamic_yee"
 GPUs = true
 relativistic = true
 particle_pusher = "higuera_cary"
 current_calculation = "j_from_rhov"
 filter_j = "none"
-t_wind = 8.666621143157151e-7
-Nx = 512
-Ny = 512
+t_wind = 1.7333242286314302e-6
+Nx = 1024
+Ny = 1024
 Nz = 1
-x_wind = 27.20815749930061
-y_wind = 27.20815749930061
+x_wind = 54.41631499860122
+y_wind = 54.41631499860122
 z_wind = 0.05314093261582151
 x_bc = "periodic"
 y_bc = "periodic"
@@ -24,14 +24,14 @@ particle_z_bc = "periodic"
 cfl = 0.99
 shape_factor = 2
 guard_cells = 2
-particle_tile_nx = 512
-particle_tile_ny = 512
+particle_tile_nx = 1024
+particle_tile_ny = 1024
 particle_tile_nz = 1
 particle_tile_capacity_factor = 1.0
 particle_batch_size = 65536
 
 [plotting]
-plotting_interval = 82
+plotting_interval = 165
 plot_openpmd_fields = true
 plot_openpmd_particles = false
 plotchargedensity = false
@@ -41,14 +41,14 @@ openpmd_field_queue_size = 2
 openpmd_particle_queue_size = 2
 
 [ot_vortex]
-case = "pilot"
+case = "spectrum"
 number_density = 1.0e14
 mass_ratio = 4.0
 particles_per_cell = 16
 electron_inertial_length = 0.531409326158215
 ion_inertial_length = 1.06281865231643
 alfven_speed = 2.997924580000065e7
-turnover_time = 1.4444368571928586e-7
+turnover_time = 2.888873714385717e-7
 fluctuation_field = 6.415051223693883e-4
 guide_field = 3.2075256118469413e-3
 beta_e = 0.08
@@ -60,27 +60,27 @@ fit_kdi_max = 0.8
 [field1]
 name = "Ex field"
 type = 0
-path = "generated/pilot/Ex.npy"
+path = "generated/spectrum/Ex.npy"
 [field2]
 name = "Ey field"
 type = 1
-path = "generated/pilot/Ey.npy"
+path = "generated/spectrum/Ey.npy"
 [field3]
 name = "Ez field"
 type = 2
-path = "generated/pilot/Ez.npy"
+path = "generated/spectrum/Ez.npy"
 [field4]
 name = "Bx field"
 type = 3
-path = "generated/pilot/Bx.npy"
+path = "generated/spectrum/Bx.npy"
 [field5]
 name = "By field"
 type = 4
-path = "generated/pilot/By.npy"
+path = "generated/spectrum/By.npy"
 [field6]
 name = "Bz guide field"
 type = 5
-path = "generated/pilot/Bz.npy"
+path = "generated/spectrum/Bz.npy"
 
 [particle1]
 name = "electrons"
@@ -89,12 +89,12 @@ number_density = 1.0e14
 charge = -1.602176634e-19
 mass = 9.1093837015e-31
 temperature = 2.3719586301295236e8
-initial_x = "generated/pilot/electron_x.npy"
-initial_y = "generated/pilot/electron_y.npy"
-initial_z = "generated/pilot/electron_z.npy"
-initial_vx = "generated/pilot/electron_vx.npy"
-initial_vy = "generated/pilot/electron_vy.npy"
-initial_vz = "generated/pilot/electron_vz.npy"
+initial_x = "generated/spectrum/electron_x.npy"
+initial_y = "generated/spectrum/electron_y.npy"
+initial_z = "generated/spectrum/electron_z.npy"
+initial_vx = "generated/spectrum/electron_vx.npy"
+initial_vy = "generated/spectrum/electron_vy.npy"
+initial_vz = "generated/spectrum/electron_vz.npy"
 
 [particle2]
 name = "ions"
@@ -103,9 +103,9 @@ number_density = 1.0e14
 charge = 1.602176634e-19
 mass = 3.6437534806e-30
 temperature = 2.3719586301295236e8
-initial_x = "generated/pilot/ion_x.npy"
-initial_y = "generated/pilot/ion_y.npy"
-initial_z = "generated/pilot/ion_z.npy"
-initial_vx = "generated/pilot/ion_vx.npy"
-initial_vy = "generated/pilot/ion_vy.npy"
-initial_vz = "generated/pilot/ion_vz.npy"
+initial_x = "generated/spectrum/ion_x.npy"
+initial_y = "generated/spectrum/ion_y.npy"
+initial_z = "generated/spectrum/ion_z.npy"
+initial_vx = "generated/spectrum/ion_vx.npy"
+initial_vy = "generated/spectrum/ion_vy.npy"
+initial_vz = "generated/spectrum/ion_vz.npy"

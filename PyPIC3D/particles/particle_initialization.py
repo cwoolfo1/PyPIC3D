@@ -238,15 +238,14 @@ def load_particles_from_toml(config, static_parameters, dynamic_parameters):
     species_arrays = []
     species_metadata = []
 
-    weight = 1.0
-    # start with a default weight of 1.0, which will be overwritten if specified in the config
-
     for toml_key in particle_keys:
         key1, key2, key3 = jax.random.key(i), jax.random.key(i + 1), jax.random.key(i + 2)
         i += 3
 
         particle_name = config[toml_key]["name"]
         print(f"\nInitializing particle species: {particle_name}")
+        weight = 1.0
+        # Species weights are independent. Do not inherit a previous species' value.
         charge = config[toml_key]["charge"]
         mass = config[toml_key]["mass"]
         # get the particle species name, charge, and mass from the config
@@ -282,24 +281,43 @@ def load_particles_from_toml(config, static_parameters, dynamic_parameters):
         zmin = read_value("zmin", toml_key, config, z_min)
         zmax = read_value("zmax", toml_key, config, z_max)
 
-        x, y, z, vx, vy, vz = initial_particles(
-            N_per_cell,
-            N_particles,
-            xmin,
-            xmax,
-            ymin,
-            ymax,
-            zmin,
-            zmax,
-            mass,
-            Tx,
-            Ty,
-            Tz,
-            kb,
-            key1,
-            key2,
-            key3,
+        initial_component_keys = (
+            "initial_x",
+            "initial_y",
+            "initial_z",
+            "initial_vx",
+            "initial_vy",
+            "initial_vz",
         )
+        all_components_external = all(
+            isinstance(config[toml_key].get(component), str)
+            for component in initial_component_keys
+        )
+
+        if all_components_external:
+            x, y, z, vx, vy, vz = (
+                jnp.load(config[toml_key][component])
+                for component in initial_component_keys
+            )
+        else:
+            x, y, z, vx, vy, vz = initial_particles(
+                N_per_cell,
+                N_particles,
+                xmin,
+                xmax,
+                ymin,
+                ymax,
+                zmin,
+                zmax,
+                mass,
+                Tx,
+                Ty,
+                Tz,
+                kb,
+                key1,
+                key2,
+                key3,
+            )
 
         x_bc = "periodic"
         if "x_bc" in config[toml_key]:
@@ -322,13 +340,14 @@ def load_particles_from_toml(config, static_parameters, dynamic_parameters):
             )
             z_bc = config[toml_key]["z_bc"]
 
-        x = load_initial_positions("initial_x", config, toml_key, x, N_particles, dx, Nx, key1)
-        y = load_initial_positions("initial_y", config, toml_key, y, N_particles, dy, Ny, key2)
-        z = load_initial_positions("initial_z", config, toml_key, z, N_particles, dz, Nz, key3)
+        if not all_components_external:
+            x = load_initial_positions("initial_x", config, toml_key, x, N_particles, dx, Nx, key1)
+            y = load_initial_positions("initial_y", config, toml_key, y, N_particles, dy, Ny, key2)
+            z = load_initial_positions("initial_z", config, toml_key, z, N_particles, dz, Nz, key3)
 
-        vx = load_initial_velocities("initial_vx", config, toml_key, vx, N_particles)
-        vy = load_initial_velocities("initial_vy", config, toml_key, vy, N_particles)
-        vz = load_initial_velocities("initial_vz", config, toml_key, vz, N_particles)
+            vx = load_initial_velocities("initial_vx", config, toml_key, vx, N_particles)
+            vy = load_initial_velocities("initial_vy", config, toml_key, vy, N_particles)
+            vz = load_initial_velocities("initial_vz", config, toml_key, vz, N_particles)
         # overwrite the initial positions and velocities of the particles if specified in the configuration, otherwise use the previously generated values
 
         if "temperature" not in config[toml_key]:

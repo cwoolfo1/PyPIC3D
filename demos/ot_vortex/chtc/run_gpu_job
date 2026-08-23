@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+case_name="${1:-benchmark}"
+image_root="${PYPIC3D_ROOT:-/opt/PyPIC3D}"
+work_root="${PWD}/ot_vortex_work"
+
+case "${case_name}" in
+  benchmark|pilot|spectrum) ;;
+  *)
+    echo "case must be benchmark, pilot, or spectrum" >&2
+    exit 2
+    ;;
+esac
+
+echo "Starting ${case_name} on $(hostname) at $(date --iso-8601=seconds)"
+nvidia-smi
+python3 -c 'import jax; print("JAX", jax.__version__); print("devices", jax.devices("gpu"))'
+
+mkdir -p "${work_root}"
+cp -a "${image_root}/demos/ot_vortex/." "${work_root}/"
+cd "${work_root}"
+
+if [[ "${case_name}" == "spectrum" ]]; then
+  generated_case="spectrum"
+  config_file="orszag_tang_spectrum.toml"
+else
+  generated_case="pilot"
+  config_file="orszag_tang.toml"
+fi
+
+python3 initial_conditions.py --case "${generated_case}" --force
+if [[ "${case_name}" == "benchmark" ]]; then
+  python3 chtc/make_benchmark_config.py
+  config_file="orszag_tang_benchmark.toml"
+fi
+
+start_epoch="$(date +%s)"
+gpu_log="${PWD}/gpu_usage.csv"
+nvidia-smi \
+  --query-gpu=timestamp,name,memory.used,utilization.gpu \
+  --format=csv \
+  --loop=5 > "${gpu_log}" &
+monitor_pid="$!"
+stop_monitor() {
+  if kill -0 "${monitor_pid}" 2>/dev/null; then
+    kill "${monitor_pid}"
+    wait "${monitor_pid}" 2>/dev/null || true
+  fi
+}
+trap stop_monitor EXIT
+python3 -m PyPIC3D --config "${config_file}"
+stop_monitor
+trap - EXIT
+end_epoch="$(date +%s)"
+echo "Simulation wall time: $((end_epoch - start_epoch)) s"
+
+mkdir -p "runs/${case_name}/data"
+mv "${gpu_log}" "runs/${case_name}/data/gpu_usage.csv"
+python3 chtc/report_runtime.py \
+  --run-output "runs/${case_name}/data/output.toml" \
+  --gpu-log "runs/${case_name}/data/gpu_usage.csv" \
+  --output "runs/${case_name}/data/runtime_projection.json"
+
+if [[ "${case_name}" != "benchmark" ]]; then
+  python3 analyze_spectrum.py --config "${config_file}"
+fi
+
+archive="${PWD}/../ot_vortex_${case_name}.tar.zst"
+tar --zstd -cf "${archive}" "${config_file}" "runs/${case_name}"
+echo "Completed ${case_name} at $(date --iso-8601=seconds)"

@@ -1,0 +1,41 @@
+# Submit from this directory on a CHTC access point under /home/<netid>.
+# Example:
+# condor_submit ot_vortex_gpu.sub case=benchmark job_length=short \
+#   image=<registry-user>/pypic3d:cuda12.1.1-v1 \
+#   staging=osdf:///chtc/staging/<initial>/<netid>
+
+universe = container
+container_image = docker://$(image)
+
+executable = run_gpu_job
+arguments = $(case)
+
+log = ot_vortex_$(case)_$(Cluster).log
+output = ot_vortex_$(case)_$(Cluster).out
+error = ot_vortex_$(case)_$(Cluster).err
+
++WantGPULab = true
++GPUJobLength = "$(job_length)"
+
+request_gpus = 1
+gpus_minimum_capability = 8.0
+gpus_minimum_memory = 40000
+request_cpus = 8
+request_memory = 64GB
+request_disk = 50GB
+
+requirements = (Target.HasCHTCStaging == true)
+
+should_transfer_files = YES
+when_to_transfer_output = ON_EXIT
+transfer_output_files = ot_vortex_$(case).tar.zst
+transfer_output_remaps = "ot_vortex_$(case).tar.zst = $(staging)/ot_vortex_$(case)_$(Cluster).tar.zst"
+
+environment = "PYPIC3D_ROOT=/opt/PyPIC3D;XLA_PYTHON_CLIENT_MEM_FRACTION=0.90"
+
+case = benchmark
+job_length = short
+image = REPLACE_WITH_REGISTRY_IMAGE
+staging = REPLACE_WITH_OSDF_STAGING_URI
+
+queue 1

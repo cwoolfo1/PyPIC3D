@@ -29,3 +29,7 @@ demos/ot_vortex/*/
 *.mp4
 *.pmd
 *.png
+!demos/ot_vortex/chtc/
+!demos/ot_vortex/chtc/**
+demos/ot_vortex/chtc/__pycache__/
+demos/ot_vortex/chtc/**/*.pyc

@@ -1,6 +1,7 @@
 # Christopher Woolford July 2024
 # 3D PIC code in Python using the JAX library
 
+import csv
 import os
 import time
 
@@ -15,11 +16,13 @@ from PyPIC3D.diagnostics.async_writer import (
     enqueue_openpmd_field_output,
     enqueue_openpmd_particle_output,
 )
-from PyPIC3D.diagnostics.output_adapters import build_field_output_map
+from PyPIC3D.diagnostics.output_adapters import build_field_output_map, field_map_for_output
 from PyPIC3D.diagnostics.diagnostic_quantities import (
     compute_energy,
+    compute_gauss_residual,
     compute_total_momentum,
 )
+from PyPIC3D.deposition.rho import compute_rho
 from PyPIC3D.utilities.field_helpers import add_external_fields
 from PyPIC3D.utilities.simulation_helpers import setup_pmd_files
 from PyPIC3D.utilities.toml_helpers import (
@@ -36,6 +39,71 @@ def _raise_if_tiled_particles_overflowed(fields):
     overflow = fields[-1]
     if bool(jax.device_get(overflow)):
         raise RuntimeError("tiled particle tile capacity overflowed during periodic retile")
+
+
+def _gpu_requested(config):
+    """Return the backend requested by either supported parameter section."""
+
+    for section_name in ("simulation_parameters", "static_parameters"):
+        section = config.get(section_name, {})
+        if "GPUs" in section:
+            return bool(section["GPUs"])
+    return False
+
+
+def _validate_backend_devices(use_gpu, devices):
+    expected = {"gpu", "cuda"} if use_gpu else {"cpu"}
+    matching = [device for device in devices if str(device.platform).lower() in expected]
+    if not matching:
+        requested = "CUDA GPU" if use_gpu else "CPU"
+        available = ", ".join(str(device) for device in devices) or "none"
+        raise RuntimeError(
+            f"PyPIC3D requested the {requested} backend, but no matching JAX device was found. "
+            f"Visible devices: {available}."
+        )
+    return matching
+
+
+def configure_jax_backend(config):
+    """Configure JAX before the first device query and report the selected device."""
+
+    use_gpu = _gpu_requested(config)
+    jax.config.update("jax_enable_x64", True)
+    jax.config.update("jax_platforms", "cuda" if use_gpu else "cpu")
+    try:
+        devices = jax.devices()
+    except Exception as exc:
+        requested = "CUDA GPU" if use_gpu else "CPU"
+        raise RuntimeError(
+            f"PyPIC3D requested the {requested} backend, but JAX could not initialize it: {exc}"
+        ) from exc
+
+    matching = _validate_backend_devices(use_gpu, devices)
+    print(f"JAX backend: {'GPU' if use_gpu else 'CPU'}")
+    print(f"JAX devices: {', '.join(str(device) for device in matching)}")
+    return tuple(matching)
+
+
+def _initialize_conservation_file(path):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", newline="") as stream:
+        csv.writer(stream).writerow(
+            (
+                "time_s",
+                "gauss_residual",
+                "total_energy_j",
+                "relative_energy_drift",
+                "mean_charge_density_c_m3",
+                "mean_jx_a_m2",
+                "mean_jy_a_m2",
+                "mean_jz_a_m2",
+            )
+        )
+
+
+def _write_conservation_sample(path, values):
+    with open(path, "a", newline="") as stream:
+        csv.writer(stream).writerow(values)
 
 
 def run_PyPIC3D(config_file):
@@ -73,6 +141,10 @@ def run_PyPIC3D(config_file):
     jit_loop = jax.jit(loop_with_static_parameters)
 
     initial_energy = None
+    conservation_path = os.path.join(output_dir, "data", "conservation.csv")
+    conservation_enabled = bool(plotting_parameters.get("conservation_diagnostics", False))
+    if conservation_enabled and not static_metric:
+        _initialize_conservation_file(conservation_path)
     if not static_metric:
         E, B, J, rho, phi, external_fields, *rest = fields
         total_E, total_B = add_external_fields(E, B, external_fields)
@@ -127,11 +199,12 @@ def run_PyPIC3D(config_file):
                         species_config=species_config,
                     )
                     total_energy = e_energy + b_energy + kinetic_energy
+                    relative_energy_drift = abs(initial_energy - total_energy) / max(initial_energy, 1e-10)
                     write_data(f"{output_dir}/data/total_energy.txt", t * dt, total_energy)
                     write_data(
                         f"{output_dir}/data/energy_error.txt",
                         t * dt,
-                        abs(initial_energy - total_energy) / max(initial_energy, 1e-10),
+                        relative_energy_drift,
                     )
                     write_data(f"{output_dir}/data/electric_field_energy.txt", t * dt, e_energy)
                     write_data(f"{output_dir}/data/magnetic_field_energy.txt", t * dt, b_energy)
@@ -139,6 +212,40 @@ def run_PyPIC3D(config_file):
 
                     total_momentum = compute_total_momentum(particles, species_config=species_config)
                     write_data(f"{output_dir}/data/total_momentum.txt", t * dt, total_momentum)
+
+                    if conservation_enabled:
+                        rho_diagnostic = compute_rho(
+                            particles,
+                            species_config,
+                            rho,
+                            static_parameters,
+                            dynamic_parameters,
+                        )
+                        diagnostic_fields = field_map_for_output(
+                            {"E": total_E, "J": J, "rho": rho_diagnostic},
+                            static_parameters,
+                        )
+                        gauss_residual = compute_gauss_residual(
+                            diagnostic_fields["E"],
+                            diagnostic_fields["rho"],
+                            dynamic_parameters,
+                        )
+                        rho_interior = diagnostic_fields["rho"][1:-1, 1:-1, 1:-1]
+                        current_interior = tuple(
+                            component[1:-1, 1:-1, 1:-1]
+                            for component in diagnostic_fields["J"]
+                        )
+                        _write_conservation_sample(
+                            conservation_path,
+                            (
+                                float(t * dt),
+                                float(gauss_residual),
+                                float(total_energy),
+                                float(relative_energy_drift),
+                                float(jax.numpy.mean(rho_interior)),
+                                *(float(jax.numpy.mean(component)) for component in current_interior),
+                            ),
+                        )
 
                 if particle_writer is not None:
                     enqueue_openpmd_particle_output(
@@ -200,10 +307,8 @@ def run_PyPIC3D(config_file):
 
 
 def main():
-    jax.config.update("jax_enable_x64", True)
-    jax.config.update("jax_platform_name", "cpu")
-
     toml_file = load_config_file()
+    configure_jax_backend(toml_file)
 
     start = time.time()
     (

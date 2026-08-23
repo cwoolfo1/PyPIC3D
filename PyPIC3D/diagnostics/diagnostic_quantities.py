@@ -1,6 +1,34 @@
 import jax.numpy as jnp
 
 
+def compute_gauss_residual(E, rho, dynamic_parameters):
+    """Return the normalized discrete Yee-grid Gauss-law residual."""
+
+    Ex, Ey, Ez = (jnp.asarray(component) for component in E)
+    rho = jnp.asarray(rho)
+    interior = (slice(1, -1), slice(1, -1), slice(1, -1))
+    divergence = jnp.zeros_like(rho[interior])
+
+    if int(dynamic_parameters.Nx) > 1:
+        divergence = divergence + (
+            Ex[1:-1, 1:-1, 1:-1] - Ex[:-2, 1:-1, 1:-1]
+        ) / dynamic_parameters.dx
+    if int(dynamic_parameters.Ny) > 1:
+        divergence = divergence + (
+            Ey[1:-1, 1:-1, 1:-1] - Ey[1:-1, :-2, 1:-1]
+        ) / dynamic_parameters.dy
+    if int(dynamic_parameters.Nz) > 1:
+        divergence = divergence + (
+            Ez[1:-1, 1:-1, 1:-1] - Ez[1:-1, 1:-1, :-2]
+        ) / dynamic_parameters.dz
+
+    charge_term = rho[interior] / dynamic_parameters.eps
+    numerator = jnp.linalg.norm(divergence - charge_term)
+    denominator = jnp.linalg.norm(divergence) + jnp.linalg.norm(charge_term)
+    tiny = jnp.finfo(divergence.dtype).eps
+    return numerator / jnp.maximum(denominator, tiny)
+
+
 def compute_energy(particles, E, B, static_parameters, dynamic_parameters, species_config=None):
     """
     Compute the electric, magnetic, and particle kinetic energies.
