@@ -19,7 +19,7 @@ error = ot_vortex_$(case)_$(Cluster).err
 
 request_gpus = 1
 gpus_minimum_capability = 8.0
-gpus_minimum_memory = 40000
+gpus_minimum_memory = 40000MB
 request_cpus = 8
 request_memory = 64GB
 request_disk = 50GB
@@ -31,7 +31,7 @@ when_to_transfer_output = ON_EXIT
 transfer_output_files = ot_vortex_$(case).tar.zst
 transfer_output_remaps = "ot_vortex_$(case).tar.zst = $(staging)/ot_vortex_$(case)_$(Cluster).tar.zst"
 
-environment = "PYPIC3D_ROOT=/opt/PyPIC3D;XLA_PYTHON_CLIENT_MEM_FRACTION=0.90"
+environment = "PYPIC3D_ROOT=/opt/PyPIC3D XLA_PYTHON_CLIENT_MEM_FRACTION=0.90"
 
 case = benchmark
 job_length = short
