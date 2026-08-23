@@ -35,7 +35,7 @@ environment = "PYPIC3D_ROOT=/opt/PyPIC3D;XLA_PYTHON_CLIENT_MEM_FRACTION=0.90"
 
 case = benchmark
 job_length = short
-image = REPLACE_WITH_REGISTRY_IMAGE
-staging = REPLACE_WITH_OSDF_STAGING_URI
+image = ghcr.io/cwoolfo1/pypic3d-ot:cuda12.1
+staging = osdf:///chtc/staging/c/clwoolford
 
 queue 1
