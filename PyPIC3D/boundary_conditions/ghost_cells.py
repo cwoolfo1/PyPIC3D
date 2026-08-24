@@ -7,6 +7,7 @@ import jax.numpy as jnp
 from jax.sharding import Mesh, PartitionSpec as P
 
 from PyPIC3D.boundary_conditions.grid_and_stencil import BC_CONDUCTING, BC_CONSTANT, BC_PERIODIC
+from PyPIC3D.utilities.jax_compat import shard_map
 
 
 MESH_AXES = ("tile_x", "tile_y", "tile_z")
@@ -418,7 +419,7 @@ def make_distributed_ghost_updater(mesh, tile_shape, boundary_conditions, num_gu
         )
         return tile[jnp.newaxis, jnp.newaxis, jnp.newaxis, :, :, :]
 
-    mapped_update = jax.shard_map(
+    mapped_update = shard_map(
         local_update,
         mesh=mesh,
         in_specs=SCALAR_TILE_SPEC,
@@ -465,7 +466,7 @@ def make_distributed_vector_ghost_updater(mesh, tile_shape, boundary_conditions,
 
         return jax.vmap(update_component, in_axes=0, out_axes=0)(local_tiles)
 
-    mapped_update = jax.shard_map(
+    mapped_update = shard_map(
         local_update,
         mesh=mesh,
         in_specs=VECTOR_TILE_SPEC,
@@ -503,7 +504,7 @@ def make_distributed_ghost_folder(mesh, tile_shape, boundary_conditions, num_gua
         tile = _local_fold_scalar_tile(tile, g, boundary_conditions, reduced_axes, mesh_shape, send_positive, send_negative)
         return tile[jnp.newaxis, jnp.newaxis, jnp.newaxis, :, :, :]
 
-    mapped_fold = jax.shard_map(
+    mapped_fold = shard_map(
         local_fold,
         mesh=mesh,
         in_specs=SCALAR_TILE_SPEC,
@@ -542,7 +543,7 @@ def make_distributed_vector_ghost_folder(mesh, tile_shape, boundary_conditions, 
 
         return jax.vmap(fold_component, in_axes=0, out_axes=0)(local_tiles)
 
-    mapped_fold = jax.shard_map(
+    mapped_fold = shard_map(
         local_fold,
         mesh=mesh,
         in_specs=VECTOR_TILE_SPEC,
@@ -572,7 +573,7 @@ def make_distributed_zero_boundary(mesh, tile_shape, axis, num_guard_cells):
         tile = _apply_local_zero_boundary_axis(tile, axis, g, axis_name, axis_size)
         return tile[jnp.newaxis, jnp.newaxis, jnp.newaxis, :, :, :]
 
-    mapped_apply = jax.shard_map(
+    mapped_apply = shard_map(
         local_apply,
         mesh=mesh,
         in_specs=SCALAR_TILE_SPEC,
@@ -600,7 +601,7 @@ def make_distributed_constant_boundary(mesh, tile_shape, axis, num_guard_cells):
         tile = _apply_local_constant_boundary_axis(tile, axis, g, axis_name, axis_size)
         return tile[jnp.newaxis, jnp.newaxis, jnp.newaxis, :, :, :]
 
-    mapped_apply = jax.shard_map(
+    mapped_apply = shard_map(
         local_apply,
         mesh=mesh,
         in_specs=SCALAR_TILE_SPEC,

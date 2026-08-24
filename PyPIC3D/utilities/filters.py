@@ -12,6 +12,7 @@ from PyPIC3D.boundary_conditions.ghost_cells import (
     update_tiled_ghost_cells,
     update_tiled_vector_ghost_cells,
 )
+from PyPIC3D.utilities.jax_compat import shard_map
 
 
 def _active_slice(num_guard_cells):
@@ -154,7 +155,7 @@ def _tiled_scalar_filter(field_tiles, static_parameters, filter_function, filter
         tile = filter_function(tile, *local_filter_args, num_guard_cells=g)
         return tile[jnp.newaxis, jnp.newaxis, jnp.newaxis, :, :, :]
 
-    mapped_filter = jax.shard_map(
+    mapped_filter = shard_map(
         filter_local_tile,
         mesh=mesh,
         in_specs=(SCALAR_TILE_SPEC,) + tuple(P() for _ in filter_args),
@@ -196,7 +197,7 @@ def _tiled_vector_filter(field_tiles, static_parameters, filter_function, filter
         )(local_components)
         return filtered_components[:, jnp.newaxis, jnp.newaxis, jnp.newaxis, :, :, :]
 
-    mapped_filter = jax.shard_map(
+    mapped_filter = shard_map(
         filter_local_tile,
         mesh=mesh,
         in_specs=(VECTOR_TILE_SPEC,) + tuple(P() for _ in filter_args),

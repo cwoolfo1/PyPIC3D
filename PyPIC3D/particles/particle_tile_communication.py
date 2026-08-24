@@ -13,6 +13,7 @@ from PyPIC3D.boundary_conditions.grid_and_stencil import (
 from PyPIC3D.boundary_conditions.ghost_cells import MESH_AXES
 from PyPIC3D.particles.particle_class import TiledParticles
 from PyPIC3D.utilities.grids import grid_domain_bounds
+from PyPIC3D.utilities.jax_compat import shard_map
 
 
 PARTICLE_STATE_TILE_SPEC = P("tile_x", "tile_y", "tile_z", None, None, None)
@@ -478,7 +479,7 @@ def _build_distributed_particle_refresher(static_parameters):
             overflow,
         )
 
-    mapped_refresh = jax.shard_map(
+    mapped_refresh = shard_map(
         local_refresh,
         mesh=mesh,
         in_specs=(
