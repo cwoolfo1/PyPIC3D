@@ -6,9 +6,9 @@ image_root="${PYPIC3D_ROOT:-/opt/PyPIC3D}"
 work_root="${PWD}/ot_vortex_work"
 
 case "${case_name}" in
-  benchmark|pilot|spectrum) ;;
+  smoke|benchmark|pilot|spectrum) ;;
   *)
-    echo "case must be benchmark, pilot, or spectrum" >&2
+    echo "case must be smoke, benchmark, pilot, or spectrum" >&2
     exit 2
     ;;
 esac
@@ -21,7 +21,10 @@ mkdir -p "${work_root}"
 cp -a "${image_root}/demos/ot_vortex/." "${work_root}/"
 cd "${work_root}"
 
-if [[ "${case_name}" == "spectrum" ]]; then
+if [[ "${case_name}" == "smoke" ]]; then
+  generated_case="smoke"
+  config_file="orszag_tang_smoke.toml"
+elif [[ "${case_name}" == "spectrum" ]]; then
   generated_case="spectrum"
   config_file="orszag_tang_spectrum.toml"
 else
@@ -30,7 +33,9 @@ else
 fi
 
 python3 initial_conditions.py --case "${generated_case}" --force
-if [[ "${case_name}" == "benchmark" ]]; then
+if [[ "${case_name}" == "smoke" ]]; then
+  python3 chtc/make_smoke_config.py
+elif [[ "${case_name}" == "benchmark" ]]; then
   python3 chtc/make_benchmark_config.py
   config_file="orszag_tang_benchmark.toml"
 fi
@@ -62,7 +67,7 @@ python3 chtc/report_runtime.py \
   --gpu-log "runs/${case_name}/data/gpu_usage.csv" \
   --output "runs/${case_name}/data/runtime_projection.json"
 
-if [[ "${case_name}" != "benchmark" ]]; then
+if [[ "${case_name}" == "pilot" || "${case_name}" == "spectrum" ]]; then
   python3 analyze_spectrum.py --config "${config_file}"
 fi
 

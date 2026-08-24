@@ -34,13 +34,63 @@ result.
 
 ## CHTC GPU Lab
 
-Build and push the pinned CUDA image from the repository root:
+Build the pinned CUDA image from the repository root with a unique tag:
 
 ```bash
-docker build -f demos/ot_vortex/chtc/Dockerfile \
-  -t <registry-user>/pypic3d:cuda12.1.1-v1 .
-docker push <registry-user>/pypic3d:cuda12.1.1-v1
+docker build --no-cache --progress=plain \
+  -f demos/ot_vortex/chtc/Dockerfile \
+  -t <registry-user>/pypic3d:cuda12.3.2-smoke-v1 .
 ```
+
+Before submitting to CHTC, configure NVIDIA Container Toolkit and confirm
+that Docker can expose the local GPU:
+
+```bash
+docker run --rm --gpus all \
+  nvidia/cuda:12.3.2-base-ubuntu22.04 nvidia-smi
+```
+
+Run the image preflight, followed by the five-step 64-by-64 smoke case. The
+runner uses the same ``run_gpu_job`` entry point as Condor and writes results
+to the optional second argument.
+
+```bash
+docker run --rm --gpus all \
+  <registry-user>/pypic3d:cuda12.3.2-smoke-v1 \
+  bash -lc 'ptxas --version && python3 /opt/PyPIC3D/demos/ot_vortex/chtc/container_preflight.py && python3 -c '\''import jax; print(jax.devices("gpu"))'\'''
+
+docker run --rm \
+  --env JAX_PLATFORMS=cpu \
+  --env XLA_FLAGS=--xla_force_host_platform_device_count=8 \
+  <registry-user>/pypic3d:cuda12.3.2-smoke-v1 \
+  python3 -m unittest \
+    tests.code_tests.distributed_ghost_cells_test \
+    tests.code_tests.distributed_filters_test \
+    tests.code_tests.distributed_particle_refresh_test
+
+demos/ot_vortex/chtc/run_local_gpu_smoke \
+  <registry-user>/pypic3d:cuda12.3.2-smoke-v1 \
+  "$PWD/local_ot_vortex_smoke" \
+  0
+```
+
+The optional final argument selects one host GPU, matching CHTC's one-GPU
+allocation. It defaults to device 0.
+
+The smoke run must produce ``ot_vortex_smoke.tar.zst`` in the mounted work
+directory plus ``output.toml``, ``gpu_usage.csv``, and
+``runtime_projection.json`` under
+``local_ot_vortex_smoke/ot_vortex_work/runs/smoke/data``. Inspect the archive
+before publishing:
+
+```bash
+tar --zstd -tf local_ot_vortex_smoke/ot_vortex_smoke.tar.zst
+docker push <registry-user>/pypic3d:cuda12.3.2-smoke-v1
+docker pull <registry-user>/pypic3d:cuda12.3.2-smoke-v1
+```
+
+Repeat the preflight against the pulled tag. Do not reuse an existing tag;
+execution nodes may retain an older image under a mutable tag.
 
 Copy the `chtc` directory into your CHTC `/home` directory, then submit the
 200-step benchmark:
@@ -48,7 +98,7 @@ Copy the `chtc` directory into your CHTC `/home` directory, then submit the
 ```bash
 condor_submit ot_vortex_gpu.sub \
   case=benchmark job_length=short \
-  image=<registry-user>/pypic3d:cuda12.1.1-v1 \
+  image=<registry-user>/pypic3d:cuda12.3.2-smoke-v1 \
   staging=osdf:///chtc/staging/<initial>/<netid>
 ```
 

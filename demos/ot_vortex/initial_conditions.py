@@ -73,6 +73,7 @@ class Case:
 
 
 CASES = {
+    "smoke": Case("smoke", 64, 64, 5),
     "pilot": Case("pilot", 512, 512, 82),
     "spectrum": Case("spectrum", 1024, 1024, 165),
 }
@@ -298,7 +299,7 @@ def generate_case(case, output_root, seed=42, force=False):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--case", choices=("pilot", "spectrum", "all"), default="pilot")
+    parser.add_argument("--case", choices=("smoke", "pilot", "spectrum", "all"), default="pilot")
     parser.add_argument(
         "--output-root",
         type=Path,

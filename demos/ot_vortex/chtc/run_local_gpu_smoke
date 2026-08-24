@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+image="${1:?usage: run_local_gpu_smoke IMAGE [WORK_DIRECTORY] [GPU_DEVICE]}"
+work_directory="${2:-${PWD}/local_ot_vortex_smoke}"
+gpu_device="${3:-0}"
+mkdir -p "${work_directory}"
+work_directory="$(cd "${work_directory}" && pwd)"
+
+docker run --rm \
+  --gpus "device=${gpu_device}" \
+  --cpus 8 \
+  --memory 64g \
+  --env PYPIC3D_ROOT=/opt/PyPIC3D \
+  --env XLA_PYTHON_CLIENT_MEM_FRACTION=0.90 \
+  --volume "${work_directory}:/work" \
+  --workdir /work \
+  "${image}" \
+  bash -lc '
+    set -euo pipefail
+    ptxas --version
+    python3 /opt/PyPIC3D/demos/ot_vortex/chtc/container_preflight.py
+    python3 -c '\''import jax; devices = jax.devices("gpu"); print("GPU devices", devices); assert len(devices) == 1'\''
+    exec /opt/PyPIC3D/demos/ot_vortex/chtc/run_gpu_job smoke
+  '

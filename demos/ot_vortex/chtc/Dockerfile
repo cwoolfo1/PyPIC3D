@@ -22,5 +22,7 @@ WORKDIR /opt/PyPIC3D
 COPY . .
 RUN chmod -R a+rX /opt/PyPIC3D
 RUN python3 -m pip install --no-deps .
+RUN ptxas --version \
+    && python3 demos/ot_vortex/chtc/container_preflight.py
 
 CMD ["python3", "-m", "PyPIC3D", "--help"]
