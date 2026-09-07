@@ -2,7 +2,6 @@ import unittest
 
 import jax
 import jax.numpy as jnp
-import numpy as np
 
 from PyPIC3D.boundary_conditions.grid_and_stencil import BC_CONDUCTING, BC_PERIODIC
 from PyPIC3D.boundary_conditions.ghost_cells import (
@@ -428,9 +427,9 @@ class TestTiledFluidQuantities(unittest.TestCase):
             reflecting_parity=particle_vector_reflecting_parity(2),
         )
 
-        np.testing.assert_allclose(even_fold[owned], [9.0, 8.0])
-        np.testing.assert_allclose(tangential_fold[owned], [9.0, 8.0])
-        np.testing.assert_allclose(normal_fold[owned], [-5.0, -2.0])
+        self.assertTrue(bool(jnp.allclose(even_fold[owned], jnp.array([9.0, 8.0]))))
+        self.assertTrue(bool(jnp.allclose(tangential_fold[owned], jnp.array([9.0, 8.0]))))
+        self.assertTrue(bool(jnp.allclose(normal_fold[owned], jnp.array([-5.0, -2.0]))))
 
     def test_reflecting_wall_fluid_velocity_remains_a_bounded_particle_average(self):
         periodic_static, dynamic_parameters = self._build_parameters(shape_factor=2)
@@ -482,13 +481,21 @@ class TestTiledFluidQuantities(unittest.TestCase):
         self.assertLessEqual(float(jnp.max(jnp.abs(uz[:, :, :, g:-g, g:-g, g:-g]))), 0.25 + 1.0e-12)
         self.assertFalse(bool(jnp.any(jnp.isnan(ux))))
         self.assertFalse(bool(jnp.any(jnp.isnan(uz))))
-        np.testing.assert_allclose(
-            ux[0, 0, 0, g:-g, g:-g, :g],
-            jnp.flip(ux[0, 0, 0, g:-g, g:-g, g:2 * g], axis=-1),
+        self.assertTrue(
+            bool(
+                jnp.allclose(
+                    ux[0, 0, 0, g:-g, g:-g, :g],
+                    jnp.flip(ux[0, 0, 0, g:-g, g:-g, g:2 * g], axis=-1),
+                )
+            )
         )
-        np.testing.assert_allclose(
-            uz[0, 0, 0, g:-g, g:-g, :g],
-            -jnp.flip(uz[0, 0, 0, g:-g, g:-g, g:2 * g], axis=-1),
+        self.assertTrue(
+            bool(
+                jnp.allclose(
+                    uz[0, 0, 0, g:-g, g:-g, :g],
+                    -jnp.flip(uz[0, 0, 0, g:-g, g:-g, g:2 * g], axis=-1),
+                )
+            )
         )
 
     def test_tile_major_velocity_runs_on_multi_tile_kernel_storage_when_devices_are_available(self):

@@ -10,6 +10,12 @@ from PyPIC3D.boundary_conditions import ghost_cells
 jax.config.update("jax_enable_x64", True)
 
 
+def _assert_allclose(test_case, actual, expected, **kwargs):
+    test_case.assertTrue(
+        bool(jnp.allclose(jnp.asarray(actual), jnp.asarray(expected), **kwargs))
+    )
+
+
 class TestGhostCells(unittest.TestCase):
     """Tests for the tiled ghost-cell boundary condition approach."""
 
@@ -177,6 +183,265 @@ class TestGhostCells(unittest.TestCase):
         self.assertTrue(jnp.allclose(result[0, 0, 0, -1, :, :], result[0, 0, 0, -2, :, :]))
         self.assertTrue(jnp.allclose(result[0, 0, 0, 1, :, :], 2.0))
         self.assertTrue(jnp.allclose(result[0, 0, 0, 2, :, :], 7.0))
+
+    def test_particle_scalar_fold_and_refresh_mirror_both_reflecting_walls(self):
+        g = 2
+        parameters = SimpleNamespace(
+            tile_shape=(2, 2, 4),
+            guard_cells=g,
+            field_mesh=ghost_cells.make_field_mesh((1, 1, 1)),
+            boundary_conditions=(BC_PERIODIC, BC_PERIODIC, BC_CONDUCTING),
+            particle_boundary_conditions=(BC_PERIODIC, BC_PERIODIC, BC_CONDUCTING),
+        )
+        deposits = jnp.zeros((1, 1, 1, 6, 6, 8), dtype=float)
+        line = (0, 0, 0, g, g)
+        deposits = deposits.at[line + (slice(g, 2 * g),)].set(jnp.array([10.0, 20.0]))
+        deposits = deposits.at[line + (slice(-2 * g, -g),)].set(jnp.array([30.0, 40.0]))
+        deposits = deposits.at[line + (slice(0, g),)].set(jnp.array([1.0, 2.0]))
+        deposits = deposits.at[line + (slice(-g, None),)].set(jnp.array([3.0, 4.0]))
+
+        even = ghost_cells.fold_tiled_ghost_cells(
+            deposits,
+            parameters,
+            g,
+            bc_type=ghost_cells.BC_TYPE_PARTICLE,
+        )
+        odd = ghost_cells.fold_tiled_ghost_cells(
+            deposits,
+            parameters,
+            g,
+            bc_type=ghost_cells.BC_TYPE_PARTICLE,
+            reflecting_parity=(1, 1, -1),
+        )
+
+        # Lower storage is [far, near] and upper storage is [near, far].
+        # Both must be reversed so nearest ghost maps to nearest interior.
+        _assert_allclose(self, even[line + (slice(g, 2 * g),)], [12.0, 21.0])
+        _assert_allclose(self, even[line + (slice(-2 * g, -g),)], [34.0, 43.0])
+        _assert_allclose(self, odd[line + (slice(g, 2 * g),)], [8.0, 19.0])
+        _assert_allclose(self, odd[line + (slice(-2 * g, -g),)], [26.0, 37.0])
+
+        refreshed_even = ghost_cells.update_tiled_ghost_cells(
+            even,
+            parameters,
+            g,
+            bc_type=ghost_cells.BC_TYPE_PARTICLE,
+        )
+        refreshed_odd = ghost_cells.update_tiled_ghost_cells(
+            odd,
+            parameters,
+            g,
+            bc_type=ghost_cells.BC_TYPE_PARTICLE,
+            reflecting_parity=(1, 1, -1),
+        )
+        _assert_allclose(self, refreshed_even[line + (slice(0, g),)], [21.0, 12.0])
+        _assert_allclose(self, refreshed_even[line + (slice(-g, None),)], [43.0, 34.0])
+        _assert_allclose(self, refreshed_odd[line + (slice(0, g),)], [-19.0, -8.0])
+        _assert_allclose(self, refreshed_odd[line + (slice(-g, None),)], [-37.0, -26.0])
+
+    def test_particle_vector_has_tangential_even_and_normal_odd_wall_parity(self):
+        g = 2
+        parameters = SimpleNamespace(
+            tile_shape=(2, 2, 4),
+            guard_cells=g,
+            field_mesh=ghost_cells.make_field_mesh((1, 1, 1)),
+            boundary_conditions=(BC_PERIODIC, BC_PERIODIC, BC_CONDUCTING),
+            particle_boundary_conditions=(BC_PERIODIC, BC_PERIODIC, BC_CONDUCTING),
+        )
+        scalar = jnp.zeros((1, 1, 1, 6, 6, 8), dtype=float)
+        line = (0, 0, 0, g, g)
+        scalar = scalar.at[line + (slice(g, 2 * g),)].set(jnp.array([10.0, 20.0]))
+        scalar = scalar.at[line + (slice(-2 * g, -g),)].set(jnp.array([30.0, 40.0]))
+        scalar = scalar.at[line + (slice(0, g),)].set(jnp.array([1.0, 2.0]))
+        scalar = scalar.at[line + (slice(-g, None),)].set(jnp.array([3.0, 4.0]))
+        vector = (scalar, scalar, scalar)
+
+        folded = ghost_cells.fold_tiled_vector_ghost_cells(
+            vector,
+            parameters,
+            g,
+            bc_type=ghost_cells.BC_TYPE_PARTICLE,
+        )
+
+        for component in (0, 1):
+            _assert_allclose(self, folded[component][line + (slice(g, 2 * g),)], [12.0, 21.0])
+            _assert_allclose(self, folded[component][line + (slice(-2 * g, -g),)], [34.0, 43.0])
+        _assert_allclose(self, folded[2][line + (slice(g, 2 * g),)], [8.0, 19.0])
+        _assert_allclose(self, folded[2][line + (slice(-2 * g, -g),)], [26.0, 37.0])
+
+        refreshed = ghost_cells.update_tiled_vector_ghost_cells(
+            folded,
+            parameters,
+            g,
+            bc_type=ghost_cells.BC_TYPE_PARTICLE,
+        )
+        for component in (0, 1):
+            _assert_allclose(self, refreshed[component][line + (slice(0, g),)], [21.0, 12.0])
+            _assert_allclose(self, refreshed[component][line + (slice(-g, None),)], [43.0, 34.0])
+        _assert_allclose(self, refreshed[2][line + (slice(0, g),)], [-19.0, -8.0])
+        _assert_allclose(self, refreshed[2][line + (slice(-g, None),)], [-37.0, -26.0])
+
+    def test_particle_vector_reflection_parity_applies_on_every_axis(self):
+        g = 1
+        tile_shape = (2, 2, 2)
+        scalar = jnp.zeros((1, 1, 1, 4, 4, 4), dtype=float)
+        scalar = scalar.at[0, 0, 0, g:-g, g:-g, g:-g].set(7.0)
+        vector = (scalar, scalar, scalar)
+
+        for wall_axis in range(3):
+            particle_boundaries = [BC_PERIODIC, BC_PERIODIC, BC_PERIODIC]
+            particle_boundaries[wall_axis] = BC_CONDUCTING
+            parameters = SimpleNamespace(
+                tile_shape=tile_shape,
+                guard_cells=g,
+                field_mesh=ghost_cells.make_field_mesh((1, 1, 1)),
+                boundary_conditions=(BC_PERIODIC, BC_PERIODIC, BC_PERIODIC),
+                particle_boundary_conditions=tuple(particle_boundaries),
+            )
+            refreshed = ghost_cells.update_tiled_vector_ghost_cells(
+                vector,
+                parameters,
+                g,
+                bc_type=ghost_cells.BC_TYPE_PARTICLE,
+            )
+            lower_wall = [0, 0, 0, g, g, g]
+            lower_wall[3 + wall_axis] = 0
+            upper_wall = [0, 0, 0, g, g, g]
+            upper_wall[3 + wall_axis] = -1
+            for component in range(3):
+                expected = -7.0 if component == wall_axis else 7.0
+                self.assertEqual(float(refreshed[component][tuple(lower_wall)]), expected)
+                self.assertEqual(float(refreshed[component][tuple(upper_wall)]), expected)
+
+    def test_reduced_reflecting_axis_uses_scalar_parity(self):
+        g = 1
+        parameters = SimpleNamespace(
+            tile_shape=(1, 2, 2),
+            guard_cells=g,
+            field_mesh=ghost_cells.make_field_mesh((1, 1, 1)),
+            boundary_conditions=(BC_PERIODIC, BC_PERIODIC, BC_PERIODIC),
+            particle_boundary_conditions=(BC_CONDUCTING, BC_PERIODIC, BC_PERIODIC),
+        )
+        deposits = jnp.zeros((1, 1, 1, 3, 4, 4), dtype=float)
+        line = (0, 0, 0, slice(None), g, g)
+        deposits = deposits.at[line].set(jnp.array([2.0, 10.0, 3.0]))
+
+        even = ghost_cells.fold_tiled_ghost_cells(
+            deposits,
+            parameters,
+            g,
+            bc_type=ghost_cells.BC_TYPE_PARTICLE,
+        )
+        odd = ghost_cells.fold_tiled_ghost_cells(
+            deposits,
+            parameters,
+            g,
+            bc_type=ghost_cells.BC_TYPE_PARTICLE,
+            reflecting_parity=(-1, 1, 1),
+        )
+        self.assertEqual(float(even[0, 0, 0, g, g, g]), 15.0)
+        self.assertEqual(float(odd[0, 0, 0, g, g, g]), 5.0)
+
+        refreshed_even = ghost_cells.update_tiled_ghost_cells(
+            even,
+            parameters,
+            g,
+            bc_type=ghost_cells.BC_TYPE_PARTICLE,
+        )
+        refreshed_odd = ghost_cells.update_tiled_ghost_cells(
+            odd,
+            parameters,
+            g,
+            bc_type=ghost_cells.BC_TYPE_PARTICLE,
+            reflecting_parity=(-1, 1, 1),
+        )
+        _assert_allclose(self, refreshed_even[line], [15.0, 15.0, 15.0])
+        _assert_allclose(self, refreshed_odd[line], [-5.0, 5.0, -5.0])
+
+    def test_reflecting_corner_composes_axis_parity(self):
+        g = 1
+        parameters = SimpleNamespace(
+            tile_shape=(2, 2, 2),
+            guard_cells=g,
+            field_mesh=ghost_cells.make_field_mesh((1, 1, 1)),
+            boundary_conditions=(BC_PERIODIC, BC_PERIODIC, BC_PERIODIC),
+            particle_boundary_conditions=(BC_CONDUCTING, BC_PERIODIC, BC_CONDUCTING),
+        )
+        parity = (-1, 1, -1)
+        field = jnp.zeros((1, 1, 1, 4, 4, 4), dtype=float)
+        field = field.at[0, 0, 0, g, g, g].set(7.0)
+        refreshed = ghost_cells.update_tiled_ghost_cells(
+            field,
+            parameters,
+            g,
+            bc_type=ghost_cells.BC_TYPE_PARTICLE,
+            reflecting_parity=parity,
+        )
+        self.assertEqual(float(refreshed[0, 0, 0, 0, g, g]), -7.0)
+        self.assertEqual(float(refreshed[0, 0, 0, g, g, 0]), -7.0)
+        self.assertEqual(float(refreshed[0, 0, 0, 0, g, 0]), 7.0)
+
+        deposits = jnp.zeros_like(field).at[0, 0, 0, 0, g, 0].set(3.0)
+        folded = ghost_cells.fold_tiled_ghost_cells(
+            deposits,
+            parameters,
+            g,
+            bc_type=ghost_cells.BC_TYPE_PARTICLE,
+            reflecting_parity=parity,
+        )
+        self.assertEqual(float(folded[0, 0, 0, g, g, g]), 3.0)
+
+    def test_reflecting_parity_validation_and_field_rejection(self):
+        parameters = SimpleNamespace(
+            tile_shape=(2, 2, 2),
+            guard_cells=1,
+            field_mesh=ghost_cells.make_field_mesh((1, 1, 1)),
+            boundary_conditions=(BC_CONDUCTING, BC_PERIODIC, BC_PERIODIC),
+            particle_boundary_conditions=(BC_CONDUCTING, BC_PERIODIC, BC_PERIODIC),
+        )
+        scalar = jnp.zeros((1, 1, 1, 4, 4, 4), dtype=float)
+
+        with self.assertRaisesRegex(ValueError, "three values"):
+            ghost_cells.update_tiled_ghost_cells(
+                scalar,
+                parameters,
+                bc_type=ghost_cells.BC_TYPE_PARTICLE,
+                reflecting_parity=(1, -1),
+            )
+        with self.assertRaisesRegex(ValueError, "either -1 or 1"):
+            ghost_cells.fold_tiled_ghost_cells(
+                scalar,
+                parameters,
+                bc_type=ghost_cells.BC_TYPE_PARTICLE,
+                reflecting_parity=(1, 0, 1),
+            )
+        with self.assertRaisesRegex(ValueError, "either -1 or 1"):
+            ghost_cells.fold_tiled_ghost_cells(
+                scalar,
+                parameters,
+                bc_type=ghost_cells.BC_TYPE_PARTICLE,
+                reflecting_parity=(1, 1.5, 1),
+            )
+        with self.assertRaisesRegex(ValueError, "three values"):
+            ghost_cells.update_tiled_ghost_cells(
+                scalar,
+                parameters,
+                bc_type=ghost_cells.BC_TYPE_PARTICLE,
+                reflecting_parity=1,
+            )
+        with self.assertRaisesRegex(ValueError, "only valid for particle"):
+            ghost_cells.update_tiled_ghost_cells(
+                scalar,
+                parameters,
+                reflecting_parity=(1, 1, 1),
+            )
+        with self.assertRaisesRegex(ValueError, "one parity tuple per component"):
+            ghost_cells.update_tiled_vector_ghost_cells(
+                (scalar, scalar, scalar),
+                parameters,
+                bc_type=ghost_cells.BC_TYPE_PARTICLE,
+                reflecting_parity=((1, 1, 1), (1, -1, 1)),
+            )
 
 
 if __name__ == '__main__':

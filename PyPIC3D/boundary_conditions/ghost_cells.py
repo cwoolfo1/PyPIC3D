@@ -1,10 +1,8 @@
 import math
 
-import numpy as np
-
 import jax
 import jax.numpy as jnp
-from jax.sharding import Mesh, PartitionSpec as P
+from jax.sharding import PartitionSpec as P
 
 from PyPIC3D.boundary_conditions.grid_and_stencil import BC_CONDUCTING, BC_CONSTANT, BC_PERIODIC
 
@@ -85,7 +83,7 @@ def _resolve_vector_reflecting_parity(bc_type, reflecting_parity):
 
 
 def _as_python_int(value):
-    return int(np.asarray(value))
+    return int(jax.device_get(value))
 
 
 def _boundary_tuple(boundary_conditions):
@@ -173,7 +171,12 @@ def _default_mesh_for_tile_shape(tile_grid_shape):
             f"tile topology {tile_grid_shape} needs {n_devices} devices, "
             f"but JAX exposes {len(devices)}."
         )
-    return Mesh(np.asarray(devices[:n_devices]).reshape(tile_grid_shape), MESH_AXES)
+    return jax.make_mesh(
+        tile_grid_shape,
+        MESH_AXES,
+        devices=devices[:n_devices],
+        axis_types=(jax.sharding.AxisType.Auto,) * len(MESH_AXES),
+    )
 
 
 def make_field_mesh(tile_grid_shape):

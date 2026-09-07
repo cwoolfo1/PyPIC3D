@@ -6,7 +6,6 @@ from types import SimpleNamespace
 
 import jax
 import jax.numpy as jnp
-import numpy as np
 import toml
 
 from PyPIC3D.boundary_conditions.grid_and_stencil import (
@@ -207,9 +206,9 @@ class TestTiledEsirkepovCurrent(unittest.TestCase):
         u_by_species = []
         max_slots = 1
         for species_index in range(n_species):
-            active = np.asarray(jax.device_get(particles.active[:, :, :, species_index, :])).reshape(-1)
-            x = np.asarray(jax.device_get(particles.x[:, :, :, species_index, :, :])).reshape(-1, 3)[active]
-            u = np.asarray(jax.device_get(particles.u[:, :, :, species_index, :, :])).reshape(-1, 3)[active]
+            active = jnp.asarray(jax.device_get(particles.active[:, :, :, species_index, :])).reshape(-1)
+            x = jnp.asarray(jax.device_get(particles.x[:, :, :, species_index, :, :])).reshape(-1, 3)[active]
+            u = jnp.asarray(jax.device_get(particles.u[:, :, :, species_index, :, :])).reshape(-1, 3)[active]
             x_by_species.append(x)
             u_by_species.append(u)
             max_slots = max(max_slots, int(x.shape[0]))
@@ -818,9 +817,9 @@ class TestTiledEsirkepovCurrent(unittest.TestCase):
             x_path = os.path.join(tmpdir, "x.npy")
             zeros_path = os.path.join(tmpdir, "zeros.npy")
             vx_path = os.path.join(tmpdir, "vx.npy")
-            np.save(x_path, np.array([-1.5, -0.5, 0.5, 1.5]))
-            np.save(zeros_path, np.zeros(4))
-            np.save(vx_path, np.array([0.10, -0.05, 0.07, -0.02]))
+            jnp.save(x_path, jnp.array([-1.5, -0.5, 0.5, 1.5]))
+            jnp.save(zeros_path, jnp.zeros(4))
+            jnp.save(vx_path, jnp.array([0.10, -0.05, 0.07, -0.02]))
 
             config = {
                 "simulation_parameters": {
@@ -881,9 +880,9 @@ class TestTiledEsirkepovCurrent(unittest.TestCase):
             x_path = os.path.join(tmpdir, "x.npy")
             zeros_path = os.path.join(tmpdir, "zeros.npy")
             vx_path = os.path.join(tmpdir, "vx.npy")
-            np.save(x_path, np.array([-1.5, -0.5, 0.5, 1.5]))
-            np.save(zeros_path, np.zeros(4))
-            np.save(vx_path, np.array([0.10, -0.05, 0.07, -0.02]))
+            jnp.save(x_path, jnp.array([-1.5, -0.5, 0.5, 1.5]))
+            jnp.save(zeros_path, jnp.zeros(4))
+            jnp.save(vx_path, jnp.array([0.10, -0.05, 0.07, -0.02]))
 
             config = {
                 "simulation_parameters": {
@@ -929,14 +928,14 @@ class TestTiledEsirkepovCurrent(unittest.TestCase):
 
     def test_tiled_yee_esirkepov_loop_advances_particles_after_deposition(self):
         with tempfile.TemporaryDirectory() as tmpdir:
-            x_initial = np.array([-1.5, -0.5, 0.5, 1.5])
-            vx_initial = np.array([0.10, -0.05, 0.07, -0.02])
+            x_initial = jnp.array([-1.5, -0.5, 0.5, 1.5])
+            vx_initial = jnp.array([0.10, -0.05, 0.07, -0.02])
             x_path = os.path.join(tmpdir, "x.npy")
             zeros_path = os.path.join(tmpdir, "zeros.npy")
             vx_path = os.path.join(tmpdir, "vx.npy")
-            np.save(x_path, x_initial)
-            np.save(zeros_path, np.zeros(4))
-            np.save(vx_path, vx_initial)
+            jnp.save(x_path, x_initial)
+            jnp.save(zeros_path, jnp.zeros(4))
+            jnp.save(vx_path, vx_initial)
 
             config = {
                 "simulation_parameters": {
@@ -999,23 +998,23 @@ class TestTiledEsirkepovCurrent(unittest.TestCase):
                 dynamic_parameters,
             )
 
-            active_x = np.asarray(particles.x[..., 0][particles.active])
-            expected_x = np.sort(x_initial + vx_initial * float(dynamic_parameters.dt))
-            self.assertTrue(np.allclose(np.sort(active_x), expected_x, rtol=1.0e-12, atol=1.0e-12))
+            active_x = jnp.asarray(particles.x[..., 0][particles.active])
+            expected_x = jnp.sort(x_initial + vx_initial * float(dynamic_parameters.dt))
+            self.assertTrue(jnp.allclose(jnp.sort(active_x), expected_x, rtol=1.0e-12, atol=1.0e-12))
             self.assertEqual(int(static_parameters.guard_cells), 2)
             self.assertEqual(fields[2][0].shape[-3:], (6, 5, 5))
             self.assertFalse(bool(fields[-1]))
 
     def test_tiled_yee_esirkepov_staging_uses_parameter_contract_not_function_identity(self):
         with tempfile.TemporaryDirectory() as tmpdir:
-            x_initial = np.array([-1.5, -0.5, 0.5, 1.5])
-            vx_initial = np.array([0.10, -0.05, 0.07, -0.02])
+            x_initial = jnp.array([-1.5, -0.5, 0.5, 1.5])
+            vx_initial = jnp.array([0.10, -0.05, 0.07, -0.02])
             x_path = os.path.join(tmpdir, "x.npy")
             zeros_path = os.path.join(tmpdir, "zeros.npy")
             vx_path = os.path.join(tmpdir, "vx.npy")
-            np.save(x_path, x_initial)
-            np.save(zeros_path, np.zeros(4))
-            np.save(vx_path, vx_initial)
+            jnp.save(x_path, x_initial)
+            jnp.save(zeros_path, jnp.zeros(4))
+            jnp.save(vx_path, vx_initial)
 
             config = {
                 "simulation_parameters": {

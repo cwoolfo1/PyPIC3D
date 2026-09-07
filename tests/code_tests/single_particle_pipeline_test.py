@@ -2,7 +2,6 @@ import unittest
 
 import jax
 import jax.numpy as jnp
-import numpy as np
 
 from PyPIC3D.boundary_conditions.grid_and_stencil import (
     BC_PERIODIC,
@@ -89,7 +88,7 @@ def _one_particle(static_parameters, dynamic_parameters, x, u, charge=-1.0, mass
 
 
 def _active_particle_slot(particles):
-    active_indices = np.argwhere(np.asarray(jax.device_get(particles.active)))
+    active_indices = jnp.argwhere(jnp.asarray(jax.device_get(particles.active)))
     if active_indices.shape[0] != 1:
         raise AssertionError(f"expected one active particle, found {active_indices.shape[0]}")
     return tuple(int(value) for value in active_indices[0])

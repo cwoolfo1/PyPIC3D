@@ -1,11 +1,9 @@
 import unittest
 from types import SimpleNamespace
 
-import numpy as np
-
 import jax
 import jax.numpy as jnp
-from jax.sharding import Mesh, NamedSharding
+from jax.sharding import NamedSharding
 
 from PyPIC3D.boundary_conditions import ghost_cells
 from PyPIC3D.boundary_conditions.grid_and_stencil import BC_CONDUCTING, BC_PERIODIC
@@ -23,11 +21,16 @@ jax.config.update("jax_enable_x64", True)
 
 
 def _mesh(mesh_shape):
-    n_devices = int(np.prod(mesh_shape))
+    n_devices = int(jnp.prod(jnp.asarray(mesh_shape)))
     devices = jax.devices()
     if len(devices) < n_devices:
         raise unittest.SkipTest(f"Need {n_devices} JAX devices, got {len(devices)}")
-    return Mesh(np.asarray(devices[:n_devices]).reshape(mesh_shape), ghost_cells.MESH_AXES)
+    return jax.make_mesh(
+        mesh_shape,
+        ghost_cells.MESH_AXES,
+        devices=devices[:n_devices],
+        axis_types=(jax.sharding.AxisType.Auto,) * len(ghost_cells.MESH_AXES),
+    )
 
 
 def _static_parameters(mesh_shape, tile_shape, g=2):
@@ -100,7 +103,7 @@ class TestDistributedFilters(unittest.TestCase):
         static_parameters = _static_parameters(mesh_shape, tile_shape, g)
 
         global_shape = tuple(mesh_size * tile_size for mesh_size, tile_size in zip(mesh_shape, tile_shape))
-        values = jnp.arange(np.prod(global_shape), dtype=jnp.float64).reshape(global_shape)
+        values = jnp.arange(jnp.prod(jnp.asarray(global_shape)), dtype=jnp.float64).reshape(global_shape)
         interior = jnp.sin(values / 11.0) + 0.01 * values
 
         tiles = _tile_interior(interior, mesh_shape, tile_shape, g)

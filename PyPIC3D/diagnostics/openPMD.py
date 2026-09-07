@@ -4,11 +4,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Tuple, Union
 
-import openpmd_api as io
-import jax.numpy as jnp
-import os
-import numpy as np
 import importlib.metadata
+import os
+
+import jax
+import jax.numpy as jnp
+import openpmd_api as io
 
 from PyPIC3D.diagnostics.output_adapters import field_map_for_output, particles_for_output
 from PyPIC3D.utilities.grids import grid_domain_bounds
@@ -36,14 +37,16 @@ class TiledMeshLayout:
     tile_shape: Tuple[int, int, int]
     guard_cells: Union[int, Tuple[int, int, int]] = 1
     active_dims: Tuple[int, int, int] = (1, 1, 1)
-    dtype: Any = np.float64
+    dtype: Any = jnp.float64
 
-def _ensure_openpmd_array(data, dtype=np.float64, squeeze=False):
-    arr = np.asarray(data, dtype=dtype)
+
+def _ensure_openpmd_array(data, dtype=jnp.float64, squeeze=False):
+    arr = jnp.asarray(data, dtype=dtype)
     if squeeze:
-        arr = np.squeeze(arr)
+        arr = jnp.squeeze(arr)
+    arr = jax.device_get(arr)
     if not arr.flags.c_contiguous or not arr.flags.writeable:
-        arr = np.array(arr, dtype=dtype, copy=True, order="C")
+        arr = arr.copy(order="C")
     return arr
 
 
@@ -231,7 +234,7 @@ def _reset_scalar_mesh_record(iteration, name, *, dynamic_parameters, layout):
         quantity_name=name,
     )
     record = mesh[io.Mesh_Record_Component.SCALAR]
-    record.reset_dataset(io.Dataset(np.dtype(layout.dtype), list(layout.global_shape)))
+    record.reset_dataset(io.Dataset(jnp.dtype(layout.dtype), list(layout.global_shape)))
     record.unit_SI = 1.0
     return record
 
@@ -245,7 +248,7 @@ def _reset_vector_mesh_record(iteration, name, component_name, *, dynamic_parame
         quantity_name=name,
     )
     record = mesh[component_name]
-    record.reset_dataset(io.Dataset(np.dtype(layout.dtype), list(layout.global_shape)))
+    record.reset_dataset(io.Dataset(jnp.dtype(layout.dtype), list(layout.global_shape)))
     record.unit_SI = 1.0
     return record
 
@@ -390,17 +393,17 @@ def write_openpmd_particles_to_iteration(
 
 
         if jnp.ndim(weights) == 0:
-            weights = np.full(num_particles, float(weights), dtype=np.float64)
+            weights = _ensure_openpmd_array(jnp.full(num_particles, float(weights), dtype=jnp.float64))
         else:
             weights = _ensure_openpmd_array(weights, squeeze=True)
 
         if jnp.ndim(particle_mass) == 0:
-            masses = np.full(num_particles, float(particle_mass), dtype=np.float64)
+            masses = _ensure_openpmd_array(jnp.full(num_particles, float(particle_mass), dtype=jnp.float64))
         else:
             masses = _ensure_openpmd_array(particle_mass, squeeze=True)
         
         if jnp.ndim(particle_charge) == 0:
-            charges = np.full(num_particles, float(particle_charge), dtype=np.float64)
+            charges = _ensure_openpmd_array(jnp.full(num_particles, float(particle_charge), dtype=jnp.float64))
         else:
             charges = _ensure_openpmd_array(particle_charge, squeeze=True)
         # ensure weights, masses, and charges are 1D arrays of the correct length for openPMD output
@@ -414,7 +417,7 @@ def write_openpmd_particles_to_iteration(
 
         # positionOffset: required by openPMD consumers (WarpX expects it)
         pos_off = species_group["positionOffset"]
-        zeros = np.zeros(num_particles, dtype=np.float64)
+        zeros = _ensure_openpmd_array(jnp.zeros(num_particles, dtype=jnp.float64))
         for comp in ("x", "y", "z"):
             rc = pos_off[comp]
             rc.reset_dataset(io.Dataset(zeros.dtype, [num_particles]))
@@ -450,12 +453,12 @@ def write_openpmd_particles_to_iteration(
 def _axis_diagnostic_position_array(x, u, dt, axis_min, axis_max, bc):
     x_diagnostic = x - u * dt / 2.0
 
-    if int(np.asarray(bc)) == 0:
+    if int(jnp.asarray(bc)) == 0:
         wind = axis_max - axis_min
-        x_diagnostic = np.where(
+        x_diagnostic = jnp.where(
             x_diagnostic > axis_max,
             x_diagnostic - wind,
-            np.where(x_diagnostic < axis_min, x_diagnostic + wind, x_diagnostic),
+            jnp.where(x_diagnostic < axis_min, x_diagnostic + wind, x_diagnostic),
         )
 
     return x_diagnostic
@@ -466,7 +469,7 @@ def _diagnostic_position_array(x, u, static_parameters, dynamic_parameters):
     dt = float(dynamic_parameters.dt)
     x_bounds, y_bounds, z_bounds = grid_domain_bounds(dynamic_parameters)
 
-    return np.stack(
+    return jnp.stack(
         (
             _axis_diagnostic_position_array(x[:, 0], u[:, 0], dt, float(x_bounds[0]), float(x_bounds[1]), particle_bc[0]),
             _axis_diagnostic_position_array(x[:, 1], u[:, 1], dt, float(y_bounds[0]), float(y_bounds[1]), particle_bc[1]),
@@ -477,7 +480,7 @@ def _diagnostic_position_array(x, u, static_parameters, dynamic_parameters):
 
 
 def _count_snapshot_particles_by_species(snapshot):
-    counts = np.zeros(len(snapshot.species_names), dtype=np.int64)
+    counts = [0] * len(snapshot.species_names)
 
     for active_index, active_chunk in snapshot.active_shards:
         if active_chunk.ndim != 5:
@@ -488,7 +491,7 @@ def _count_snapshot_particles_by_species(snapshot):
             )
         s0 = _slice_start(active_index[3])
         for local_s in range(active_chunk.shape[3]):
-            counts[s0 + local_s] += int(np.count_nonzero(active_chunk[:, :, :, local_s, :]))
+            counts[s0 + local_s] += int(jnp.count_nonzero(active_chunk[:, :, :, local_s, :]))
 
     return counts
 
@@ -498,9 +501,9 @@ def _iter_snapshot_particle_chunks(snapshot, static_parameters, dynamic_paramete
         raise ValueError("Particle snapshot x, u, and active shard lists must have the same length.")
 
     C = float(dynamic_parameters.C)
-    species_charge = np.asarray(snapshot.species_charge, dtype=np.float64)
-    species_mass = np.asarray(snapshot.species_mass, dtype=np.float64)
-    species_weight = np.asarray(snapshot.species_weight, dtype=np.float64)
+    species_charge = jnp.asarray(snapshot.species_charge, dtype=jnp.float64)
+    species_mass = jnp.asarray(snapshot.species_mass, dtype=jnp.float64)
+    species_weight = jnp.asarray(snapshot.species_weight, dtype=jnp.float64)
 
     for (x_index, x_chunk), (_u_index, u_chunk), (_active_index, active_chunk) in zip(
         snapshot.x_shards,
@@ -526,27 +529,27 @@ def _iter_snapshot_particle_chunks(snapshot, static_parameters, dynamic_paramete
                 for tz in range(ntz):
                     for local_s in range(ns_local):
                         species_index = s0 + local_s
-                        active = np.asarray(active_chunk[tx, ty, tz, local_s], dtype=bool)
-                        n_active = int(np.count_nonzero(active))
+                        active = jnp.asarray(active_chunk[tx, ty, tz, local_s], dtype=bool)
+                        n_active = int(jnp.count_nonzero(active))
                         if n_active == 0:
                             continue
 
-                        x_live = np.array(x_chunk[tx, ty, tz, local_s][active], dtype=np.float64, copy=True, order="C")
-                        u_live = np.array(u_chunk[tx, ty, tz, local_s][active], dtype=np.float64, copy=True, order="C")
+                        x_live = jnp.asarray(x_chunk[tx, ty, tz, local_s], dtype=jnp.float64)[active]
+                        u_live = jnp.asarray(u_chunk[tx, ty, tz, local_s], dtype=jnp.float64)[active]
                         x_diagnostic = _diagnostic_position_array(x_live, u_live, static_parameters, dynamic_parameters)
 
-                        charge = np.full(n_active, float(species_charge[species_index]), dtype=np.float64)
-                        mass = np.full(n_active, float(species_mass[species_index]), dtype=np.float64)
-                        weight = np.full(n_active, float(species_weight[species_index]), dtype=np.float64)
+                        charge = jnp.full(n_active, float(species_charge[species_index]), dtype=jnp.float64)
+                        mass = jnp.full(n_active, float(species_mass[species_index]), dtype=jnp.float64)
+                        weight = jnp.full(n_active, float(species_weight[species_index]), dtype=jnp.float64)
 
-                        gamma = 1.0 / np.sqrt(1.0 - np.sum(u_live * u_live, axis=1) / C**2)
+                        gamma = 1.0 / jnp.sqrt(1.0 - jnp.sum(u_live * u_live, axis=1) / C**2)
 
                         yield species_index, x_diagnostic, u_live, charge, mass, weight, gamma
 
 
 def _reset_particle_species_records(species_group, dtype, num_particles):
     shape = [int(num_particles)]
-    dtype = np.dtype(dtype)
+    dtype = jnp.dtype(dtype)
 
     for record_name in ("position", "positionOffset", "momentum"):
         record = species_group[record_name]
@@ -561,7 +564,7 @@ def _reset_particle_species_records(species_group, dtype, num_particles):
         record_component.unit_SI = 1.0
 
 
-def _store_particle_record_chunk(species_group, offset, x, u, charge, mass, weight, gamma, dtype=np.float64):
+def _store_particle_record_chunk(species_group, offset, x, u, charge, mass, weight, gamma, dtype=jnp.float64):
     num_particles = int(x.shape[0])
     if num_particles == 0:
         return int(offset)
@@ -579,7 +582,7 @@ def _store_particle_record_chunk(species_group, offset, x, u, charge, mass, weig
     for component, data in zip(("x", "y", "z"), (x[:, 0], x[:, 1], x[:, 2])):
         species_group["position"][component].store_chunk(_ensure_openpmd_array(data, dtype=dtype), start, extent)
 
-    zeros = np.zeros(num_particles, dtype=np.dtype(dtype))
+    zeros = _ensure_openpmd_array(jnp.zeros(num_particles, dtype=jnp.dtype(dtype)), dtype=dtype)
     for component in ("x", "y", "z"):
         species_group["positionOffset"][component].store_chunk(zeros, start, extent)
 
@@ -594,7 +597,7 @@ def _store_particle_record_chunk(species_group, offset, x, u, charge, mass, weig
     return int(offset) + num_particles
 
 
-def write_tiled_particle_snapshot_to_iteration(iteration, snapshot, static_parameters, dynamic_parameters, dtype=np.float64):
+def write_tiled_particle_snapshot_to_iteration(iteration, snapshot, static_parameters, dynamic_parameters, dtype=jnp.float64):
     counts = _count_snapshot_particles_by_species(snapshot)
 
     for species_index, species_name in enumerate(snapshot.species_names):
@@ -605,7 +608,7 @@ def write_tiled_particle_snapshot_to_iteration(iteration, snapshot, static_param
             num_particles=int(counts[species_index]),
         )
 
-    offsets = np.zeros(len(snapshot.species_names), dtype=np.int64)
+    offsets = [0] * len(snapshot.species_names)
 
     for species_index, x, u, charge, mass, weight, gamma in _iter_snapshot_particle_chunks(snapshot, static_parameters, dynamic_parameters):
         species_group = iteration.particles[snapshot.species_names[species_index].replace(" ", "_")]
@@ -634,7 +637,7 @@ def write_tiled_particle_snapshot_openpmd(
     static_parameters,
     dynamic_parameters,
     file_extension=".bp",
-    dtype=np.float64,
+    dtype=jnp.float64,
 ):
     series = _open_openpmd_series(output_dir, filename, file_extension=file_extension)
 
@@ -792,9 +795,7 @@ def write_openpmd_initial_particles(
     os.makedirs(output_path, exist_ok=True)
 
     def make_array_writable(arr):
-        arr = np.array(arr, dtype=np.float64, copy=True, order="C")
-        arr.setflags(write=True)
-        return arr
+        return _ensure_openpmd_array(arr, dtype=jnp.float64)
 
     for species in particles:
         species_name = species.name.replace(" ", "_")
@@ -831,17 +832,17 @@ def write_openpmd_initial_particles(
         particle_weight = species.weight
 
         if jnp.ndim(particle_weight) == 0:
-            weights = np.full(num_particles, float(particle_weight), dtype=np.float64)
+            weights = _ensure_openpmd_array(jnp.full(num_particles, float(particle_weight), dtype=jnp.float64))
         else:
             weights = _ensure_openpmd_array(particle_weight, squeeze=True)
 
         if jnp.ndim(particle_mass) == 0:
-            masses = np.full(num_particles, float(particle_mass), dtype=np.float64)
+            masses = _ensure_openpmd_array(jnp.full(num_particles, float(particle_mass), dtype=jnp.float64))
         else:
             masses = _ensure_openpmd_array(particle_mass, squeeze=True)
 
         if jnp.ndim(particle_charge) == 0:
-            charges = np.full(num_particles, float(particle_charge), dtype=np.float64)
+            charges = _ensure_openpmd_array(jnp.full(num_particles, float(particle_charge), dtype=jnp.float64))
         else:
             charges = _ensure_openpmd_array(particle_charge, squeeze=True)
 
@@ -854,7 +855,7 @@ def write_openpmd_initial_particles(
 
         # positionOffset: required by openPMD consumers (WarpX expects it)
         pos_off = species_group["positionOffset"]
-        zeros = np.zeros(num_particles, dtype=np.float64)
+        zeros = _ensure_openpmd_array(jnp.zeros(num_particles, dtype=jnp.float64))
         for comp in ("x", "y", "z"):
             rc = pos_off[comp]
             rc.reset_dataset(io.Dataset(zeros.dtype, [num_particles]))

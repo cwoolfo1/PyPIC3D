@@ -2,7 +2,6 @@ import unittest
 
 import jax
 import jax.numpy as jnp
-import numpy as np
 
 from PyPIC3D.boundary_conditions.ghost_cells import BC_TYPE_PARTICLE
 from PyPIC3D.deposition.GR_direct_deposition import GR_direct_deposition
@@ -44,6 +43,10 @@ from PyPIC3D.solvers.gr_static.static_metric import (
 )
 from PyPIC3D.utilities.filters import tiled_bilinear_filter_vector, tiled_digital_filter_vector
 from tests.kernel_fixtures import active_interior, empty_tiled_vector, kernel_parameters
+
+
+def _assert_allclose(actual, expected, **kwargs):
+    assert bool(jnp.allclose(jnp.asarray(actual), jnp.asarray(expected), **kwargs))
 
 
 def _single_particle_state(static_parameters, dynamic_parameters, u):
@@ -264,7 +267,7 @@ def test_magnetic_boris_rotation_raises_covariant_momentum_in_cross_product():
     u_prime_con = gamma_inv @ u_prime
     expected = u_minus + metric.sqrt_gamma * jnp.cross(u_prime_con, s_con)
 
-    np.testing.assert_allclose(np.asarray(u_plus), np.asarray(expected), rtol=0.0, atol=1.0e-12)
+    _assert_allclose(u_plus, expected, rtol=0.0, atol=1.0e-12)
 
 
 def test_GR_position_update_uses_lapse_scaled_contravariant_velocity_minus_shift():
@@ -292,7 +295,7 @@ def test_GR_position_update_uses_lapse_scaled_contravariant_velocity_minus_shift
 
     Gamma = jnp.sqrt(1.0 + jnp.einsum("i,ij,j->", u_cov, gamma_inv, u_cov))
     expected = metric.lapse * (gamma_inv @ u_cov) / Gamma - metric.shift
-    np.testing.assert_allclose(np.asarray(dx_dt), np.asarray(expected), rtol=0.0, atol=1.0e-12)
+    _assert_allclose(dx_dt, expected, rtol=0.0, atol=1.0e-12)
 
 
 def test_geodesic_velocity_returns_zero_for_flat_constant_metric():
@@ -317,7 +320,7 @@ def test_geodesic_velocity_returns_zero_for_flat_constant_metric():
     )
 
     assert du_dt.shape == u_cov.shape
-    np.testing.assert_allclose(np.asarray(du_dt), np.zeros(3), rtol=0.0, atol=1.0e-12)
+    _assert_allclose(du_dt, jnp.zeros(3), rtol=0.0, atol=1.0e-12)
 
 
 def test_hybrid_boris_geodesic_push_advances_flat_neutral_particle_with_u_over_gamma():
@@ -417,22 +420,22 @@ def test_hybrid_boris_geodesic_push_uses_current_position_for_both_electric_half
     expected_u = u_n_minushalf + dynamic_parameters.dt * jnp.asarray((D_at_x_n, 0.0, 0.0))
     expected_dx_dt = expected_u / jnp.sqrt(1.0 + jnp.dot(expected_u, expected_u))
 
-    np.testing.assert_allclose(
-        np.asarray(pushed.u[0, 0, 0, 0, 0]),
-        np.asarray(expected_u),
+    _assert_allclose(
+        pushed.u[0, 0, 0, 0, 0],
+        expected_u,
         rtol=0.0,
         atol=1.0e-6,
     )
     assert jnp.allclose(centered.u[0, 0, 0, 0, 0], pushed.u[0, 0, 0, 0, 0])
-    np.testing.assert_allclose(
-        np.asarray(centered.x[0, 0, 0, 0, 0]),
-        np.asarray(x_n + 0.5 * dynamic_parameters.dt * expected_dx_dt),
+    _assert_allclose(
+        centered.x[0, 0, 0, 0, 0],
+        x_n + 0.5 * dynamic_parameters.dt * expected_dx_dt,
         rtol=0.0,
         atol=1.0e-6,
     )
-    np.testing.assert_allclose(
-        np.asarray(pushed.x[0, 0, 0, 0, 0]),
-        np.asarray(x_n + dynamic_parameters.dt * expected_dx_dt),
+    _assert_allclose(
+        pushed.x[0, 0, 0, 0, 0],
+        x_n + dynamic_parameters.dt * expected_dx_dt,
         rtol=0.0,
         atol=1.0e-6,
     )
@@ -920,9 +923,9 @@ def test_flat_GR_direct_deposition_matches_standard_stencil_on_reduced_axes():
         )
 
         for GR_component, standard_component in zip(GR_J, standard_J):
-            np.testing.assert_allclose(
-                np.asarray(GR_component),
-                np.asarray(standard_component),
+            _assert_allclose(
+                GR_component,
+                standard_component,
                 rtol=0.0,
                 atol=1.0e-12,
             )
@@ -1181,13 +1184,13 @@ def test_flat_cylindrical_metric_stores_signed_sqrt_gamma_at_all_yee_locations()
 
 def test_spherical_metrics_store_signed_sqrt_gamma_at_all_yee_locations():
     ntheta = 8
-    dtheta = 2.0 * np.pi / ntheta
+    dtheta = 2.0 * jnp.pi / ntheta
     static_parameters, dynamic_parameters = kernel_parameters(
         Nx=4,
         Ny=ntheta,
         Nz=1,
         x_wind=1.0,
-        y_wind=2.0 * np.pi,
+        y_wind=2.0 * jnp.pi,
         z_wind=1.0,
         x_min=2.0,
         y_min=0.25 * dtheta,
