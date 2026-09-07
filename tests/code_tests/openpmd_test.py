@@ -59,6 +59,7 @@ class FakeMesh:
         self.axis_labels = None
         self.grid_spacing = None
         self.grid_global_offset = None
+        self.unit_dimension = None
 
     def __getitem__(self, component):
         if component not in self.records:
@@ -219,6 +220,59 @@ class OpenPMDDiagnosticsTests(unittest.TestCase):
         self.assertTrue(jnp.allclose(jnp.asarray(B_mesh.grid_global_offset), jnp.array([-0.5, -1.0, -1.5])))
         self.assertEqual(B_mesh.records["x"].shape, (4, 1, 6))
 
+    def test_field_meshes_encode_physical_si_unit_dimensions(self):
+        shape_with_ghosts = (6, 3, 8)
+        vector = _zero_field(shape_with_ghosts)
+        scalar = jnp.zeros(shape_with_ghosts)
+        static_parameters, dynamic_parameters = kernel_parameters(
+            Nx=4,
+            Ny=1,
+            Nz=6,
+            x_wind=1.0,
+            y_wind=2.0,
+            z_wind=3.0,
+            dx=0.25,
+            dy=0.5,
+            dz=0.75,
+            dt=1.0,
+            tile_shape=(4, 1, 6),
+            guard_cells=1,
+        )
+        series = FakeSeries()
+        field_map = {
+            "E": vector,
+            "B": vector,
+            "J": vector,
+            "rho": scalar,
+            "phi": scalar,
+            "fluid_velocity": vector,
+        }
+
+        with patch.object(openPMD, "_open_openpmd_series", return_value=series):
+            openPMD.write_openpmd_fields(
+                field_map,
+                static_parameters,
+                dynamic_parameters,
+                "/tmp",
+                plot_t=0,
+                t=0,
+            )
+
+        dimensions = openPMD.io.Unit_Dimension
+        expected = {
+            "E": {dimensions.L: 1.0, dimensions.M: 1.0, dimensions.T: -3.0, dimensions.I: -1.0},
+            "B": {dimensions.M: 1.0, dimensions.T: -2.0, dimensions.I: -1.0},
+            "J": {dimensions.L: -2.0, dimensions.I: 1.0},
+            "rho": {dimensions.L: -3.0, dimensions.T: 1.0, dimensions.I: 1.0},
+            "phi": {dimensions.L: 2.0, dimensions.M: 1.0, dimensions.T: -3.0, dimensions.I: -1.0},
+            "fluid_velocity": {dimensions.L: 1.0, dimensions.T: -1.0},
+        }
+        for name, unit_dimension in expected.items():
+            self.assertEqual(
+                series.iterations[0].meshes[name].unit_dimension,
+                unit_dimension,
+            )
+
     def test_write_openpmd_fields_uses_shifted_grid_lower_bounds_for_offsets(self):
         shape_with_ghosts = (6, 3, 3)
         E = _zero_field(shape_with_ghosts)
@@ -346,6 +400,16 @@ class OpenPMDDiagnosticsTests(unittest.TestCase):
         self.assertEqual(rho_record.chunks[0][1], tile_shape)
         self.assertEqual(len(E_record.chunks), 4)
         self.assertEqual(E_record.chunks[0][0], (0, 0, 0))
+        dimensions = openPMD.io.Unit_Dimension
+        self.assertEqual(
+            iteration.meshes["E"].unit_dimension,
+            {
+                dimensions.L: 1.0,
+                dimensions.M: 1.0,
+                dimensions.T: -3.0,
+                dimensions.I: -1.0,
+            },
+        )
 
     def test_enqueue_openpmd_field_output_preserves_selected_field_map(self):
         class RecordingFieldWriter:

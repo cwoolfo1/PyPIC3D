@@ -199,9 +199,19 @@ def run_PyPIC3D(config_file):
     )
 
 
-def main():
+def _configure_jax_runtime():
+    """Enable the requested precision and report JAX's selected backend."""
     jax.config.update("jax_enable_x64", True)
-    jax.config.update("jax_platform_name", "cpu")
+
+    devices = jax.devices()
+    backend = jax.default_backend()
+    print(f"Using JAX backend: {backend}")
+    print(f"JAX devices ({len(devices)}): {devices}")
+    return backend, devices
+
+
+def main():
+    _configure_jax_runtime()
 
     toml_file = load_config_file()
 

@@ -8,7 +8,7 @@ import jax.numpy as jnp
 from jax.sharding import Mesh, NamedSharding
 
 from PyPIC3D.boundary_conditions import ghost_cells
-from PyPIC3D.boundary_conditions.grid_and_stencil import BC_PERIODIC
+from PyPIC3D.boundary_conditions.grid_and_stencil import BC_CONDUCTING, BC_PERIODIC
 from PyPIC3D.utilities.filters import (
     bilinear_filter,
     digital_filter,
@@ -195,6 +195,57 @@ class TestDistributedFilters(unittest.TestCase):
 
         self.assert_allclose(_assemble_interior(digital, g), expected_digital[g:-g, g:-g, g:-g])
         self.assert_allclose(_assemble_interior(bilinear, g), expected_bilinear[g:-g, g:-g, g:-g])
+
+    def test_particle_filters_restore_reflecting_scalar_and_vector_halos(self):
+        mesh_shape = (1, 1, 1)
+        tile_shape = (4, 1, 4)
+        g = 2
+        static_parameters = _static_parameters(mesh_shape, tile_shape, g)
+        static_parameters.particle_boundary_conditions = (
+            BC_PERIODIC,
+            BC_PERIODIC,
+            BC_CONDUCTING,
+        )
+
+        interior = jnp.arange(16, dtype=jnp.float64).reshape((4, 1, 4)) + 1.0
+        tiles = _tile_interior(interior, mesh_shape, tile_shape, g)
+        scalar = tiled_digital_filter(
+            tiles,
+            0.6,
+            static_parameters,
+            bc_type=ghost_cells.BC_TYPE_PARTICLE,
+        )
+        self.assert_allclose(
+            scalar[0, 0, 0, g:-g, g, :g],
+            jnp.flip(scalar[0, 0, 0, g:-g, g, g:2 * g], axis=-1),
+        )
+        self.assert_allclose(
+            scalar[0, 0, 0, g:-g, g, -g:],
+            jnp.flip(scalar[0, 0, 0, g:-g, g, -2 * g:-g], axis=-1),
+        )
+
+        vector = tiled_bilinear_filter_vector(
+            (tiles, 2.0 * tiles, 3.0 * tiles),
+            static_parameters,
+            bc_type=ghost_cells.BC_TYPE_PARTICLE,
+        )
+        for component, parity in enumerate((1.0, 1.0, -1.0)):
+            self.assert_allclose(
+                vector[component][0, 0, 0, g:-g, g, :g],
+                parity
+                * jnp.flip(
+                    vector[component][0, 0, 0, g:-g, g, g:2 * g],
+                    axis=-1,
+                ),
+            )
+            self.assert_allclose(
+                vector[component][0, 0, 0, g:-g, g, -g:],
+                parity
+                * jnp.flip(
+                    vector[component][0, 0, 0, g:-g, g, -2 * g:-g],
+                    axis=-1,
+                ),
+            )
 
 
 if __name__ == "__main__":

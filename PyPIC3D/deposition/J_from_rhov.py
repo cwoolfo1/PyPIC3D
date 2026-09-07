@@ -12,6 +12,7 @@ from PyPIC3D.boundary_conditions.grid_and_stencil import (
 
 from PyPIC3D.deposition.shapes import get_first_order_weights, get_second_order_weights
 from PyPIC3D.boundary_conditions.ghost_cells import (
+    BC_TYPE_PARTICLE,
     fold_tiled_vector_ghost_cells,
     update_tiled_vector_ghost_cells,
 )
@@ -290,19 +291,28 @@ def J_from_rhov(
     )
     # compute the current density contributions for all tiles by applying the vectorized deposit function to the particle data and tile indices
 
-    J = fold_tiled_vector_ghost_cells((Jx, Jy, Jz), static_parameters, g, bc_type=1)
+    J = fold_tiled_vector_ghost_cells(
+        (Jx, Jy, Jz),
+        static_parameters,
+        g,
+        bc_type=BC_TYPE_PARTICLE,
+    )
     # fold the ghost cells of the current density tiles to ensure continuity across tile boundaries
 
     ################# CURRENT FILTERING #################
     def bilinear_filtered_current(J):
-        return tiled_bilinear_filter_vector(J, static_parameters, bc_type=1)
+        return tiled_bilinear_filter_vector(
+            J,
+            static_parameters,
+            bc_type=BC_TYPE_PARTICLE,
+        )
 
     def digital_filtered_current(J):
         return tiled_digital_filter_vector(
             J,
             dynamic_parameters.alpha,
             static_parameters,
-            bc_type=1,
+            bc_type=BC_TYPE_PARTICLE,
         )
 
     J = jax.lax.cond(
@@ -311,7 +321,12 @@ def J_from_rhov(
         lambda J: jax.lax.cond(
             current_filter == "digital",
             digital_filtered_current,
-            lambda J: update_tiled_vector_ghost_cells(J, static_parameters, g, bc_type=1),
+            lambda J: update_tiled_vector_ghost_cells(
+                J,
+                static_parameters,
+                g,
+                bc_type=BC_TYPE_PARTICLE,
+            ),
             J,
         ),
         J,

@@ -8,6 +8,7 @@ from PyPIC3D.boundary_conditions.grid_and_stencil import (
 )
 from PyPIC3D.deposition.shapes import get_first_order_weights, get_second_order_weights
 from PyPIC3D.boundary_conditions.ghost_cells import (
+    BC_TYPE_PARTICLE,
     fold_tiled_vector_ghost_cells,
     update_tiled_vector_ghost_cells,
 )
@@ -359,9 +360,19 @@ def Esirkepov_current(
     )
     # deposit the currents for all tiles in parallel using the vectorized deposit function
 
-    J = fold_tiled_vector_ghost_cells((Jx, Jy, Jz), static_parameters, num_guard_cells=g, bc_type=1)
+    J = fold_tiled_vector_ghost_cells(
+        (Jx, Jy, Jz),
+        static_parameters,
+        num_guard_cells=g,
+        bc_type=BC_TYPE_PARTICLE,
+    )
     # fold the deposited currents across tile boundaries, applying the appropriate boundary conditions for ghost cells
-    J = update_tiled_vector_ghost_cells(J, static_parameters, num_guard_cells=g, bc_type=1)
+    J = update_tiled_vector_ghost_cells(
+        J,
+        static_parameters,
+        num_guard_cells=g,
+        bc_type=BC_TYPE_PARTICLE,
+    )
     # update the ghost cells of the folded currents to ensure consistency across tile boundaries
 
     return J

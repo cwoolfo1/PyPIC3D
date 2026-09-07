@@ -9,7 +9,11 @@ from PyPIC3D.boundary_conditions.grid_and_stencil import (
     collapse_axis_stencil,
     prepare_particle_axis_stencil,
 )
-from PyPIC3D.boundary_conditions.ghost_cells import fold_tiled_ghost_cells, update_tiled_ghost_cells
+from PyPIC3D.boundary_conditions.ghost_cells import (
+    BC_TYPE_PARTICLE,
+    fold_tiled_ghost_cells,
+    update_tiled_ghost_cells,
+)
 from PyPIC3D.deposition.shapes import get_first_order_weights, get_second_order_weights
 from PyPIC3D.particles.particle_class import TiledParticles
 from PyPIC3D.particles.particle_batching import (
@@ -206,7 +210,12 @@ def compute_rho(
     rho = deposit_charge(particles.x, particles.active, tx, ty, tz)
     # deposit the charge density for all tiles by applying the vectorized deposit_charge function to the particle positions, active mask, and tile indices
 
-    rho = fold_tiled_ghost_cells(rho, static_parameters, g, bc_type=1)
+    rho = fold_tiled_ghost_cells(
+        rho,
+        static_parameters,
+        g,
+        bc_type=BC_TYPE_PARTICLE,
+    )
     # fold charge deposited into tile ghost cells back to the owner interiors
 
     def filter(rho):
@@ -214,13 +223,18 @@ def compute_rho(
             rho,
             dynamic_parameters.alpha,
             static_parameters,
-            bc_type=1,
+            bc_type=BC_TYPE_PARTICLE,
         )
 
     rho = jax.lax.cond(
         static_parameters.current_filter == "digital",
         filter,
-        lambda rho: update_tiled_ghost_cells(rho, static_parameters, g, bc_type=1),
+        lambda rho: update_tiled_ghost_cells(
+            rho,
+            static_parameters,
+            g,
+            bc_type=BC_TYPE_PARTICLE,
+        ),
         rho,
     )
     # apply an additional digital filter to the charge density if specified in the static parameters

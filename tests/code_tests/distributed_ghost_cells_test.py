@@ -417,7 +417,12 @@ class TestDistributedGhostCells(unittest.TestCase):
         )
 
         field_bc_actual = ghost_cells.update_tiled_ghost_cells(tiles, static_parameters, 1, bc_type=0)
-        particle_bc_actual = ghost_cells.update_tiled_ghost_cells(tiles, static_parameters, 1, bc_type=1)
+        particle_bc_actual = ghost_cells.update_tiled_ghost_cells(
+            tiles,
+            static_parameters,
+            1,
+            bc_type=ghost_cells.BC_TYPE_PARTICLE,
+        )
 
         self.assert_allclose(field_bc_actual, _reference_update(tiles, field_bcs, tile_shape))
         self.assert_allclose(particle_bc_actual, _reference_update(tiles, particle_bcs, tile_shape))
@@ -441,7 +446,12 @@ class TestDistributedGhostCells(unittest.TestCase):
         )
 
         field_bc_actual = ghost_cells.fold_tiled_ghost_cells(tiles, static_parameters, 1, bc_type=0)
-        particle_bc_actual = ghost_cells.fold_tiled_ghost_cells(tiles, static_parameters, 1, bc_type=1)
+        particle_bc_actual = ghost_cells.fold_tiled_ghost_cells(
+            tiles,
+            static_parameters,
+            1,
+            bc_type=ghost_cells.BC_TYPE_PARTICLE,
+        )
 
         self.assert_allclose(field_bc_actual, _reference_fold(tiles, field_bcs, tile_shape))
         self.assert_allclose(particle_bc_actual, _reference_fold(tiles, particle_bcs, tile_shape))
@@ -464,7 +474,12 @@ class TestDistributedGhostCells(unittest.TestCase):
             particle_boundary_conditions=particle_bcs,
         )
 
-        refreshed = ghost_cells.update_tiled_ghost_cells(tiles, static_parameters, 1, bc_type=1)
+        refreshed = ghost_cells.update_tiled_ghost_cells(
+            tiles,
+            static_parameters,
+            1,
+            bc_type=ghost_cells.BC_TYPE_PARTICLE,
+        )
         self.assert_allclose(refreshed, _reference_update(tiles, particle_bcs, tile_shape))
         self.assert_allclose(refreshed[0, 0, 0, 0, :, :], 0.0)
         self.assert_allclose(refreshed[0, 0, 0, -1, :, :], 0.0)
@@ -472,7 +487,12 @@ class TestDistributedGhostCells(unittest.TestCase):
         deposits = jnp.zeros(mesh_shape + (3, 4, 4), dtype=jnp.float64)
         deposits = deposits.at[0, 0, 0, 0, 1:-1, 1:-1].set(3.0)
         deposits = deposits.at[0, 0, 0, -1, 1:-1, 1:-1].set(5.0)
-        folded = ghost_cells.fold_tiled_ghost_cells(deposits, static_parameters, 1, bc_type=1)
+        folded = ghost_cells.fold_tiled_ghost_cells(
+            deposits,
+            static_parameters,
+            1,
+            bc_type=ghost_cells.BC_TYPE_PARTICLE,
+        )
 
         self.assert_allclose(folded, _reference_fold(deposits, particle_bcs, tile_shape))
         self.assert_allclose(folded[0, 0, 0, 1, :, :], 0.0)
@@ -497,7 +517,7 @@ class TestDistributedGhostCells(unittest.TestCase):
             stacked,
             static_parameters,
             1,
-            bc_type=1,
+            bc_type=ghost_cells.BC_TYPE_PARTICLE,
         )
 
         for component in range(3):
@@ -515,6 +535,66 @@ class TestDistributedGhostCells(unittest.TestCase):
                 refreshed[component, 1, 0, 0, 0, 1:-1, 1:-1],
                 stacked[component, 0, 0, 0, -2, 1:-1, 1:-1],
             )
+
+    def test_reflecting_particle_axis_preserves_internal_exchange_and_mirrors_global_walls(self):
+        mesh_shape = (2, 1, 1)
+        tile_shape = (2, 2, 2)
+        g = 1
+        field_bcs = (BC_PERIODIC, BC_PERIODIC, BC_PERIODIC)
+        particle_bcs = (BC_CONDUCTING, BC_PERIODIC, BC_PERIODIC)
+        static_parameters = _static_parameters(
+            field_bcs,
+            tile_shape,
+            mesh_shape,
+            g=g,
+            particle_boundary_conditions=particle_bcs,
+        )
+        tiles = jnp.zeros(mesh_shape + (4, 4, 4), dtype=jnp.float64)
+        tiles = tiles.at[0, 0, 0, g:-g, g:-g, g:-g].set(1.0)
+        tiles = tiles.at[1, 0, 0, g:-g, g:-g, g:-g].set(2.0)
+
+        refreshed = ghost_cells.update_tiled_ghost_cells(
+            tiles,
+            static_parameters,
+            g,
+            bc_type=ghost_cells.BC_TYPE_PARTICLE,
+        )
+        self.assert_allclose(refreshed[0, 0, 0, 0, g:-g, g:-g], 1.0)
+        self.assert_allclose(refreshed[0, 0, 0, -1, g:-g, g:-g], 2.0)
+        self.assert_allclose(refreshed[1, 0, 0, 0, g:-g, g:-g], 1.0)
+        self.assert_allclose(refreshed[1, 0, 0, -1, g:-g, g:-g], 2.0)
+
+        stacked = jnp.stack((tiles, tiles, tiles), axis=0)
+        vector = ghost_cells.update_tiled_vector_ghost_cells(
+            stacked,
+            static_parameters,
+            g,
+            bc_type=ghost_cells.BC_TYPE_PARTICLE,
+        )
+        self.assert_allclose(vector[0, 0, 0, 0, 0, g:-g, g:-g], -1.0)
+        self.assert_allclose(vector[1:, 0, 0, 0, 0, g:-g, g:-g], 1.0)
+        self.assert_allclose(vector[:, 0, 0, 0, -1, g:-g, g:-g], 2.0)
+        self.assert_allclose(vector[:, 1, 0, 0, 0, g:-g, g:-g], 1.0)
+        self.assert_allclose(vector[0, 1, 0, 0, -1, g:-g, g:-g], -2.0)
+        self.assert_allclose(vector[1:, 1, 0, 0, -1, g:-g, g:-g], 2.0)
+
+        deposits = jnp.zeros_like(tiles)
+        deposits = deposits.at[0, 0, 0, 0, g, g].set(3.0)
+        deposits = deposits.at[0, 0, 0, -1, g, g].set(5.0)
+        deposits = deposits.at[1, 0, 0, 0, g, g].set(7.0)
+        deposits = deposits.at[1, 0, 0, -1, g, g].set(11.0)
+        folded = ghost_cells.fold_tiled_ghost_cells(
+            deposits,
+            static_parameters,
+            g,
+            bc_type=ghost_cells.BC_TYPE_PARTICLE,
+        )
+        self.assertEqual(float(folded[0, 0, 0, g, g, g]), 3.0)
+        self.assertEqual(float(folded[0, 0, 0, -g - 1, g, g]), 7.0)
+        self.assertEqual(float(folded[1, 0, 0, g, g, g]), 5.0)
+        self.assertEqual(float(folded[1, 0, 0, -g - 1, g, g]), 11.0)
+        self.assert_allclose(folded[:, :, :, 0, :, :], 0.0)
+        self.assert_allclose(folded[:, :, :, -1, :, :], 0.0)
 
     def test_stacked_and_tuple_vector_halo_refresh_preserve_layouts(self):
         mesh_shape = (2, 1, 1)

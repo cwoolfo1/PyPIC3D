@@ -11,6 +11,7 @@ import toml
 
 from PyPIC3D.boundary_conditions.grid_and_stencil import (
     BC_ABSORBING,
+    BC_CONDUCTING,
     BC_PERIODIC,
 )
 from PyPIC3D.deposition.Esirkepov import Esirkepov_current
@@ -698,6 +699,73 @@ class TestTiledEsirkepovCurrent(unittest.TestCase):
             for periodic_component, absorbing_component in zip(periodic_bc_current, absorbing_bc_current)
         )
         self.assertGreater(max_difference, 1.0e-12)
+
+    def test_esirkepov_current_refresh_uses_reflecting_vector_parity(self):
+        parameter_set = self._build_parameter_values(
+            Nx=4,
+            Ny=1,
+            Nz=4,
+            dt=0.05,
+            shape_factor=2,
+            boundary_conditions={
+                "x": BC_PERIODIC,
+                "y": BC_PERIODIC,
+                "z": BC_CONDUCTING,
+            },
+            particle_boundary_conditions={
+                "x": BC_PERIODIC,
+                "y": BC_PERIODIC,
+                "z": BC_CONDUCTING,
+            },
+        )
+        parameter_set["guard_cells"] = 2
+        tile_shape = (4, 1, 4)
+        x_old = jnp.array(
+            [
+                [-0.2, 0.0, -1.99],
+                [0.2, 0.0, 1.99],
+            ]
+        )
+        u = jnp.array(
+            [
+                [0.3, -0.2, 0.25],
+                [-0.1, 0.4, -0.15],
+            ]
+        )
+        particles, species_config = self._particles_from_arrays(
+            parameter_set,
+            tile_shape,
+            x_old,
+            u,
+        )
+        current_tiles, _ = self._assembled_esirkepov_current(
+            parameter_set,
+            particles,
+            species_config,
+            {"C": 1.0, "eps": 1.0, "alpha": 1.0},
+            tile_shape,
+        )
+        g = int(parameter_set["guard_cells"])
+
+        for component, parity in enumerate((1.0, 1.0, -1.0)):
+            current = current_tiles[component][0, 0, 0]
+            self.assertGreater(float(jnp.max(jnp.abs(current[g:-g, g:-g, g:-g]))), 0.0)
+            self.assertTrue(
+                jnp.allclose(
+                    current[g:-g, g:-g, :g],
+                    parity * jnp.flip(current[g:-g, g:-g, g:2 * g], axis=-1),
+                    rtol=1.0e-12,
+                    atol=1.0e-12,
+                )
+            )
+            self.assertTrue(
+                jnp.allclose(
+                    current[g:-g, g:-g, -g:],
+                    parity * jnp.flip(current[g:-g, g:-g, -2 * g:-g], axis=-1),
+                    rtol=1.0e-12,
+                    atol=1.0e-12,
+                )
+            )
 
     def test_tiled_esirkepov_satisfies_tile_local_discrete_continuity(self):
         parameter_set = self._build_parameter_values(Nx=8, Ny=1, Nz=1, dt=0.05, shape_factor=1)

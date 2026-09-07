@@ -4,6 +4,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+from PyPIC3D.boundary_conditions.ghost_cells import BC_TYPE_PARTICLE
 from PyPIC3D.deposition.GR_direct_deposition import GR_direct_deposition
 from PyPIC3D.deposition.J_from_rhov import J_from_rhov
 from PyPIC3D.solvers.gr_static.time_loop import time_loop_static_metric
@@ -619,12 +620,16 @@ def _assert_GR_direct_deposition_uses_distributed_filters():
                 J,
                 dynamic_parameters.alpha,
                 parameters,
-                bc_type=1,
+                bc_type=BC_TYPE_PARTICLE,
             ),
         ),
         (
             "bilinear",
-            lambda J, parameters: tiled_bilinear_filter_vector(J, parameters, bc_type=1),
+            lambda J, parameters: tiled_bilinear_filter_vector(
+                J,
+                parameters,
+                bc_type=BC_TYPE_PARTICLE,
+            ),
         ),
     )
     for filter_name, filter_function in filter_cases:

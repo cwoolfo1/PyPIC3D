@@ -6,7 +6,7 @@ import jax
 import jax.numpy as jnp
 
 from PyPIC3D.boundary_conditions import ghost_cells
-from PyPIC3D.boundary_conditions.grid_and_stencil import BC_ABSORBING, BC_PERIODIC
+from PyPIC3D.boundary_conditions.grid_and_stencil import BC_ABSORBING, BC_CONDUCTING, BC_PERIODIC
 from PyPIC3D.deposition.rho import compute_rho
 from PyPIC3D.diagnostics.output_adapters import assemble_tiled_scalar_field
 from tests.kernel_fixtures import build_tiled_particles, particle_parameters_from_tile_values, particle_species
@@ -273,7 +273,7 @@ class TestTiledRho(unittest.TestCase):
             filtered_reference_tiles,
             static_parameters,
             g,
-            bc_type=1,
+            bc_type=ghost_cells.BC_TYPE_PARTICLE,
         )
         filtered_reference = assemble_tiled_scalar_field(
             filtered_reference_tiles,
@@ -323,6 +323,49 @@ class TestTiledRho(unittest.TestCase):
 
         max_difference = float(jnp.max(jnp.abs(periodic_rho - absorbing_rho)))
         self.assertGreater(max_difference, 1.0e-12)
+
+    def test_tsc_charge_is_conserved_at_both_reflecting_particle_walls(self):
+        parameter_set = self._build_parameter_values(
+            shape_factor=2,
+            particle_boundary_conditions={
+                "x": BC_PERIODIC,
+                "y": BC_PERIODIC,
+                "z": BC_CONDUCTING,
+            },
+        )
+        charge = 2.0
+        macro_weight = 0.25
+        particles = [
+            particle_species(
+                name="positive",
+                charge=charge,
+                mass=1.0,
+                weight=macro_weight,
+                x1=jnp.array([-0.3, 0.3, -0.3, 0.3]),
+                x2=jnp.zeros(4),
+                # Each wall receives two TSC stencils that cross the physical
+                # boundary and therefore exercise the reflected ghost fold.
+                x3=jnp.array([-0.99, -0.76, 0.76, 0.99]),
+            )
+        ]
+
+        rho_tiles, _ = self._deposit_and_assemble(
+            particles,
+            parameter_set,
+            self._one_tile_parameters(parameter_set),
+            {"alpha": 1.0},
+        )
+        g = int(parameter_set["guard_cells"])
+        deposited_charge = (
+            jnp.sum(rho_tiles[:, :, :, g:-g, g:-g, g:-g])
+            * parameter_set["dx"]
+            * parameter_set["dy"]
+            * parameter_set["dz"]
+        )
+        expected_charge = len(particles[0]["x"]) * charge * macro_weight
+
+        self.assertAlmostEqual(float(deposited_charge), expected_charge, places=12)
+        self.assertGreaterEqual(float(jnp.min(rho_tiles[:, :, :, g:-g, g:-g, g:-g])), -1.0e-14)
 
     def test_compute_rho_uses_current_positions_not_half_step_back_positions(self):
         parameter_set = self._build_parameter_values(shape_factor=2)

@@ -44,8 +44,8 @@ See :doc:`tiling` for the array shapes, guard ownership, and sharding structure.
 Execution Flow
 --------------
 
-1. ``PyPIC3D.__main__.main`` parses ``--config`` and enables 64-bit JAX on the
-   CPU backend.
+1. ``PyPIC3D.__main__.main`` enables 64-bit JAX, reports the backend and
+   devices selected by the environment, and parses ``--config``.
 2. ``initialization.initialize_simulation`` merges TOML values with defaults,
    builds global and tiled grids, creates the JAX device mesh, initializes
    particles and fields, and selects the timestep function.

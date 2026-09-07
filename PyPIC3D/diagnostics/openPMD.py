@@ -14,6 +14,18 @@ from PyPIC3D.diagnostics.output_adapters import field_map_for_output, particles_
 from PyPIC3D.utilities.grids import grid_domain_bounds
 
 
+# SI base-dimension exponents for mesh records written by PyPIC3D. Keys use
+# openPMD's L, M, T, I symbols: length, mass, time, and electric current.
+MESH_UNIT_EXPONENTS = {
+    "E": {"L": 1.0, "M": 1.0, "T": -3.0, "I": -1.0},
+    "B": {"M": 1.0, "T": -2.0, "I": -1.0},
+    "J": {"L": -2.0, "I": 1.0},
+    "rho": {"L": -3.0, "T": 1.0, "I": 1.0},
+    "phi": {"L": 2.0, "M": 1.0, "T": -3.0, "I": -1.0},
+    "fluid_velocity": {"L": 1.0, "T": -1.0},
+}
+
+
 @dataclass(frozen=True)
 class TiledMeshLayout:
     """
@@ -58,7 +70,12 @@ def _open_openpmd_series(output_path, filename, file_extension=".bp"):
     series.set_attribute("softwareVersion", importlib.metadata.version("PyPIC3D"))
     return series
 
-def _configure_openpmd_mesh(mesh, dynamic_parameters, active_dims=(1,1,1)):
+def _configure_openpmd_mesh(
+    mesh,
+    dynamic_parameters,
+    active_dims=(1, 1, 1),
+    quantity_name=None,
+):
     mesh.geometry = io.Geometry.cartesian
     # openpmd-api 0.16+ removed io.Data_Order; mesh.data_order accepts a string.
     mesh.data_order = io.Data_Order.C if hasattr(io, "Data_Order") else "C"
@@ -85,13 +102,24 @@ def _configure_openpmd_mesh(mesh, dynamic_parameters, active_dims=(1,1,1)):
     mesh.axis_labels = axes
     mesh.grid_spacing = ds
     mesh.grid_global_offset = offsets
-    
+
     mesh.unit_SI = 1.0
+    unit_exponents = MESH_UNIT_EXPONENTS.get(quantity_name)
+    if unit_exponents is not None:
+        mesh.unit_dimension = {
+            getattr(io.Unit_Dimension, symbol): exponent
+            for symbol, exponent in unit_exponents.items()
+        }
 
 
 def _write_openpmd_scalar_mesh(iteration, name, data, dynamic_parameters, active_dims=(1,1,1)):
     mesh = iteration.meshes[name]
-    _configure_openpmd_mesh(mesh, dynamic_parameters, active_dims)
+    _configure_openpmd_mesh(
+        mesh,
+        dynamic_parameters,
+        active_dims,
+        quantity_name=name,
+    )
     array = _ensure_openpmd_array(data)
     record = mesh[io.Mesh_Record_Component.SCALAR]
     record.reset_dataset(io.Dataset(array.dtype, array.shape))
@@ -101,7 +129,12 @@ def _write_openpmd_scalar_mesh(iteration, name, data, dynamic_parameters, active
 
 def _write_openpmd_vector_mesh(iteration, name, components, dynamic_parameters, active_dims=(1,1,1)):
     mesh = iteration.meshes[name]
-    _configure_openpmd_mesh(mesh, dynamic_parameters, active_dims)
+    _configure_openpmd_mesh(
+        mesh,
+        dynamic_parameters,
+        active_dims,
+        quantity_name=name,
+    )
     for component_name, component_data in zip(("x", "y", "z"), components):
         array = _ensure_openpmd_array(component_data)
         record = mesh[component_name]
@@ -191,7 +224,12 @@ def _iter_tile_chunks_from_host_shard(shard_index, shard_data, *, layout):
 
 def _reset_scalar_mesh_record(iteration, name, *, dynamic_parameters, layout):
     mesh = iteration.meshes[name]
-    _configure_openpmd_mesh(mesh, dynamic_parameters, layout.active_dims)
+    _configure_openpmd_mesh(
+        mesh,
+        dynamic_parameters,
+        layout.active_dims,
+        quantity_name=name,
+    )
     record = mesh[io.Mesh_Record_Component.SCALAR]
     record.reset_dataset(io.Dataset(np.dtype(layout.dtype), list(layout.global_shape)))
     record.unit_SI = 1.0
@@ -200,7 +238,12 @@ def _reset_scalar_mesh_record(iteration, name, *, dynamic_parameters, layout):
 
 def _reset_vector_mesh_record(iteration, name, component_name, *, dynamic_parameters, layout):
     mesh = iteration.meshes[name]
-    _configure_openpmd_mesh(mesh, dynamic_parameters, layout.active_dims)
+    _configure_openpmd_mesh(
+        mesh,
+        dynamic_parameters,
+        layout.active_dims,
+        quantity_name=name,
+    )
     record = mesh[component_name]
     record.reset_dataset(io.Dataset(np.dtype(layout.dtype), list(layout.global_shape)))
     record.unit_SI = 1.0

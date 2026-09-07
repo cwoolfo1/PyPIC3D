@@ -2,7 +2,9 @@ import jax
 import jax.numpy as jnp
 
 from PyPIC3D.boundary_conditions.ghost_cells import (
+    BC_TYPE_PARTICLE,
     fold_tiled_ghost_cells,
+    particle_vector_reflecting_parity,
     update_tiled_ghost_cells,
 )
 from PyPIC3D.boundary_conditions.grid_and_stencil import (
@@ -174,27 +176,30 @@ def fluid_velocity(
         velocity_numerator,
         static_parameters,
         g,
-        bc_type=1,
+        bc_type=BC_TYPE_PARTICLE,
+        reflecting_parity=particle_vector_reflecting_parity(direction),
     )
     velocity_weight = fold_tiled_ghost_cells(
         velocity_weight,
         static_parameters,
         g,
-        bc_type=1,
+        bc_type=BC_TYPE_PARTICLE,
     )
-    # transfer guard-cell deposits into the adjacent tile interiors that own them
+    # transfer guard-cell deposits into adjacent tiles or reflect them at a
+    # physical wall with the parity of the deposited moment
 
     velocity_numerator = update_tiled_ghost_cells(
         velocity_numerator,
         static_parameters,
         g,
-        bc_type=1,
+        bc_type=BC_TYPE_PARTICLE,
+        reflecting_parity=particle_vector_reflecting_parity(direction),
     )
     velocity_weight = update_tiled_ghost_cells(
         velocity_weight,
         static_parameters,
         g,
-        bc_type=1,
+        bc_type=BC_TYPE_PARTICLE,
     )
     # refresh halos from the completed interiors using the particle boundary conditions
 

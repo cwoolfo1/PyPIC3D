@@ -10,6 +10,7 @@ from PyPIC3D.boundary_conditions.grid_and_stencil import (
     prepare_particle_axis_stencil,
 )
 from PyPIC3D.boundary_conditions.ghost_cells import (
+    BC_TYPE_PARTICLE,
     fold_tiled_ghost_cells,
     fold_tiled_vector_ghost_cells,
     update_tiled_ghost_cells,
@@ -281,12 +282,17 @@ def _manual_rho_tiles(particles, species_config, static_parameters, dynamic_para
     )
 
     rho = _add_stencil(rho, tile, node_points, node_weights, charge_density)
-    rho = fold_tiled_ghost_cells(rho, static_parameters, g, bc_type=1)
-    rho = update_tiled_ghost_cells(rho, static_parameters, g, bc_type=1)
+    rho = fold_tiled_ghost_cells(rho, static_parameters, g, bc_type=BC_TYPE_PARTICLE)
+    rho = update_tiled_ghost_cells(rho, static_parameters, g, bc_type=BC_TYPE_PARTICLE)
 
     if static_parameters.current_filter == "digital":
         rho = digital_filter(rho, dynamic_parameters.alpha, num_guard_cells=g)
-        rho = update_tiled_ghost_cells(rho, static_parameters, g, bc_type=1)
+        rho = update_tiled_ghost_cells(
+            rho,
+            static_parameters,
+            g,
+            bc_type=BC_TYPE_PARTICLE,
+        )
 
     return rho
 
@@ -328,12 +334,27 @@ def _manual_direct_current_tiles(particles, species_config, static_parameters, d
         charge_density * u[2],
     )
 
-    J = fold_tiled_vector_ghost_cells((Jx, Jy, Jz), static_parameters, g, bc_type=1)
-    J = update_tiled_vector_ghost_cells(J, static_parameters, g, bc_type=1)
+    J = fold_tiled_vector_ghost_cells(
+        (Jx, Jy, Jz),
+        static_parameters,
+        g,
+        bc_type=BC_TYPE_PARTICLE,
+    )
+    J = update_tiled_vector_ghost_cells(
+        J,
+        static_parameters,
+        g,
+        bc_type=BC_TYPE_PARTICLE,
+    )
 
     if static_parameters.current_filter == "digital":
         J = digital_filter_vector(J, dynamic_parameters.alpha, num_guard_cells=g)
-        J = update_tiled_vector_ghost_cells(J, static_parameters, g, bc_type=1)
+        J = update_tiled_vector_ghost_cells(
+            J,
+            static_parameters,
+            g,
+            bc_type=BC_TYPE_PARTICLE,
+        )
 
     return J
 
@@ -502,8 +523,18 @@ def _manual_esirkepov_current_tiles_1d(particles, species_config, static_paramet
         Jy = Jy.at[tx, ty, tz, ix, ypt, zpt].add(dJy * Jy_weights[i], mode="drop")
         Jz = Jz.at[tx, ty, tz, ix, ypt, zpt].add(dJz * Jy_weights[i], mode="drop")
 
-    J = fold_tiled_vector_ghost_cells((Jx, Jy, Jz), static_parameters, g, bc_type=1)
-    return update_tiled_vector_ghost_cells(J, static_parameters, g, bc_type=1)
+    J = fold_tiled_vector_ghost_cells(
+        (Jx, Jy, Jz),
+        static_parameters,
+        g,
+        bc_type=BC_TYPE_PARTICLE,
+    )
+    return update_tiled_vector_ghost_cells(
+        J,
+        static_parameters,
+        g,
+        bc_type=BC_TYPE_PARTICLE,
+    )
 
 
 def _assemble_scalar(field, static_parameters):

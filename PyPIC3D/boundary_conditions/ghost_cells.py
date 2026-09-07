@@ -14,6 +14,74 @@ SCALAR_TILE_SPEC = P("tile_x", "tile_y", "tile_z", None, None, None)
 VECTOR_TILE_SPEC = P(None, "tile_x", "tile_y", "tile_z", None, None, None)
 BC_TYPE_FIELD = 0
 BC_TYPE_PARTICLE = 1
+_PARTICLE_SCALAR_REFLECTING_PARITY = (1, 1, 1)
+
+
+def particle_vector_reflecting_parity(component):
+    """Return specular-reflection parity for a deposited Cartesian component.
+
+    The normal component is odd and the two tangential components are even.
+    The returned tuple is ordered by wall normal as ``(x, y, z)``.
+    """
+
+    component = int(component)
+    if component not in (0, 1, 2):
+        raise ValueError("component must be 0, 1, or 2.")
+    return tuple(-1 if axis == component else 1 for axis in range(3))
+
+
+def _reflecting_parity_tuple(reflecting_parity):
+    try:
+        values = tuple(reflecting_parity)
+    except TypeError as exc:
+        raise ValueError(
+            "reflecting_parity must contain three values, each either -1 or 1."
+        ) from exc
+    if len(values) != 3 or any(value not in (-1, 1) for value in values):
+        raise ValueError("reflecting_parity must contain three values, each either -1 or 1.")
+    return tuple(int(value) for value in values)
+
+
+def _reflecting_parity_matrix(reflecting_parity):
+    try:
+        parity = tuple(_reflecting_parity_tuple(component) for component in reflecting_parity)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            "vector reflecting_parity must contain one three-value parity tuple per component."
+        ) from exc
+    if not parity:
+        raise ValueError(
+            "vector reflecting_parity must contain one three-value parity tuple per component."
+        )
+    return parity
+
+
+def _resolve_scalar_reflecting_parity(bc_type, reflecting_parity):
+    bc_type = int(bc_type)
+    if bc_type == BC_TYPE_FIELD:
+        if reflecting_parity is not None:
+            raise ValueError("reflecting_parity is only valid for particle boundary conditions.")
+        return None
+    if bc_type == BC_TYPE_PARTICLE:
+        if reflecting_parity is None:
+            reflecting_parity = _PARTICLE_SCALAR_REFLECTING_PARITY
+        return _reflecting_parity_tuple(reflecting_parity)
+    raise ValueError("bc_type must be 0 for field boundaries or 1 for particle boundaries.")
+
+
+def _resolve_vector_reflecting_parity(bc_type, reflecting_parity):
+    bc_type = int(bc_type)
+    if bc_type == BC_TYPE_FIELD:
+        if reflecting_parity is not None:
+            raise ValueError("reflecting_parity is only valid for particle boundary conditions.")
+        return None
+    if bc_type == BC_TYPE_PARTICLE:
+        if reflecting_parity is None:
+            reflecting_parity = tuple(
+                particle_vector_reflecting_parity(component) for component in range(3)
+            )
+        return _reflecting_parity_matrix(reflecting_parity)
+    raise ValueError("bc_type must be 0 for field boundaries or 1 for particle boundaries.")
 
 
 def _as_python_int(value):
@@ -139,7 +207,13 @@ def _validate_vector_tile_topology(field_tiles, mesh):
         )
 
 
-def _local_refresh_reduced_axis(tile, axis, g, boundary_condition):
+def _local_refresh_reduced_axis(
+    tile,
+    axis,
+    g,
+    boundary_condition,
+    reflecting_parity=None,
+):
     interior_slice = [slice(None), slice(None), slice(None)]
     interior_slice[axis] = slice(g, g + 1)
     interior = tile[tuple(interior_slice)]
@@ -155,6 +229,14 @@ def _local_refresh_reduced_axis(tile, axis, g, boundary_condition):
     elif boundary_condition == BC_CONSTANT:
         tile = tile.at[tuple(lower_slice)].set(jnp.broadcast_to(interior, tile[tuple(lower_slice)].shape))
         tile = tile.at[tuple(upper_slice)].set(jnp.broadcast_to(interior, tile[tuple(upper_slice)].shape))
+    elif boundary_condition == BC_CONDUCTING and reflecting_parity is not None:
+        reflected = reflecting_parity * interior
+        tile = tile.at[tuple(lower_slice)].set(
+            jnp.broadcast_to(reflected, tile[tuple(lower_slice)].shape)
+        )
+        tile = tile.at[tuple(upper_slice)].set(
+            jnp.broadcast_to(reflected, tile[tuple(upper_slice)].shape)
+        )
     else:
         tile = tile.at[tuple(lower_slice)].set(0.0)
         tile = tile.at[tuple(upper_slice)].set(0.0)
@@ -199,26 +281,90 @@ def _refresh_axis(tile, axis, g, axis_name, send_positive, send_negative):
     return tile
 
 
-def _local_refresh_scalar_tile(tile, g, boundary_conditions, reduced_axes, mesh_shape, send_positive, send_negative):
-    for axis, axis_name, boundary_condition, reduced_axis, positive, negative in zip(
+def _apply_local_reflecting_boundary_axis(
+    tile,
+    axis,
+    g,
+    parity,
+    axis_name,
+    axis_size,
+):
+    """Mirror owner interiors into halos on true global reflecting walls."""
+
+    lower_ghost, upper_ghost, lower_interior, upper_interior = _axis_slices(axis, g)
+    tile_index = jax.lax.axis_index(axis_name)
+
+    tile = jax.lax.cond(
+        tile_index == 0,
+        lambda local_tile: local_tile.at[lower_ghost].set(
+            parity * jnp.flip(local_tile[lower_interior], axis=axis)
+        ),
+        lambda local_tile: local_tile,
+        tile,
+    )
+    tile = jax.lax.cond(
+        tile_index == axis_size - 1,
+        lambda local_tile: local_tile.at[upper_ghost].set(
+            parity * jnp.flip(local_tile[upper_interior], axis=axis)
+        ),
+        lambda local_tile: local_tile,
+        tile,
+    )
+    return tile
+
+
+def _local_refresh_scalar_tile(
+    tile,
+    g,
+    boundary_conditions,
+    reduced_axes,
+    mesh_shape,
+    send_positive,
+    send_negative,
+    reflecting_parity=None,
+):
+    axis_parities = (None, None, None) if reflecting_parity is None else reflecting_parity
+    for axis, axis_name, boundary_condition, reduced_axis, positive, negative, parity in zip(
         range(3),
         MESH_AXES,
         boundary_conditions,
         reduced_axes,
         send_positive,
         send_negative,
+        axis_parities,
     ):
         if reduced_axis:
-            tile = _local_refresh_reduced_axis(tile, axis, g, boundary_condition)
+            tile = _local_refresh_reduced_axis(
+                tile,
+                axis,
+                g,
+                boundary_condition,
+                reflecting_parity=parity,
+            )
         else:
             tile = _refresh_axis(tile, axis, g, axis_name, positive, negative)
             if boundary_condition == BC_CONSTANT:
                 tile = _apply_local_constant_boundary_axis(tile, axis, g, axis_name, mesh_shape[axis])
+            elif boundary_condition == BC_CONDUCTING and parity is not None:
+                tile = _apply_local_reflecting_boundary_axis(
+                    tile,
+                    axis,
+                    g,
+                    parity,
+                    axis_name,
+                    mesh_shape[axis],
+                )
 
     return tile
 
 
-def _local_fold_reduced_axis(tile, axis, g, boundary_condition):
+def _local_fold_reduced_axis(
+    tile,
+    axis,
+    g,
+    boundary_condition,
+    reflecting_parity=None,
+):
     lower_slice = [slice(None), slice(None), slice(None)]
     lower_slice[axis] = slice(0, g)
     upper_slice = [slice(None), slice(None), slice(None)]
@@ -231,14 +377,28 @@ def _local_fold_reduced_axis(tile, axis, g, boundary_condition):
     if boundary_condition == BC_PERIODIC:
         tile = tile.at[tuple(interior_slice)].add(ghost_sum)
     elif boundary_condition == BC_CONDUCTING:
-        tile = tile.at[tuple(interior_slice)].add(-ghost_sum)
+        contribution = (
+            -ghost_sum
+            if reflecting_parity is None
+            else reflecting_parity * ghost_sum
+        )
+        tile = tile.at[tuple(interior_slice)].add(contribution)
     tile = tile.at[tuple(lower_slice)].set(0.0)
     tile = tile.at[tuple(upper_slice)].set(0.0)
 
     return tile
 
 
-def _add_exterior_conducting_fold(tile, axis, g, lower_ghost, upper_ghost, axis_name, axis_size):
+def _add_exterior_boundary_fold(
+    tile,
+    axis,
+    g,
+    lower_ghost,
+    upper_ghost,
+    axis_name,
+    axis_size,
+    reflecting_parity=None,
+):
     lower_index = jax.lax.axis_index(axis_name) == 0
     upper_index = jax.lax.axis_index(axis_name) == axis_size - 1
 
@@ -247,15 +407,26 @@ def _add_exterior_conducting_fold(tile, axis, g, lower_ghost, upper_ghost, axis_
     upper_target = [slice(None), slice(None), slice(None)]
     upper_target[axis] = slice(-2 * g, -g)
 
+    lower_contribution = (
+        -lower_ghost
+        if reflecting_parity is None
+        else reflecting_parity * jnp.flip(lower_ghost, axis=axis)
+    )
+    upper_contribution = (
+        -upper_ghost
+        if reflecting_parity is None
+        else reflecting_parity * jnp.flip(upper_ghost, axis=axis)
+    )
+
     tile = jax.lax.cond(
         lower_index,
-        lambda local_tile: local_tile.at[tuple(lower_target)].add(-lower_ghost),
+        lambda local_tile: local_tile.at[tuple(lower_target)].add(lower_contribution),
         lambda local_tile: local_tile,
         tile,
     )
     tile = jax.lax.cond(
         upper_index,
-        lambda local_tile: local_tile.at[tuple(upper_target)].add(-upper_ghost),
+        lambda local_tile: local_tile.at[tuple(upper_target)].add(upper_contribution),
         lambda local_tile: local_tile,
         tile,
     )
@@ -263,7 +434,17 @@ def _add_exterior_conducting_fold(tile, axis, g, lower_ghost, upper_ghost, axis_
     return tile
 
 
-def _fold_axis(tile, axis, g, axis_name, axis_size, boundary_condition, send_positive, send_negative):
+def _fold_axis(
+    tile,
+    axis,
+    g,
+    axis_name,
+    axis_size,
+    boundary_condition,
+    send_positive,
+    send_negative,
+    reflecting_parity=None,
+):
     lower_ghost, upper_ghost, lower_interior, upper_interior = _axis_slices(axis, g)
 
     lower_values = tile[lower_ghost]
@@ -277,7 +458,7 @@ def _fold_axis(tile, axis, g, axis_name, axis_size, boundary_condition, send_pos
     tile = tile.at[upper_interior].add(from_positive_neighbor)
     tile = tile.at[lower_interior].add(from_negative_neighbor)
     if boundary_condition == BC_CONDUCTING:
-        tile = _add_exterior_conducting_fold(
+        tile = _add_exterior_boundary_fold(
             tile,
             axis,
             g,
@@ -285,6 +466,7 @@ def _fold_axis(tile, axis, g, axis_name, axis_size, boundary_condition, send_pos
             upper_values,
             axis_name,
             axis_size,
+            reflecting_parity=reflecting_parity,
         )
     tile = tile.at[lower_ghost].set(0.0)
     tile = tile.at[upper_ghost].set(0.0)
@@ -292,8 +474,18 @@ def _fold_axis(tile, axis, g, axis_name, axis_size, boundary_condition, send_pos
     return tile
 
 
-def _local_fold_scalar_tile(tile, g, boundary_conditions, reduced_axes, mesh_shape, send_positive, send_negative):
-    for axis, axis_name, axis_size, boundary_condition, reduced_axis, positive, negative in zip(
+def _local_fold_scalar_tile(
+    tile,
+    g,
+    boundary_conditions,
+    reduced_axes,
+    mesh_shape,
+    send_positive,
+    send_negative,
+    reflecting_parity=None,
+):
+    axis_parities = (None, None, None) if reflecting_parity is None else reflecting_parity
+    for axis, axis_name, axis_size, boundary_condition, reduced_axis, positive, negative, parity in zip(
         range(3),
         MESH_AXES,
         mesh_shape,
@@ -301,9 +493,16 @@ def _local_fold_scalar_tile(tile, g, boundary_conditions, reduced_axes, mesh_sha
         reduced_axes,
         send_positive,
         send_negative,
+        axis_parities,
     ):
         if reduced_axis:
-            tile = _local_fold_reduced_axis(tile, axis, g, boundary_condition)
+            tile = _local_fold_reduced_axis(
+                tile,
+                axis,
+                g,
+                boundary_condition,
+                reflecting_parity=parity,
+            )
         else:
             tile = _fold_axis(
                 tile,
@@ -314,6 +513,7 @@ def _local_fold_scalar_tile(tile, g, boundary_conditions, reduced_axes, mesh_sha
                 boundary_condition,
                 positive,
                 negative,
+                reflecting_parity=parity,
             )
 
     return tile
@@ -389,7 +589,14 @@ def _apply_local_constant_boundary_axis(tile, axis, g, axis_name, axis_size):
     return tile
 
 
-def make_distributed_ghost_updater(mesh, tile_shape, boundary_conditions, num_guard_cells):
+def make_distributed_ghost_updater(
+    mesh,
+    tile_shape,
+    boundary_conditions,
+    num_guard_cells,
+    *,
+    reflecting_parity=None,
+):
     """
     Build a shard-mapped scalar halo refresher.
 
@@ -401,6 +608,8 @@ def make_distributed_ghost_updater(mesh, tile_shape, boundary_conditions, num_gu
     g = int(num_guard_cells)
     tile_shape = tuple(int(width) for width in tile_shape)
     boundary_conditions = tuple(int(bc) for bc in boundary_conditions)
+    if reflecting_parity is not None:
+        reflecting_parity = _reflecting_parity_tuple(reflecting_parity)
     mesh_shape = tuple(int(width) for width in mesh.devices.shape)
     reduced_axes = _reduced_axes_from_tile_shape(tile_shape, mesh_shape)
     send_positive, send_negative = _axis_permutations(mesh_shape, boundary_conditions)
@@ -415,6 +624,7 @@ def make_distributed_ghost_updater(mesh, tile_shape, boundary_conditions, num_gu
             mesh_shape,
             send_positive,
             send_negative,
+            reflecting_parity=reflecting_parity,
         )
         return tile[jnp.newaxis, jnp.newaxis, jnp.newaxis, :, :, :]
 
@@ -433,7 +643,14 @@ def make_distributed_ghost_updater(mesh, tile_shape, boundary_conditions, num_gu
     return update
 
 
-def make_distributed_vector_ghost_updater(mesh, tile_shape, boundary_conditions, num_guard_cells):
+def make_distributed_vector_ghost_updater(
+    mesh,
+    tile_shape,
+    boundary_conditions,
+    num_guard_cells,
+    *,
+    reflecting_parity=None,
+):
     """
     Build a shard-mapped vector halo refresher.
 
@@ -445,12 +662,19 @@ def make_distributed_vector_ghost_updater(mesh, tile_shape, boundary_conditions,
     g = int(num_guard_cells)
     tile_shape = tuple(int(width) for width in tile_shape)
     boundary_conditions = tuple(int(bc) for bc in boundary_conditions)
+    if reflecting_parity is not None:
+        reflecting_parity = _reflecting_parity_matrix(reflecting_parity)
     mesh_shape = tuple(int(width) for width in mesh.devices.shape)
     reduced_axes = _reduced_axes_from_tile_shape(tile_shape, mesh_shape)
     send_positive, send_negative = _axis_permutations(mesh_shape, boundary_conditions)
 
+    if reflecting_parity is None:
+        component_parity = None
+    else:
+        component_parity = jnp.asarray(reflecting_parity)
+
     def local_update(local_tiles):
-        def update_component(local_component):
+        def update_component(local_component, parity):
             tile = local_component[0, 0, 0]
             tile = _local_refresh_scalar_tile(
                 tile,
@@ -460,10 +684,20 @@ def make_distributed_vector_ghost_updater(mesh, tile_shape, boundary_conditions,
                 mesh_shape,
                 send_positive,
                 send_negative,
+                reflecting_parity=parity,
             )
             return tile[jnp.newaxis, jnp.newaxis, jnp.newaxis, :, :, :]
 
-        return jax.vmap(update_component, in_axes=0, out_axes=0)(local_tiles)
+        if component_parity is None:
+            return jax.vmap(
+                lambda component: update_component(component, None),
+                in_axes=0,
+                out_axes=0,
+            )(local_tiles)
+        return jax.vmap(update_component, in_axes=(0, 0), out_axes=0)(
+            local_tiles,
+            component_parity,
+        )
 
     mapped_update = jax.shard_map(
         local_update,
@@ -476,13 +710,24 @@ def make_distributed_vector_ghost_updater(mesh, tile_shape, boundary_conditions,
     def update(field_tiles):
         _validate_vector_tile_topology(field_tiles, mesh)
         stacked_tiles = _stack_tiled_vector_field(field_tiles)
+        if reflecting_parity is not None and len(reflecting_parity) != int(stacked_tiles.shape[0]):
+            raise ValueError(
+                "vector reflecting_parity must contain one parity tuple per component."
+            )
         refreshed = mapped_update(stacked_tiles)
         return _restore_tiled_vector_layout(refreshed, field_tiles)
 
     return update
 
 
-def make_distributed_ghost_folder(mesh, tile_shape, boundary_conditions, num_guard_cells):
+def make_distributed_ghost_folder(
+    mesh,
+    tile_shape,
+    boundary_conditions,
+    num_guard_cells,
+    *,
+    reflecting_parity=None,
+):
     """
     Build a shard-mapped scalar ghost-deposit folder.
 
@@ -494,13 +739,24 @@ def make_distributed_ghost_folder(mesh, tile_shape, boundary_conditions, num_gua
     g = int(num_guard_cells)
     tile_shape = tuple(int(width) for width in tile_shape)
     boundary_conditions = tuple(int(bc) for bc in boundary_conditions)
+    if reflecting_parity is not None:
+        reflecting_parity = _reflecting_parity_tuple(reflecting_parity)
     mesh_shape = tuple(int(width) for width in mesh.devices.shape)
     reduced_axes = _reduced_axes_from_tile_shape(tile_shape, mesh_shape)
     send_positive, send_negative = _axis_permutations(mesh_shape, boundary_conditions)
 
     def local_fold(local_tiles):
         tile = local_tiles[0, 0, 0]
-        tile = _local_fold_scalar_tile(tile, g, boundary_conditions, reduced_axes, mesh_shape, send_positive, send_negative)
+        tile = _local_fold_scalar_tile(
+            tile,
+            g,
+            boundary_conditions,
+            reduced_axes,
+            mesh_shape,
+            send_positive,
+            send_negative,
+            reflecting_parity=reflecting_parity,
+        )
         return tile[jnp.newaxis, jnp.newaxis, jnp.newaxis, :, :, :]
 
     mapped_fold = jax.shard_map(
@@ -518,7 +774,14 @@ def make_distributed_ghost_folder(mesh, tile_shape, boundary_conditions, num_gua
     return fold
 
 
-def make_distributed_vector_ghost_folder(mesh, tile_shape, boundary_conditions, num_guard_cells):
+def make_distributed_vector_ghost_folder(
+    mesh,
+    tile_shape,
+    boundary_conditions,
+    num_guard_cells,
+    *,
+    reflecting_parity=None,
+):
     """
     Build a shard-mapped vector ghost-deposit folder.
 
@@ -530,17 +793,42 @@ def make_distributed_vector_ghost_folder(mesh, tile_shape, boundary_conditions, 
     g = int(num_guard_cells)
     tile_shape = tuple(int(width) for width in tile_shape)
     boundary_conditions = tuple(int(bc) for bc in boundary_conditions)
+    if reflecting_parity is not None:
+        reflecting_parity = _reflecting_parity_matrix(reflecting_parity)
     mesh_shape = tuple(int(width) for width in mesh.devices.shape)
     reduced_axes = _reduced_axes_from_tile_shape(tile_shape, mesh_shape)
     send_positive, send_negative = _axis_permutations(mesh_shape, boundary_conditions)
 
+    if reflecting_parity is None:
+        component_parity = None
+    else:
+        component_parity = jnp.asarray(reflecting_parity)
+
     def local_fold(local_tiles):
-        def fold_component(local_component):
+        def fold_component(local_component, parity):
             tile = local_component[0, 0, 0]
-            tile = _local_fold_scalar_tile(tile, g, boundary_conditions, reduced_axes, mesh_shape, send_positive, send_negative)
+            tile = _local_fold_scalar_tile(
+                tile,
+                g,
+                boundary_conditions,
+                reduced_axes,
+                mesh_shape,
+                send_positive,
+                send_negative,
+                reflecting_parity=parity,
+            )
             return tile[jnp.newaxis, jnp.newaxis, jnp.newaxis, :, :, :]
 
-        return jax.vmap(fold_component, in_axes=0, out_axes=0)(local_tiles)
+        if component_parity is None:
+            return jax.vmap(
+                lambda component: fold_component(component, None),
+                in_axes=0,
+                out_axes=0,
+            )(local_tiles)
+        return jax.vmap(fold_component, in_axes=(0, 0), out_axes=0)(
+            local_tiles,
+            component_parity,
+        )
 
     mapped_fold = jax.shard_map(
         local_fold,
@@ -553,6 +841,10 @@ def make_distributed_vector_ghost_folder(mesh, tile_shape, boundary_conditions, 
     def fold(field_tiles):
         _validate_vector_tile_topology(field_tiles, mesh)
         stacked_tiles = _stack_tiled_vector_field(field_tiles)
+        if reflecting_parity is not None and len(reflecting_parity) != int(stacked_tiles.shape[0]):
+            raise ValueError(
+                "vector reflecting_parity must contain one parity tuple per component."
+            )
         folded = mapped_fold(stacked_tiles)
         return _restore_tiled_vector_layout(folded, field_tiles)
 
@@ -615,7 +907,14 @@ def make_distributed_constant_boundary(mesh, tile_shape, axis, num_guard_cells):
     return apply
 
 
-def update_tiled_ghost_cells(field_tiles, static_parameters, num_guard_cells=2, bc_type=BC_TYPE_FIELD):
+def update_tiled_ghost_cells(
+    field_tiles,
+    static_parameters,
+    num_guard_cells=2,
+    bc_type=BC_TYPE_FIELD,
+    *,
+    reflecting_parity=None,
+):
     """
     Refresh scalar tile halos with one logical tile per JAX device.
 
@@ -623,36 +922,56 @@ def update_tiled_ghost_cells(field_tiles, static_parameters, num_guard_cells=2, 
     ``(ntx, nty, ntz, tile_nx + 2*g, tile_ny + 2*g, tile_nz + 2*g)``.
     Cross-tile communication uses ``jax.lax.ppermute`` inside
     ``jax.shard_map`` over the named mesh axes ``tile_x``, ``tile_y``, and
-    ``tile_z``.  The leading tile topology must match the device mesh.
+    ``tile_z``. The leading tile topology must match the device mesh. Particle
+    boundaries mirror exterior halos using ``reflecting_parity``; scalar
+    particle deposits are even by default.
     """
 
     tile_shape = tuple(int(width) for width in static_parameters.tile_shape)
     mesh = static_parameters.field_mesh
+    reflecting_parity = _resolve_scalar_reflecting_parity(
+        bc_type,
+        reflecting_parity,
+    )
     updater = make_distributed_ghost_updater(
         mesh,
         tile_shape,
         _boundary_conditions_for_type(static_parameters, bc_type),
         num_guard_cells,
+        reflecting_parity=reflecting_parity,
     )
     return updater(field_tiles)
 
 
-def update_tiled_vector_ghost_cells(field_tiles, static_parameters, num_guard_cells=2, bc_type=BC_TYPE_FIELD):
+def update_tiled_vector_ghost_cells(
+    field_tiles,
+    static_parameters,
+    num_guard_cells=2,
+    bc_type=BC_TYPE_FIELD,
+    *,
+    reflecting_parity=None,
+):
     """
     Refresh tiled multi-component field halos, preserving stacked or tuple layout.
 
-    Production vector fields use three components.  The component axis remains
+    Production vector fields use three components. The component axis remains
     general so related spatial operators can batch several derivative channels
-    through the same distributed halo exchange.
+    through the same distributed halo exchange. Particle vectors default to
+    odd normal and even tangential reflection parity.
     """
 
     tile_shape = tuple(int(width) for width in static_parameters.tile_shape)
     mesh = static_parameters.field_mesh
+    reflecting_parity = _resolve_vector_reflecting_parity(
+        bc_type,
+        reflecting_parity,
+    )
     updater = make_distributed_vector_ghost_updater(
         mesh,
         tile_shape,
         _boundary_conditions_for_type(static_parameters, bc_type),
         num_guard_cells,
+        reflecting_parity=reflecting_parity,
     )
     return updater(field_tiles)
 
@@ -707,37 +1026,61 @@ def apply_tiled_constant_boundary(field_tiles, static_parameters, axis, num_guar
     return apply_bc(field_tiles)
 
 
-def fold_tiled_ghost_cells(field_tiles, static_parameters, num_guard_cells=2, bc_type=BC_TYPE_FIELD):
+def fold_tiled_ghost_cells(
+    field_tiles,
+    static_parameters,
+    num_guard_cells=2,
+    bc_type=BC_TYPE_FIELD,
+    *,
+    reflecting_parity=None,
+):
     """
     Add tile-ghost deposits into owning interiors, then clear ghost cells.
 
-    Folding uses the same x -> y -> z order as halo refresh.  A ghost deposit
+    Folding uses the same x -> y -> z order as halo refresh. A ghost deposit
     is sent back to the neighboring interior that owns it; conducting exterior
-    deposits reflect only on devices touching the true global walls.
+    deposits reflect only on devices touching the true global walls. Particle
+    deposits use parity-aware nearest-to-nearest reflection.
     """
 
     tile_shape = tuple(int(width) for width in static_parameters.tile_shape)
     mesh = static_parameters.field_mesh
+    reflecting_parity = _resolve_scalar_reflecting_parity(
+        bc_type,
+        reflecting_parity,
+    )
     folder = make_distributed_ghost_folder(
         mesh,
         tile_shape,
         _boundary_conditions_for_type(static_parameters, bc_type),
         num_guard_cells,
+        reflecting_parity=reflecting_parity,
     )
     return folder(field_tiles)
 
-
-def fold_tiled_vector_ghost_cells(field_tiles, static_parameters, num_guard_cells=2, bc_type=BC_TYPE_FIELD):
+def fold_tiled_vector_ghost_cells(
+    field_tiles,
+    static_parameters,
+    num_guard_cells=2,
+    bc_type=BC_TYPE_FIELD,
+    *,
+    reflecting_parity=None,
+):
     """
     Fold tile-ghost deposits for a tiled vector field.
     """
 
     tile_shape = tuple(int(width) for width in static_parameters.tile_shape)
     mesh = static_parameters.field_mesh
+    reflecting_parity = _resolve_vector_reflecting_parity(
+        bc_type,
+        reflecting_parity,
+    )
     folder = make_distributed_vector_ghost_folder(
         mesh,
         tile_shape,
         _boundary_conditions_for_type(static_parameters, bc_type),
         num_guard_cells,
+        reflecting_parity=reflecting_parity,
     )
     return folder(field_tiles)

@@ -4,6 +4,7 @@ import jax
 import jax.numpy as jnp
 
 from PyPIC3D.boundary_conditions.ghost_cells import (
+    BC_TYPE_PARTICLE,
     fold_tiled_vector_ghost_cells,
     update_tiled_vector_ghost_cells,
 )
@@ -315,13 +316,18 @@ def GR_direct_deposition(
         tz,
     )
 
-    conformal_J = fold_tiled_vector_ghost_cells((Jx, Jy, Jz), static_parameters, g, bc_type=1)
+    conformal_J = fold_tiled_vector_ghost_cells(
+        (Jx, Jy, Jz),
+        static_parameters,
+        g,
+        bc_type=BC_TYPE_PARTICLE,
+    )
 
     def bilinear_filtered_current(conformal_J):
         return tiled_bilinear_filter_vector(
             conformal_J,
             static_parameters,
-            bc_type=1,
+            bc_type=BC_TYPE_PARTICLE,
         )
 
     def digital_filtered_current(conformal_J):
@@ -329,7 +335,7 @@ def GR_direct_deposition(
             conformal_J,
             dynamic_parameters.alpha,
             static_parameters,
-            bc_type=1,
+            bc_type=BC_TYPE_PARTICLE,
         )
 
     conformal_J = jax.lax.cond(
@@ -342,7 +348,7 @@ def GR_direct_deposition(
                 conformal_J,
                 static_parameters,
                 g,
-                bc_type=1,
+                bc_type=BC_TYPE_PARTICLE,
             ),
             conformal_J,
         ),

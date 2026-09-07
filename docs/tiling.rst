@@ -76,8 +76,56 @@ The current runtime assigns exactly one logical tile to each JAX device. A
 layout with ``ntx * nty * ntz`` tiles therefore needs at least that many
 devices, and the leading tile structure must match the device mesh.
 
-The CLI selects the CPU backend. For a six-tile CPU run, expose six logical
-devices before Python imports JAX:
+The CLI enables 64-bit calculations but leaves backend selection to JAX. Use
+``JAX_PLATFORMS`` when a run must fail instead of falling back to another
+backend, and restrict the visible accelerators before starting Python. A
+one-GPU CUDA run uses:
+
+.. code-block:: bash
+
+   CUDA_VISIBLE_DEVICES=0 JAX_PLATFORMS=cuda \
+     PyPIC3D --config path/to/config.toml
+
+A two-GPU run uses:
+
+.. code-block:: bash
+
+   CUDA_VISIBLE_DEVICES=0,1 JAX_PLATFORMS=cuda \
+     PyPIC3D --config path/to/config.toml
+
+Confirm the two devices are available to JAX before launching a long run:
+
+.. code-block:: bash
+
+   CUDA_VISIBLE_DEVICES=0,1 JAX_PLATFORMS=cuda \
+     python -c "import jax; print(jax.default_backend(), jax.devices())"
+
+The legacy ``GPUs`` configuration setting remains accepted so existing input
+files continue to load, but it is not used for device selection. The JAX
+environment variables above determine the backend and visible devices.
+
+The tile topology must also contain two tiles. For a ``300 x 1 x 300`` x-z
+domain, splitting the periodic x direction keeps the full current-sheet
+profile on each device:
+
+.. code-block:: toml
+
+   [simulation_parameters]
+   Nx = 300
+   Ny = 1
+   Nz = 300
+   particle_tile_nx = 150
+   particle_tile_ny = 1
+   particle_tile_nz = 300
+   particle_tile_capacity_factor = 1.25
+
+This creates a ``(2, 1, 1)`` mesh: the first visible GPU owns the first x
+tile and the second visible GPU owns the second. The capacity factor provides
+free particle slots for cross-tile motion; increase it if the runtime reports
+a tile-capacity overflow.
+
+For CPU-only development, expose the required number of logical CPU devices
+before Python imports JAX. A six-tile example is:
 
 .. code-block:: bash
 

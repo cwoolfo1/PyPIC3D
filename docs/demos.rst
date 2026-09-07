@@ -61,9 +61,14 @@ Harris-Sheet Reconnection
 
    cd demos/reconnection_2d
    python initial_conditions.py
-   PyPIC3D --config harris_current.toml
+   CUDA_VISIBLE_DEVICES=0,1 JAX_PLATFORMS=cuda \
+     PyPIC3D --config harris_current.toml
+   python analyze_data.py
 
-Still under development.
+The configuration uses two x-directed tiles and therefore needs two visible
+JAX devices. The analysis command reads ``data/fields.pmd`` and writes four
+normalized MP4 diagnostics to ``analysis/``: reconnecting field lines,
+effective nonideal resistivity, and x- and z-directed bulk-flow cuts.
 
 Notes
 -----

@@ -2,10 +2,19 @@ import unittest
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 
 from PyPIC3D.boundary_conditions.grid_and_stencil import BC_CONDUCTING, BC_PERIODIC
+from PyPIC3D.boundary_conditions.ghost_cells import (
+    BC_TYPE_PARTICLE,
+    fold_tiled_ghost_cells,
+    particle_vector_reflecting_parity,
+)
 from PyPIC3D.deposition.rho import compute_rho
-from PyPIC3D.diagnostics.fluid_quantities import compute_velocity_field, fluid_velocity
+from PyPIC3D.diagnostics.fluid_quantities import (
+    compute_velocity_field,
+    fluid_velocity,
+)
 from PyPIC3D.diagnostics.output_adapters import (
     assemble_tiled_scalar_field,
     build_field_output_map,
@@ -378,6 +387,109 @@ class TestTiledFluidQuantities(unittest.TestCase):
         y_index = int(jnp.argmin(jnp.abs(dynamic_parameters.grids.center[1])))
         z_index = int(jnp.argmin(jnp.abs(dynamic_parameters.grids.center[2])))
         self.assertAlmostEqual(float(velocity[x_index, y_index, z_index]), 6.0)
+
+    def test_reflecting_wall_uses_even_weight_and_tangential_moment_parity(self):
+        periodic_static, dynamic_parameters = self._build_parameters(shape_factor=2)
+        reflecting_static = periodic_static._replace(
+            particle_boundary_conditions=(
+                BC_PERIODIC,
+                BC_PERIODIC,
+                BC_CONDUCTING,
+            ),
+        )
+        g = int(reflecting_static.guard_cells)
+        deposited = self._scalar_tiles(reflecting_static, dynamic_parameters)
+
+        # Number weight and a tangential moment add mirrored exterior deposits;
+        # a wall-normal moment subtracts the mirrored values.
+        owned = (0, 0, 0, g, g, slice(-2 * g, -g))
+        upper_ghost = (0, 0, 0, g, g, slice(-g, None))
+        deposited = deposited.at[owned].set(jnp.array([2.0, 3.0]))
+        deposited = deposited.at[upper_ghost].set(jnp.array([5.0, 7.0]))
+
+        even_fold = fold_tiled_ghost_cells(
+            deposited,
+            reflecting_static,
+            g,
+            bc_type=BC_TYPE_PARTICLE,
+        )
+        tangential_fold = fold_tiled_ghost_cells(
+            deposited,
+            reflecting_static,
+            g,
+            bc_type=BC_TYPE_PARTICLE,
+            reflecting_parity=particle_vector_reflecting_parity(0),
+        )
+        normal_fold = fold_tiled_ghost_cells(
+            deposited,
+            reflecting_static,
+            g,
+            bc_type=BC_TYPE_PARTICLE,
+            reflecting_parity=particle_vector_reflecting_parity(2),
+        )
+
+        np.testing.assert_allclose(even_fold[owned], [9.0, 8.0])
+        np.testing.assert_allclose(tangential_fold[owned], [9.0, 8.0])
+        np.testing.assert_allclose(normal_fold[owned], [-5.0, -2.0])
+
+    def test_reflecting_wall_fluid_velocity_remains_a_bounded_particle_average(self):
+        periodic_static, dynamic_parameters = self._build_parameters(shape_factor=2)
+        reflecting_static = periodic_static._replace(
+            particle_boundary_conditions=(
+                BC_PERIODIC,
+                BC_PERIODIC,
+                BC_CONDUCTING,
+            ),
+        )
+        particles = [
+            particle_species(
+                name="plasma",
+                charge=1.0,
+                mass=1.0,
+                weight=1.0,
+                x1=jnp.array([-0.2, 0.2, -0.2, 0.2]),
+                x2=jnp.zeros(4),
+                x3=jnp.array([-0.99, -0.76, 0.76, 0.99]),
+                v1=jnp.array([-0.4, 0.2, 0.1, 0.3]),
+                v3=jnp.array([0.25, -0.15, 0.05, -0.2]),
+            )
+        ]
+        tiled_particles, species_config = build_tiled_particles(
+            particles,
+            reflecting_static,
+            dynamic_parameters,
+        )
+        g = int(reflecting_static.guard_cells)
+
+        ux = fluid_velocity(
+            tiled_particles,
+            species_config,
+            self._scalar_tiles(reflecting_static, dynamic_parameters),
+            0,
+            reflecting_static,
+            dynamic_parameters,
+        )
+        uz = fluid_velocity(
+            tiled_particles,
+            species_config,
+            self._scalar_tiles(reflecting_static, dynamic_parameters),
+            2,
+            reflecting_static,
+            dynamic_parameters,
+        )
+
+        self.assertLessEqual(float(jnp.max(jnp.abs(ux[:, :, :, g:-g, g:-g, g:-g]))), 0.4 + 1.0e-12)
+        self.assertLessEqual(float(jnp.max(jnp.abs(uz[:, :, :, g:-g, g:-g, g:-g]))), 0.25 + 1.0e-12)
+        self.assertFalse(bool(jnp.any(jnp.isnan(ux))))
+        self.assertFalse(bool(jnp.any(jnp.isnan(uz))))
+        np.testing.assert_allclose(
+            ux[0, 0, 0, g:-g, g:-g, :g],
+            jnp.flip(ux[0, 0, 0, g:-g, g:-g, g:2 * g], axis=-1),
+        )
+        np.testing.assert_allclose(
+            uz[0, 0, 0, g:-g, g:-g, :g],
+            -jnp.flip(uz[0, 0, 0, g:-g, g:-g, g:2 * g], axis=-1),
+        )
 
     def test_tile_major_velocity_runs_on_multi_tile_kernel_storage_when_devices_are_available(self):
         tile_shape = (4, 3, 2)

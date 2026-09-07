@@ -861,6 +861,70 @@ class TestDirectDeposition(unittest.TestCase):
 
         self._compare_tiled_to_one_tile(particles, species_config, parameter_set, simulation_parameters)
 
+    def test_direct_current_refresh_uses_reflecting_vector_parity(self):
+        parameter_set = self._build_parameter_values(
+            Nx=4,
+            Ny=1,
+            Nz=4,
+            dt=0.0,
+            boundary_conditions={
+                "x": BC_PERIODIC,
+                "y": BC_PERIODIC,
+                "z": BC_CONDUCTING,
+            },
+        )
+        parameter_set["particle_boundary_conditions"] = {
+            "x": BC_PERIODIC,
+            "y": BC_PERIODIC,
+            "z": BC_CONDUCTING,
+        }
+        parameter_set["shape_factor"] = 2
+        parameter_set["guard_cells"] = 2
+        simulation_parameters = {
+            "particle_tile_nx": 4,
+            "particle_tile_ny": 1,
+            "particle_tile_nz": 4,
+        }
+        particles = self._particles_from_slots(
+            parameter_set,
+            simulation_parameters,
+            n_species=1,
+            n_slots=2,
+            slots=[
+                ((0, 0, 0), 0, 0, (-0.2, 0.0, -0.99), (0.3, -0.2, 0.25), True),
+                ((0, 0, 0), 0, 1, (0.2, 0.0, 0.99), (-0.1, 0.4, -0.15), True),
+            ],
+        )
+        species_config = self._species_config(charges=[1.0], masses=[1.0], weights=[1.0])
+        current_tiles, _ = self._assembled_tiled_current(
+            particles,
+            species_config,
+            parameter_set,
+            simulation_parameters,
+            {"C": 1.0, "alpha": 1.0},
+        )
+        g = int(parameter_set["guard_cells"])
+
+        for component, parity in enumerate((1.0, 1.0, -1.0)):
+            current = current_tiles[component][0, 0, 0]
+            self.assertGreater(float(jnp.max(jnp.abs(current[g:-g, g:-g, g:-g]))), 0.0)
+            self.assertTrue(
+                jnp.allclose(
+                    current[g:-g, g:-g, :g],
+                    parity * jnp.flip(current[g:-g, g:-g, g:2 * g], axis=-1),
+                    rtol=1.0e-12,
+                    atol=1.0e-12,
+                )
+            )
+            self.assertTrue(
+                jnp.allclose(
+                    current[g:-g, g:-g, -g:],
+                    parity * jnp.flip(current[g:-g, g:-g, -2 * g:-g], axis=-1),
+                    rtol=1.0e-12,
+                    atol=1.0e-12,
+                )
+            )
+
     def test_tiled_direct_deposition_matches_J_from_rhov_for_mixed_boundaries(self):
         parameter_set = self._build_parameter_values(
             Nx=8,
