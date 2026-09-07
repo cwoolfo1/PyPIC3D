@@ -394,6 +394,17 @@ def hybrid_boris_geodesic_push(
 
     Particle positions are contravariant coordinates.  ``particles.u`` stores
     covariant spatial velocity components ``u_i``.
+
+    This is a staggered leapfrog.  The incoming ``particles.u`` is
+    ``u^{n-1/2}``; the velocity operator ``EM(dt/2) . geodesic(dt) . EM(dt/2)``
+    is applied with every field and metric quantity sampled at ``x^n``, giving
+    ``u^{n+1/2}``, and the position is only advanced afterwards.  A run must
+    therefore start from ``u^{-1/2}``, which
+    :func:`PyPIC3D.pusher.particle_push.seed_leapfrog_velocity` provides;
+    starting from the physical ``u(0)`` costs a full order of accuracy.
+
+    Returns the full-step particles ``(x^{n+1}, u^{n+1/2})`` and the centred
+    particles ``(x^{n+1/2}, u^{n+1/2})`` used for the current deposition.
     """
 
     tile_nx, tile_ny, tile_nz = tuple(

@@ -9,8 +9,12 @@ from PyPIC3D.boundary_conditions import ghost_cells
 from tests.kernel_fixtures import build_tiled_particles, particle_parameters_from_tile_values, particle_species
 from tests.kernel_fixtures import kernel_parameters_from_values
 from PyPIC3D.particles.particle_tile_communication import update_tiled_particle_positions
-from PyPIC3D.pusher.particle_push import particle_push
+from PyPIC3D.particles.particle_class import SpeciesConfig, TiledParticles
+from PyPIC3D.pusher.particle_push import particle_push, seed_leapfrog_velocity
+from PyPIC3D.pusher.hybrid_boris_geodesic import hybrid_boris_geodesic_push
+from PyPIC3D.relativity.flat import initialize_flat_cartesian_metric
 from PyPIC3D.utilities.grids import build_tiled_yee_grids, build_yee_grid
+from tests.kernel_fixtures import empty_tiled_vector, kernel_parameters
 
 
 jax.config.update("jax_enable_x64", True)
@@ -447,6 +451,165 @@ class TestTiledParticlePusher(unittest.TestCase):
         _, reference_u = self._flatten_active_by_position(reference)
 
         self.assertTrue(np.allclose(np.asarray(tiled_u), np.asarray(reference_u), rtol=1.0e-12, atol=1.0e-12))
+
+
+class TestSeedLeapfrogVelocity(unittest.TestCase):
+    """
+    ``seed_leapfrog_velocity`` puts the configured ``u(0)`` onto the half step
+    the leapfrog actually starts from.  Without it the initial state carries an
+    O(dt) error and the whole simulation drops to first order.
+    """
+
+    DT = 0.02
+
+    def _one_particle(self, u):
+        return TiledParticles(
+            x=jnp.zeros((1, 1, 1, 1, 1, 3)),
+            u=jnp.asarray(u, dtype=float).reshape((1, 1, 1, 1, 1, 3)),
+            active=jnp.ones((1, 1, 1, 1, 1), dtype=bool),
+        )
+
+    def _species(self, charge=1.0, mass=2.0, update_x=(True, True, True)):
+        return SpeciesConfig(
+            charge=jnp.asarray([charge]),
+            mass=jnp.asarray([mass]),
+            weight=jnp.asarray([1.0]),
+            update_x=jnp.asarray([list(update_x)]),
+        )
+
+    def _uniform(self, static_parameters, dynamic_parameters, values):
+        empty = empty_tiled_vector(static_parameters, dynamic_parameters)
+        return tuple(empty[i].at[...].set(values[i]) for i in range(3))
+
+    def _flat_case(self, solver="electrodynamic_yee"):
+        static_parameters, dynamic_parameters = kernel_parameters(
+            Nx=8, Ny=8, Nz=8,
+            x_wind=8.0, y_wind=8.0, z_wind=8.0,
+            dt=self.DT, tile_shape=(8, 8, 8), solver=solver,
+        )
+        E = self._uniform(static_parameters, dynamic_parameters, (0.30, 0.0, 0.0))
+        B = self._uniform(static_parameters, dynamic_parameters, (0.0, 0.0, 0.20))
+        return static_parameters, dynamic_parameters, E, B
+
+    def _gr_case(self):
+        static_parameters, dynamic_parameters = kernel_parameters(
+            Nx=8, Ny=8, Nz=8,
+            x_wind=8.0, y_wind=8.0, z_wind=8.0,
+            dt=self.DT, tile_shape=(8, 8, 8),
+            solver="static_metric",
+            current_deposition="GR_direct",
+            particle_pusher="hybrid_boris_geodesic",
+        )
+        metric = initialize_flat_cartesian_metric(static_parameters, dynamic_parameters)
+        D = self._uniform(static_parameters, dynamic_parameters, (0.30, 0.0, 0.0))
+        B = self._uniform(static_parameters, dynamic_parameters, (0.0, 0.0, 0.20))
+        return static_parameters, dynamic_parameters, D, B, metric
+
+    def test_flat_seed_matches_a_backward_half_step_of_the_production_pusher(self):
+        static_parameters, dynamic_parameters, E, B = self._flat_case()
+        particles = self._one_particle((0.10, -0.05, 0.02))
+        species = self._species()
+
+        seeded = seed_leapfrog_velocity(
+            particles, species, E, B, static_parameters, dynamic_parameters
+        )
+        expected = particle_push(
+            particles,
+            species,
+            E,
+            B,
+            static_parameters,
+            dynamic_parameters._replace(dt=-0.5 * self.DT),
+        )
+
+        np.testing.assert_allclose(
+            np.asarray(seeded.u), np.asarray(expected.u), rtol=0.0, atol=0.0
+        )
+        np.testing.assert_array_equal(np.asarray(seeded.x), np.asarray(particles.x))
+        np.testing.assert_array_equal(
+            np.asarray(seeded.active), np.asarray(particles.active)
+        )
+
+    def test_flat_seed_moves_the_velocity_backwards_along_the_electric_force(self):
+        static_parameters, dynamic_parameters, E, B = self._flat_case()
+        charge, mass = 1.0, 2.0
+        particles = self._one_particle((0.0, 0.0, 0.0))
+
+        seeded = seed_leapfrog_velocity(
+            particles,
+            self._species(charge=charge, mass=mass),
+            E,
+            B,
+            static_parameters,
+            dynamic_parameters,
+        )
+
+        # a particle at rest feels only the electric kick over -dt/2
+        expected_vx = -(charge / mass) * 0.30 * 0.5 * self.DT
+        self.assertAlmostEqual(
+            float(seeded.u[0, 0, 0, 0, 0, 0]), expected_vx, delta=abs(expected_vx) * 1.0e-3
+        )
+
+    def test_gr_seed_keeps_the_position_while_offsetting_the_velocity(self):
+        static_parameters, dynamic_parameters, D, B, metric = self._gr_case()
+        particles = self._one_particle((0.10, -0.05, 0.02))
+        species = self._species()
+
+        seeded = seed_leapfrog_velocity(
+            particles, species, D, B, static_parameters, dynamic_parameters, metric=metric
+        )
+        stepped, _centered = hybrid_boris_geodesic_push(
+            particles,
+            species,
+            D,
+            B,
+            metric,
+            static_parameters,
+            dynamic_parameters._replace(dt=-0.5 * self.DT),
+        )
+
+        np.testing.assert_allclose(
+            np.asarray(seeded.u), np.asarray(stepped.u), rtol=0.0, atol=0.0
+        )
+        # the geodesic push also advances x, so the seed has to discard that
+        self.assertFalse(np.allclose(np.asarray(stepped.x), np.asarray(particles.x)))
+        np.testing.assert_array_equal(np.asarray(seeded.x), np.asarray(particles.x))
+
+    def test_gr_seed_requires_a_metric(self):
+        static_parameters, dynamic_parameters, D, B, _metric = self._gr_case()
+        with self.assertRaises(ValueError):
+            seed_leapfrog_velocity(
+                self._one_particle((0.1, 0.0, 0.0)),
+                self._species(),
+                D,
+                B,
+                static_parameters,
+                dynamic_parameters,
+            )
+
+    def test_seed_respects_the_per_species_direction_mask(self):
+        for solver in ("electrodynamic_yee", "static_metric"):
+            with self.subTest(solver=solver):
+                if solver == "static_metric":
+                    sp, dp, E, B, metric = self._gr_case()
+                else:
+                    sp, dp, E, B = self._flat_case()
+                    metric = None
+                E = self._uniform(sp, dp, (0.30, 0.30, 0.30))
+                particles = self._one_particle((0.0, 0.0, 0.0))
+                seeded = seed_leapfrog_velocity(
+                    particles,
+                    self._species(update_x=(True, False, True)),
+                    E,
+                    B,
+                    sp,
+                    dp,
+                    metric=metric,
+                )
+                u = np.asarray(seeded.u)[0, 0, 0, 0, 0]
+                self.assertNotEqual(u[0], 0.0)
+                self.assertEqual(u[1], 0.0)
+                self.assertNotEqual(u[2], 0.0)
 
 
 if __name__ == "__main__":

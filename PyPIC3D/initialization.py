@@ -6,6 +6,7 @@ import jax
 import jax.numpy as jnp
 
 from PyPIC3D.particles.particle_initialization import load_particles_from_toml
+from PyPIC3D.pusher.particle_push import seed_leapfrog_velocity
 from PyPIC3D.particles.particle_tile_communication import shard_tiled_particles
 from PyPIC3D.diagnostics.diagnostic_quantities import compute_energy
 from PyPIC3D.utilities.field_helpers import add_external_fields
@@ -691,6 +692,23 @@ def initialize_simulation(toml_file):
         print(f"Initial Magnetic Field Energy: {b_energy:.2e} J")
         print(f"Initial Kinetic Energy: {kinetic_energy:.2e} J")
         print(f"Total Initial Energy: {e_energy + b_energy + kinetic_energy:.2e} J\n")
+
+    seed_E, seed_B = add_external_fields(E, B, external_fields)
+    particles = seed_leapfrog_velocity(
+        particles,
+        species_config,
+        seed_E,
+        seed_B,
+        static_parameters,
+        dynamic_parameters,
+        metric=metric if static_metric else None,
+    )
+    print("Offset particle velocities to u^(-dt/2) for the leapfrog start")
+    # every time loop advances u^{n-1/2} to u^{n+1/2} with the force at x^n, so
+    # the run has to begin from a velocity that is half a step behind the
+    # positions.  Starting from the configured u(0) leaves an O(dt) error in the
+    # initial state and reduces the whole simulation to first order.  This is
+    # done after the initial energy report so that report still shows u(0).
 
     if static_parameters.relativistic:
         print("Relativistic simulation")

@@ -13,6 +13,7 @@ from PyPIC3D.pusher.boris import (
     relativistic_boris_single_particle,
 )
 from PyPIC3D.pusher.higuera_cary import higuera_cary_single_particle
+from PyPIC3D.pusher.hybrid_boris_geodesic import hybrid_boris_geodesic_push
 
 
 def particle_push(particles, species_config, E_tiles, B_tiles, static_parameters, dynamic_parameters):
@@ -22,6 +23,12 @@ def particle_push(particles, species_config, E_tiles, B_tiles, static_parameters
     Particles are assumed to live in the tile that owns their current forward
     position.  The configured field halos on each compact tile provide the
     neighboring Yee data needed by the interpolation stencil near tile faces.
+
+    This is the velocity half of a staggered leapfrog: it advances ``u^{n-1/2}``
+    to ``u^{n+1/2}`` using fields gathered at ``x^n`` and leaves ``x``
+    untouched.  The caller moves the positions afterwards.  ``particles.u`` is
+    therefore offset half a step behind ``particles.x``; see
+    :func:`seed_leapfrog_velocity`.
     """
 
     relativistic = static_parameters.relativistic
@@ -209,3 +216,76 @@ def particle_push(particles, species_config, E_tiles, B_tiles, static_parameters
         u=new_u,
         active=particles.active,
     )
+
+
+def seed_leapfrog_velocity(
+    particles,
+    species_config,
+    E_tiles,
+    B_tiles,
+    static_parameters,
+    dynamic_parameters,
+    metric=None,
+):
+    """
+    Offset the initial particle velocity to ``u^{-1/2}`` for the leapfrog start.
+
+    Every PyPIC3D time loop is a staggered leapfrog: the pusher advances
+    ``u^{n-1/2}`` to ``u^{n+1/2}`` with the force sampled at ``x^n``, and the
+    position is only moved afterwards with the new velocity.  That is second
+    order accurate in ``dt`` provided the run begins from ``u^{-1/2}`` rather
+    than from the physical ``u(0)``; starting from ``u(0)`` leaves an ``O(dt)``
+    error in the initial state and drops the whole simulation to first order.
+
+    The offset is produced by running the configured pusher itself over
+    ``-dt/2``, so the backward half step is the exact reverse-direction image of
+    the forward operator, including the Strang split of the static-metric push
+    and the per-species ``update_x`` masks.  Positions are left at ``x^0``.
+
+    Args:
+        particles (TiledParticles): Particle state holding the physical ``u(0)``.
+        species_config (SpeciesConfig): Per-species charge, mass, weight and masks.
+        E_tiles (tuple): Electric (or contravariant ``D^i``) gather field at ``t=0``.
+        B_tiles (tuple): Magnetic gather field at ``t=0``.
+        static_parameters (StaticParameters): Compile-time simulation parameters.
+        dynamic_parameters (DynamicParameters): Runtime parameters, including ``dt``.
+        metric (YeeMetric or None): Prescribed metric, required by the
+            ``static_metric`` solver and ignored otherwise.
+
+    Returns:
+        TiledParticles: The same positions and active mask, with ``u`` at ``t = -dt/2``.
+    """
+
+    half_step_parameters = dynamic_parameters._replace(
+        dt=-0.5 * dynamic_parameters.dt
+    )
+    # the pushers read the step size from dynamic_parameters, so a negative
+    # half step reuses the production kernel unchanged
+
+    if static_parameters.solver == "static_metric":
+        if metric is None:
+            raise ValueError(
+                "seed_leapfrog_velocity requires a metric for the static_metric solver"
+            )
+        stepped, _centered = hybrid_boris_geodesic_push(
+            particles,
+            species_config,
+            E_tiles,
+            B_tiles,
+            metric,
+            static_parameters,
+            half_step_parameters,
+        )
+        # the geodesic push also advances x; only the velocity is wanted here
+        return particles._replace(u=stepped.u)
+
+    stepped = particle_push(
+        particles,
+        species_config,
+        E_tiles,
+        B_tiles,
+        static_parameters,
+        half_step_parameters,
+    )
+    # particle_push is velocity-only, so its result already keeps x^0
+    return particles._replace(u=stepped.u)
