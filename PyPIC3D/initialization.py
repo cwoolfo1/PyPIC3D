@@ -109,22 +109,37 @@ def _tile_shape_from_static_config(static_config):
     )
 
 
+GR_DIRECT_NAMES = ("GR_direct_deposition", "gr_direct_deposition", "GR_direct")
+GR_ESIRKEPOV_NAMES = ("GR_esirkepov", "gr_esirkepov", "GR_Esirkepov")
+# accepted spellings for the two fixed-metric current deposition schemes
+
+
 def _encode_current_calculation(current_calculation):
-    if current_calculation not in ("j_from_rhov", "esirkepov", "GR_direct_deposition", "gr_direct_deposition", "GR_direct"):
-        raise ValueError("Unsupported current_calculation. Use 'j_from_rhov', 'esirkepov', or 'GR_direct_deposition'.")
+    if current_calculation not in ("j_from_rhov", "esirkepov") + GR_DIRECT_NAMES + GR_ESIRKEPOV_NAMES:
+        raise ValueError(
+            "Unsupported current_calculation. Use 'j_from_rhov', 'esirkepov', "
+            "'GR_direct_deposition', or 'GR_esirkepov'."
+        )
     if current_calculation == "esirkepov":
         return "esirkepov"
-    if current_calculation in ("GR_direct_deposition", "gr_direct_deposition", "GR_direct"):
+    if current_calculation in GR_DIRECT_NAMES:
         return "GR_direct"
+    if current_calculation in GR_ESIRKEPOV_NAMES:
+        return "GR_esirkepov"
     return "direct"
 
 
 def _validate_current_filter_contract(static_config):
-    if (
+    charge_conserving = (
         static_config["current_calculation"] == "esirkepov"
-        and static_config["filter_j"] != "none"
-    ):
-        raise ValueError("Esirkepov current filtering is not supported; use filter_j='none'.")
+        or static_config["current_calculation"] in GR_ESIRKEPOV_NAMES
+    )
+    if charge_conserving and static_config["filter_j"] != "none":
+        raise ValueError(
+            "Esirkepov current filtering is not supported; use filter_j='none'. "
+            "Filtering the deposited current destroys the exact discrete "
+            "continuity the scheme exists to provide."
+        )
 
 
 def _validate_tiled_yee_configuration(static_config, dynamic_config):
@@ -133,8 +148,11 @@ def _validate_tiled_yee_configuration(static_config, dynamic_config):
     """
 
     if static_config["solver"] == "static_metric":
-        if static_config["current_calculation"] not in ("GR_direct_deposition", "gr_direct_deposition", "GR_direct"):
-            raise ValueError("static_metric requires current_calculation='GR_direct_deposition'")
+        if static_config["current_calculation"] not in GR_DIRECT_NAMES + GR_ESIRKEPOV_NAMES:
+            raise ValueError(
+                "static_metric requires current_calculation='GR_direct_deposition' "
+                "or current_calculation='GR_esirkepov'"
+            )
         if static_config["particle_pusher"] != "hybrid_boris_geodesic":
             raise ValueError("static_metric requires particle_pusher='hybrid_boris_geodesic'")
     elif static_config["current_calculation"] not in ("j_from_rhov", "esirkepov"):
@@ -730,6 +748,8 @@ def initialize_simulation(toml_file):
         print("Using Esirkepov current calculation method")
     elif static_config["current_deposition"] == "GR_direct":
         print(f"Using GR direct current calculation method with filter: {static_config['filter_j']}")
+    elif static_config["current_deposition"] == "GR_esirkepov":
+        print("Using GR Esirkepov charge-conserving current calculation method")
     elif static_config["current_calculation"] == "j_from_rhov":
         print(f"Using J from rhov current calculation method with filter: {static_config['filter_j']}")
 

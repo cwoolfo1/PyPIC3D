@@ -1,4 +1,7 @@
+import jax
+
 from PyPIC3D.deposition.GR_direct_deposition import GR_direct_deposition
+from PyPIC3D.deposition.GR_Esirkepov import GR_Esirkepov_current
 from PyPIC3D.particles.particle_tile_communication import refresh_tiled_particle_tiles
 from PyPIC3D.pusher.hybrid_boris_geodesic import hybrid_boris_geodesic_push
 from PyPIC3D.utilities.field_helpers import add_external_fields
@@ -47,6 +50,12 @@ def time_loop_static_metric(
     push_D, push_B = add_external_fields(D_n, B_n, external_fields)
     # particles see evolved fields plus prescribed external fields
 
+    particles_n = particles
+    # keep the time level n positions for the charge-conserving deposition.  The
+    # push does not retile and does not wrap, so particles_n and the pushed
+    # particles share one tile frame and differencing their positions gives the
+    # true displacement.
+
     particles, centered_particles = hybrid_boris_geodesic_push(
         particles,
         species_config,
@@ -65,15 +74,38 @@ def time_loop_static_metric(
     )
     # apply particle boundaries and move midpoint particles into the tiles that own the current-deposition positions
 
-    J_n_plushalf = GR_direct_deposition(
-        centered_particles,
-        species_config,
-        J_n_minushalf,
-        metric,
-        static_parameters,
-        dynamic_parameters,
+    def esirkepov_current(_):
+        return GR_Esirkepov_current(
+            particles_n,
+            particles,
+            species_config,
+            J_n_minushalf,
+            metric,
+            static_parameters,
+            dynamic_parameters,
+        )
+    # charge-conserving deposition from the time level n and n+1 endpoints
+
+    def direct_current(_):
+        return GR_direct_deposition(
+            centered_particles,
+            species_config,
+            J_n_minushalf,
+            metric,
+            static_parameters,
+            dynamic_parameters,
+        )
+    # direct deposition from the centered particles
+
+    J_n_plushalf = jax.lax.cond(
+        static_parameters.current_deposition == "GR_esirkepov",
+        esirkepov_current,
+        direct_current,
+        operand=None,
     )
-    # deposit contravariant current density from the centered particles
+    # select the contravariant current deposition scheme.  Both branches return
+    # the physical J^i at the same Yee locations, so the field update downstream
+    # is identical either way.
 
     particles, fullstep_overflow = refresh_tiled_particle_tiles(
         particles,

@@ -486,7 +486,6 @@ def smooth_D_field(position, k=0.7):
             jnp.cos(0.3 * k * x) * jnp.cos(0.8 * k * y) * jnp.sin(k * z + 2.0),
         ]
     )
-/plan
 
 
 def smooth_B_field(position, k=0.7):
