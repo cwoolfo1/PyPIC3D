@@ -173,6 +173,11 @@ def GR_Esirkepov_current(
     )
     # the push does not change particle activity, so either set's mask will do
 
+    if metric.geometry is not None:
+        from PyPIC3D.boundary_conditions.polar import fold,refresh
+        # The lower radial face belongs to the charge budget, even though its
+        # storage lies in a halo. Preserve it before generic absorbing folding.
+        lower_flux=refresh(fold(Jx,g,tile_ny),g,tile_ny)[0,:,:,g-1,:,:]
     conformal_J = fold_tiled_vector_ghost_cells(
         (Jx, Jy, Jz),
         static_parameters,
@@ -189,6 +194,11 @@ def GR_Esirkepov_current(
     )
     # refresh the halos so the folded current is consistent across tiles
 
+    if metric.geometry is not None:
+        from PyPIC3D.boundary_conditions.polar import current_factors, divide
+        conformal_J=(conformal_J[0].at[0,:,:,g-1,:,:].set(lower_flux),)+tuple(conformal_J[1:])
+        factors=current_factors(metric.geometry,dynamic_parameters)
+        return tuple(divide(conformal_J[i],factors[i]) for i in range(3))
     return tuple(
         conformal_J[i] / metric.D[i].sqrt_gamma
         for i in range(3)

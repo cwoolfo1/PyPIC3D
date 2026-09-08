@@ -336,6 +336,8 @@ def _local_refresh_scalar_tile(
         send_negative,
         axis_parities,
     ):
+        if boundary_condition == 4:
+            continue  # polar theta is handled with explicit C/V ownership
         if reduced_axis:
             tile = _local_refresh_reduced_axis(
                 tile,
@@ -498,6 +500,8 @@ def _local_fold_scalar_tile(
         send_negative,
         axis_parities,
     ):
+        if boundary_condition == 4:
+            continue  # polar theta is handled with explicit C/V ownership
         if reduced_axis:
             tile = _local_fold_reduced_axis(
                 tile,
@@ -943,7 +947,11 @@ def update_tiled_ghost_cells(
         num_guard_cells,
         reflecting_parity=reflecting_parity,
     )
-    return updater(field_tiles)
+    result = updater(field_tiles)
+    if static_parameters.particle_boundary_conditions[1] == 4 and bc_type == BC_TYPE_PARTICLE:
+        from .polar import refresh
+        return refresh(result, num_guard_cells, tile_shape[1])
+    return result
 
 
 def update_tiled_vector_ghost_cells(
@@ -976,7 +984,12 @@ def update_tiled_vector_ghost_cells(
         num_guard_cells,
         reflecting_parity=reflecting_parity,
     )
-    return updater(field_tiles)
+    result = updater(field_tiles)
+    if static_parameters.particle_boundary_conditions[1] == 4 and bc_type == BC_TYPE_PARTICLE:
+        from .polar import refresh
+        arrays = tuple(refresh(result[i], num_guard_cells, tile_shape[1], i == 1, -1 if i == 1 else 1) for i in range(3))
+        return jnp.stack(arrays) if hasattr(result, 'ndim') and result.ndim == 7 else arrays
+    return result
 
 
 def apply_tiled_zero_boundary(field_tiles, static_parameters, axis, num_guard_cells=2):
@@ -1059,7 +1072,11 @@ def fold_tiled_ghost_cells(
         num_guard_cells,
         reflecting_parity=reflecting_parity,
     )
-    return folder(field_tiles)
+    result = folder(field_tiles)
+    if static_parameters.particle_boundary_conditions[1] == 4 and bc_type == BC_TYPE_PARTICLE:
+        from .polar import fold
+        return fold(result, num_guard_cells, tile_shape[1])
+    return result
 
 def fold_tiled_vector_ghost_cells(
     field_tiles,
@@ -1086,4 +1103,9 @@ def fold_tiled_vector_ghost_cells(
         num_guard_cells,
         reflecting_parity=reflecting_parity,
     )
-    return folder(field_tiles)
+    result = folder(field_tiles)
+    if static_parameters.particle_boundary_conditions[1] == 4 and bc_type == BC_TYPE_PARTICLE:
+        from .polar import fold
+        arrays = tuple(fold(result[i], num_guard_cells, tile_shape[1], i == 1, -1 if i == 1 else 1) for i in range(3))
+        return jnp.stack(arrays) if hasattr(result, 'ndim') and result.ndim == 7 else arrays
+    return result

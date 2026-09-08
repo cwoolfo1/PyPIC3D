@@ -92,13 +92,25 @@ def _kerr_schild_spherical_metric_at_position(position, mass=1.0, spin=0.0):
 
 
 def _build_yee_metric(static_parameters, dynamic_parameters, metric_at_position, mass=1.0, spin=0.0):
-    del static_parameters
+    polar_mode = static_parameters.boundary_conditions[1] == 4
+    if polar_mode and (static_parameters.metric != 'kerr_schild_spherical'
+                       or metric_at_position is not _kerr_schild_spherical_metric_at_position
+                       or mass != static_parameters.metric_mass
+                       or spin != static_parameters.metric_spin):
+        raise ValueError('BC_POLAR requires spherical Kerr-Schild initializer mass/spin to match static parameters')
     metric_at_position = partial(
         metric_at_position,
         mass=mass,
         spin=spin,
     )
 
+    if polar_mode:
+        from PyPIC3D.boundary_conditions.polar import safe_grid_provider
+        def polar_values(position):
+            r=position[0]; sig=r*r+spin*spin; xi=1+2*mass*r/sig
+            return xi**-0.5,jnp.array([(xi-1)/xi,0.,0.]),jnp.diag(jnp.array([xi,sig,0.]))
+        metric_at_position.polar_values=polar_values
+        metric_at_position=safe_grid_provider(metric_at_position)
     D = tuple(
         analytic_metric_on_grid(
             _location_grid(location, dynamic_parameters),
@@ -122,13 +134,17 @@ def _build_yee_metric(static_parameters, dynamic_parameters, metric_at_position,
         metric_at_position,
     )
 
-    return YeeMetric(
+    result = YeeMetric(
         D=D,
         B=B,
         center=center,
         vertex=vertex,
         center_grad_gamma_inv=center_grad_gamma_inv,
     )
+    if polar_mode:
+        from PyPIC3D.boundary_conditions.polar import build_geometry
+        result=result._replace(geometry=build_geometry(static_parameters,dynamic_parameters,result))
+    return result
 
 
 def initialize_kerr_schild_cartesian_metric(static_parameters, dynamic_parameters, mass=1.0, spin=0.0):

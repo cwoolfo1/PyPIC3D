@@ -7,6 +7,7 @@ import jax.numpy as jnp
 # import external libraries
 
 # Integer codes that identify the boundary condition type on each axis.
+BC_POLAR = 4      # spherical axis, with staggering-aware polar ownership
 BC_PERIODIC = 0     # periodic (wrap-around); ghost cells mirror opposite interior edge
 BC_CONDUCTING = 1   # conducting (Dirichlet); tangential E components vanish at walls
 BC_ABSORBING = 2    # absorbing; exterior particle contributions are discarded

@@ -113,6 +113,18 @@ def build_static_parameters(static_config):
     if particle_batch_size <= 0:
         raise ValueError("particle_batch_size must be a positive integer.")
 
+    bc = _axis_tuple(static_config['boundary_conditions'])
+    pbc = _axis_tuple(static_config.get('particle_boundary_conditions', (0,0,0)))
+    if 4 in bc or 4 in pbc:
+        if (bc[1] != 4 or pbc[1] != 4 or 4 in (bc[0],bc[2],pbc[0],pbc[2])
+            or static_config.get('metric') not in ('flat_spherical','kerr_schild_spherical')
+            or static_config.get('solver') != 'static_metric'
+            or int(static_config['Nz']) != 1 or tile_shape[1] != int(static_config['Ny'])
+            or static_config.get('current_filter','none') != 'none'
+            or int(static_config['guard_cells']) < 3):
+            raise ValueError('BC_POLAR requires spherical static_metric, one theta tile, Nz=1, and no current filter')
+        if abs(float(static_config.get('y_min',0))) > 1e-14 or abs(float(static_config['y_wind'])-3.141592653589793)>1e-14:
+            raise ValueError('BC_POLAR requires theta in [0, pi]')
     return StaticParameters(
         name=static_config.get("name", "Default Simulation"),
         output_dir=static_config.get("output_dir", "."),

@@ -45,13 +45,17 @@ def compute_covariant_E(D_tiles, B_tiles, metric):
     Compute covariant E_i on the D component locations using FPIC Eq. (10).
     """
 
+    def interpolate(field, source_metric, target_metric, source_location, target_location):
+        if metric.geometry is not None:
+            return _location_interpolate(field,source_location,target_location)
+        return _metric_weighted_interpolate(field,source_metric,target_metric,source_location,target_location)
     E_cov = []
     for i, target_location in enumerate(D_FIELD_LOCATIONS):
         D_on_target = []
         B_on_target = []
         for j, source_location in enumerate(D_FIELD_LOCATIONS):
             D_on_target.append(
-                _metric_weighted_interpolate(
+                interpolate(
                     D_tiles[j],
                     metric.D[j],
                     metric.D[i],
@@ -61,7 +65,7 @@ def compute_covariant_E(D_tiles, B_tiles, metric):
             )
         for j, source_location in enumerate(B_FIELD_LOCATIONS):
             B_on_target.append(
-                _metric_weighted_interpolate(
+                interpolate(
                     B_tiles[j],
                     metric.B[j],
                     metric.D[i],
@@ -87,13 +91,17 @@ def compute_covariant_H(D_tiles, B_tiles, metric):
     Compute covariant H_i on the B component locations using FPIC Eq. (9).
     """
 
+    def interpolate(field, source_metric, target_metric, source_location, target_location):
+        if metric.geometry is not None:
+            return _location_interpolate(field,source_location,target_location)
+        return _metric_weighted_interpolate(field,source_metric,target_metric,source_location,target_location)
     H_cov = []
     for i, target_location in enumerate(B_FIELD_LOCATIONS):
         B_on_target = []
         D_on_target = []
         for j, source_location in enumerate(B_FIELD_LOCATIONS):
             B_on_target.append(
-                _metric_weighted_interpolate(
+                interpolate(
                     B_tiles[j],
                     metric.B[j],
                     metric.B[i],
@@ -103,7 +111,7 @@ def compute_covariant_H(D_tiles, B_tiles, metric):
             )
         for j, source_location in enumerate(D_FIELD_LOCATIONS):
             D_on_target.append(
-                _metric_weighted_interpolate(
+                interpolate(
                     D_tiles[j],
                     metric.D[j],
                     metric.B[i],
@@ -129,6 +137,9 @@ def update_D_relativity(D_tiles, H_tiles, J_tiles, metric, static_parameters, dy
     Update contravariant displacement field D^i in a fixed 3+1 metric.
     """
 
+    if metric.geometry is not None:
+        from PyPIC3D.boundary_conditions.polar import update_fields
+        return update_fields(D_tiles,H_tiles,J_tiles,metric,static_parameters,dynamic_parameters,dt)
     Dx, Dy, Dz = D_tiles
     Jx, Jy, Jz = J_tiles
     Hx, Hy, Hz = H_tiles
@@ -180,6 +191,9 @@ def update_B_relativity(E_tiles, B_tiles, metric, static_parameters, dynamic_par
     Update contravariant magnetic field B^i in a fixed 3+1 metric.
     """
 
+    if metric.geometry is not None:
+        from PyPIC3D.boundary_conditions.polar import update_fields
+        return update_fields(B_tiles,E_tiles,None,metric,static_parameters,dynamic_parameters,dt,magnetic=True)
     Bx, By, Bz = B_tiles
     Ex, Ey, Ez = E_tiles
 

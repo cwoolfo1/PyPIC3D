@@ -46,6 +46,7 @@ from PyPIC3D.boundary_conditions.grid_and_stencil import (
     BC_CONDUCTING,
     BC_CONSTANT,
     BC_PERIODIC,
+    BC_POLAR,
 )
 from PyPIC3D.boundary_conditions.PML import initialize_tiled_pml_state, load_pml_from_toml
 from PyPIC3D.boundary_conditions.supergaussian import load_supergaussian_from_toml
@@ -67,6 +68,7 @@ def _encode_field_bc(bc_name):
     """
     bc_codes = {
         "periodic": BC_PERIODIC,
+        "polar": BC_POLAR,
         "conducting": BC_CONDUCTING,
         "constant": BC_CONSTANT,
     }
@@ -81,6 +83,7 @@ def _encode_particle_bc(bc_name):
     """
     bc_codes = {
         "periodic": BC_PERIODIC,
+        "polar": BC_POLAR,
         "reflecting": BC_CONDUCTING,
         "absorbing": BC_ABSORBING,
     }

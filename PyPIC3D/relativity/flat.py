@@ -127,8 +127,10 @@ def initialize_flat_spherical_metric(static_parameters, dynamic_parameters):
     Build the flat spherical metric, ds^2 = dr^2 + r^2 dtheta^2 + r^2 sin^2(theta)dphi^2.
     """
 
-    del static_parameters
-    return _build_yee_metric(
-        dynamic_parameters,
-        _flat_spherical_metric_at_position,
-    )
+    if static_parameters.boundary_conditions[1] == 4:
+        if static_parameters.metric != 'flat_spherical':
+            raise ValueError('BC_POLAR flat-spherical initializer must match static parameters')
+        from PyPIC3D.boundary_conditions.polar import safe_grid_provider, build_geometry
+        result=_build_yee_metric(dynamic_parameters,safe_grid_provider(_flat_spherical_metric_at_position))
+        return result._replace(geometry=build_geometry(static_parameters,dynamic_parameters,result))
+    return _build_yee_metric(dynamic_parameters, _flat_spherical_metric_at_position)

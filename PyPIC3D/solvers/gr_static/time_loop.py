@@ -23,6 +23,7 @@ def time_loop_static_metric(
     fields,
     static_parameters,
     dynamic_parameters,
+    return_diagnostics=False,
 ):
     """
     Advance a tiled PIC system in a prescribed 3+1 metric.
@@ -37,6 +38,14 @@ def time_loop_static_metric(
     D_n_minusone, B_n_minusthreehalves = previous_fields
     # unpack the previous fixed-metric field state
 
+    if metric.geometry is not None:
+        from PyPIC3D.boundary_conditions.polar import refresh_vector
+        from PyPIC3D.relativity.core import D_FIELD_LOCATIONS, B_FIELD_LOCATIONS
+        D_n=refresh_vector(D_n,static_parameters,D_FIELD_LOCATIONS,'D')
+        B_n_minushalf=refresh_vector(B_n_minushalf,static_parameters,B_FIELD_LOCATIONS,'B')
+        D_n_minusone=refresh_vector(D_n_minusone,static_parameters,D_FIELD_LOCATIONS,'D')
+        B_n_minusthreehalves=refresh_vector(B_n_minusthreehalves,static_parameters,B_FIELD_LOCATIONS,'B')
+
     D_n_minushalf = tuple( 0.5 * (D_n[i] + D_n_minusone[i]) for i in range(3) )
     B_n_minusone = tuple( 0.5 * (B_n_minushalf[i] + B_n_minusthreehalves[i]) for i in range(3) )
     # compute the centered fields for the current time step
@@ -49,6 +58,9 @@ def time_loop_static_metric(
 
     push_D, push_B = add_external_fields(D_n, B_n, external_fields)
     # particles see evolved fields plus prescribed external fields
+    if metric.geometry is not None:
+        push_D=refresh_vector(push_D,static_parameters,D_FIELD_LOCATIONS,'D')
+        push_B=refresh_vector(push_B,static_parameters,B_FIELD_LOCATIONS,'B')
 
     particles_n = particles
     # keep the time level n positions for the charge-conserving deposition.  The
@@ -107,6 +119,11 @@ def time_loop_static_metric(
     # the physical J^i at the same Yee locations, so the field update downstream
     # is identical either way.
 
+    boundary_diagnostics=None
+    if metric.geometry is not None and return_diagnostics:
+        from PyPIC3D.boundary_conditions.polar import step_diagnostics
+        boundary_diagnostics=step_diagnostics(particles_n,particles,J_n_plushalf,species_config,
+                                              metric,static_parameters,dynamic_parameters)
     particles, fullstep_overflow = refresh_tiled_particle_tiles(
         particles,
         static_parameters,
@@ -153,4 +170,4 @@ def time_loop_static_metric(
     )
     # pack the fixed-metric field state
 
-    return particles, fields
+    return (particles, fields, boundary_diagnostics) if return_diagnostics else (particles, fields)
