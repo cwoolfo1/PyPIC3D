@@ -66,9 +66,13 @@ Harris-Sheet Reconnection
    python analyze_data.py
 
 The configuration uses two x-directed tiles and therefore needs two visible
-JAX devices. The analysis command reads ``data/fields.pmd`` and writes four
-normalized MP4 diagnostics to ``analysis/``: reconnecting field lines,
-effective nonideal resistivity, and x- and z-directed bulk-flow cuts.
+JAX devices. The analysis command reads ``data/fields.pmd`` and writes
+``analysis/field_lines.mp4``. The movie shows the full x domain and supported
+cell-centered z extent, with normalized coordinates, time, and magnetic
+magnitude. A labeled two-cell Gaussian display filter smooths the field lines;
+the color scale stays fixed throughout the movie. Only the magnetic mesh is
+required. Use ``--fields``, ``--output-dir``, ``--fps``, and ``--dpi`` to override
+the input, output directory, frame rate (10), and resolution (150).
 
 Notes
 -----

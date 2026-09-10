@@ -117,7 +117,7 @@ def write_movie(series, indices, output_path, color_limit, fps, dpi):
     figure, axis = plt.subplots(figsize=(8, 6), constrained_layout=True)
     norm = colors.Normalize(vmin=0, vmax=color_limit)
     colorbar = figure.colorbar(
-        plt.cm.ScalarMappable(norm=norm, cmap="viridis"), ax=axis
+        plt.cm.ScalarMappable(norm=norm, cmap="plasma"), ax=axis
     )
     colorbar.set_label(r"$|B|/B_0$")
     writer = animation.FFMpegWriter(fps=fps, codec="h264", bitrate=2400)
@@ -130,21 +130,17 @@ def write_movie(series, indices, output_path, color_limit, fps, dpi):
                 axis.clear()
                 axis.set_facecolor("black")
                 axis.streamplot(
-                    x, z, bx.T, bz.T, color=magnitude.T, cmap="viridis", norm=norm,
+                    x, z, bx.T, bz.T, color=magnitude.T, cmap="plasma", norm=norm,
                     density=(1.5, 1.2), linewidth=0.9, arrowsize=0.7, broken_streamlines=False,
                 )
-                axis.text(
-                    0.99, 0.02, rf"display smoothing: $\sigma={smoothing_width:.2f}\,d_e$",
-                    transform=axis.transAxes, ha="right", va="bottom", color="white",
-                    fontsize="small", bbox={"facecolor": "black", "alpha": 0.55, "edgecolor": "none"},
-                )
+
                 axis.set(
                     xlabel=r"$x/d_e$", ylabel=r"$z/d_e$",
                     xlim=(x[0], x[-1]), ylim=(z[0], z[-1]),
                 )
                 axis.set_aspect("equal", adjustable="box")
                 axis.set_title(
-                    rf"Reconnecting magnetic field    $\Omega_c t$ = {CYCLOTRON_FREQUENCY * time:.3f}"
+                    rf"Magnetic field lines  $\Omega_c t$ = {CYCLOTRON_FREQUENCY * time:.3f}"
                 )
                 writer.grab_frame()
                 del magnetic, bx, bz, magnitude
