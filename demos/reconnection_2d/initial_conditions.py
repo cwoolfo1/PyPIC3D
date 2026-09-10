@@ -12,6 +12,7 @@ import numpy as np
 
 from parameters import (
     B0,
+    DEBYE_LENGTH,
     DRIFT_SPEED,
     LIGHT_SPEED,
     LX,
@@ -259,6 +260,8 @@ def main() -> None:
     generate_initial_conditions()
     print("Harris-sheet initial conditions generated.")
     print(f"Grid: {NX} x {NY} x {NZ}")
+    print(f"Debye length (sheet, per species): {DEBYE_LENGTH:.9g} m")
+    print(f"Y width: {LY:.9g} m (one Debye length)")
     print(f"Particles: {N_PARTICLES_PER_SPECIES:,} per species")
     print(f"B0: {B0:.9g} T")
     print(f"Sheet half-width: {SHEET_HALF_WIDTH:.9g} m")
