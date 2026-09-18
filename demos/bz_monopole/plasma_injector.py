@@ -3,12 +3,13 @@ from typing import NamedTuple
 
 import jax
 import jax.numpy as jnp
+from jax.experimental import checkify
 
 from PyPIC3D.particles.particle_class import TiledParticles, SpeciesConfig
 from PyPIC3D.particles.particle_tile_communication import shard_tiled_particles
 from PyPIC3D.pusher.particle_push import seed_leapfrog_velocity
-from PyPIC3D.pusher.hybrid_boris_geodesic import _sample_scalar
-from demos.bz_monopole.magnetization import proper_volume
+from PyPIC3D.relativity.particle_metric import (sample_particle_metric, safe_inactive_positions)
+from .magnetization import proper_volume
 
 
 class InjectionReport(NamedTuple):
@@ -16,6 +17,7 @@ class InjectionReport(NamedTuple):
     inserted: jax.Array
     rejected: jax.Array
     newborn: jax.Array
+    errors: tuple = ()
 
 
 def empty_particles(p, static):
@@ -51,6 +53,19 @@ def thermal_momentum(key, temperature):
 def orthonormal_to_covariant(momentum, gamma):
     """Transform with the supplied grid-interpolated covariant spatial metric."""
     return jnp.linalg.cholesky(gamma) @ momentum
+
+
+def birth_covariant_momentum(momentum, positions, active, metric, grid, static, tile=None):
+    """Use exactly the pusher reconstruction; unused candidates are safely masked."""
+    g = static.guard_cells
+    evaluation = safe_inactive_positions(positions, active, grid, (True,True,False), g)
+    sampled, _ = sample_particle_metric(
+        metric, evaluation, grid, static.shape_factor, static.metric,
+        (True,True,False), (g,g,g), derivatives=False,
+        stage="injection birth transform", tile=tile,
+        regularize_spherical=static.particle_coordinates == 'cartesian')
+    covariant = jax.vmap(orthonormal_to_covariant)(momentum, sampled.gamma)
+    return jnp.where(active[...,None], covariant, 0.)
 
 
 def sample_position(key, rlo, rhi, tlo, thi, spin):
@@ -94,7 +109,7 @@ def inject_pairs(particles, species, magnetization, D, B, metric, static, dynami
     next_key, event_key = jax.random.split(key)
     event_key = jax.random.fold_in(event_key, step)
 
-    def one_tile(x, u, active, sig, valid, vol, rline, tline, pline, gamma_grid, tile_id):
+    def one_tile(x, u, active, sig, valid, vol, rline, tline, pline, primitive_metric, tile_id):
         rr, tt = jnp.meshgrid(rline[g:-g], tline[g:-g+1], indexing="ij")
         rr, tt = rr.reshape(-1), tt.reshape(-1)
         cells = jnp.arange(nr*nt)
@@ -129,9 +144,10 @@ def inject_pairs(particles, species, magnetization, D, B, metric, static, dynami
         positions=jax.vmap(lambda k,rl,rh,tl,th:sample_position(jax.random.fold_in(k,1),rl,rh,tl,th,p.spin))(
             keys,rlo[cell],rhi[cell],tlo[cell],thi[cell])
         momenta = jax.vmap(lambda k: thermal_momentum(jax.random.fold_in(k, 2), p.temperature))(keys)
-        gamma = _sample_scalar(gamma_grid,positions[:,0],positions[:,1],positions[:,2],
-                               (rline,tline,pline),static.shape_factor,(True,True,False),(g,g,g))
-        covariant = jax.vmap(orthonormal_to_covariant)(momenta, gamma)
+        # Birth transformation and backward initialization use the same metric.
+        birth_errors, covariant = checkify.checkify(lambda: birth_covariant_momentum(
+            momenta, positions, ranks < inserted, primitive_metric,
+            (rline,tline,pline), static, jnp.array([tile_id,0,0])))()
         newborn = jnp.zeros_like(active)
         for s in range(2):
             indices = jnp.nonzero(~active[s], size=slots, fill_value=slots)[0][:candidate_capacity]
@@ -140,18 +156,18 @@ def inject_pairs(particles, species, magnetization, D, B, metric, static, dynami
             u = u.at[s, indices].set(covariant, mode="drop")
             active = active.at[s, indices].set(True, mode="drop")
             newborn = newborn.at[s, indices].set(True, mode="drop")
-        return x, u, active, newborn, requested, inserted
+        return x, u, active, newborn, requested, inserted, birth_errors
 
-    x, u, active, newborn, requested, inserted = jax.vmap(one_tile)(
+    x, u, active, newborn, requested, inserted, birth_errors = jax.vmap(one_tile)(
         particles.x[:, 0, 0], particles.u[:, 0, 0], particles.active[:, 0, 0],
         sigma[:, 0, 0], valid[:, 0, 0], volume[:, 0, 0], rgrid[:, 0, 0],
         tgrid[:, 0, 0], dynamic.grids.tiled_center_grid[2][:,0,0],
-        metric.center.gamma[:,0,0], jnp.arange(p.devices))
+        jax.tree.map(lambda a: a[:,0,0], metric.center), jnp.arange(p.devices))
     result = TiledParticles(x[:, None, None], u[:, None, None], active[:, None, None])
     newborn = newborn[:, None, None]
-    seeded = seed_leapfrog_velocity(result._replace(active=newborn), species, D, B, static, dynamic, metric)
+    seed_errors, seeded = checkify.checkify(lambda pts: seed_leapfrog_velocity(pts, species, D, B, static, dynamic, metric))(result._replace(active=newborn))
     result = result._replace(u=jnp.where(newborn[..., None], seeded.u, result.u))
-    return result, next_key, InjectionReport(requested, inserted, requested-inserted, newborn)
+    return result, next_key, InjectionReport(requested, inserted, requested-inserted, newborn, (birth_errors, seed_errors))
 
 
 def check_species(species):
@@ -163,8 +179,8 @@ def check_species(species):
 
 
 def self_test():
-    from demos.bz_monopole.simulation_parameters import SimulationParameters, build_runtime
-    from demos.bz_monopole.magnetization import Magnetization, deposit_number_density
+    from .simulation_parameters import SimulationParameters, build_runtime
+    from .magnetization import Magnetization, deposit_number_density
     from PyPIC3D.deposition.rho import compute_rho
     p = SimulationParameters(nr=16, ntheta=16, devices=1, pairs_per_cell=1, capacity_factor=2,
                              r_max=4., sponge_start=3.)

@@ -69,7 +69,7 @@ def measure_magnetization(particles, species, B, metric, static, dynamic):
 
 
 def self_test():
-    from demos.bz_monopole.simulation_parameters import SimulationParameters, build_runtime
+    from .simulation_parameters import SimulationParameters, build_runtime
     p = SimulationParameters(devices=1, nr=16, ntheta=16, r_max=4., sponge_start=3.)
     _, _, metric, _ = build_runtime(p)
     # A constant off-diagonal metric is an independent, exactly known contraction.

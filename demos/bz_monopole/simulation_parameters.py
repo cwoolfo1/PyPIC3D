@@ -20,25 +20,26 @@ from PyPIC3D.utilities.parameters import build_static_parameters, build_dynamic_
 @dataclass(frozen=True)
 class SimulationParameters:
     nr: int = 64
-    ntheta: int = 128
-    devices: int = 2
+    ntheta: int = 64
+    devices: int = 1
     r_min: float = 1.0
     r_max: float = 10.0
     sponge_start: float = 9.0
     spin: float = 0.2
     sigma0: float = 2500.0
     sigma_threshold: float = 2000.0
-    skin_depth: float = 0.5
+    skin_depth: float = 0.02  # Scaled demo; Entity uses 0.0025.
     temperature: float = 0.5
-    pairs_per_cell: int = 4
+    pairs_per_cell: int = 16
     capacity_factor: int = 8
     seed: int = 20260908
     courant: float = 0.2
-    gyro_angle: float = 0.1
+    gyro_angle: float = 0.1  # Legacy checkpoint parameter; unused by CFL timestepping.
     injection_interval: float = 0.1
     sponge_rate: float = 10.0
     end_time: float = 200.0
-    output_interval: float = 1.0
+    output_interval: float = 5.0
+    maximum_timestep: float | None = 0.004
     guard_cells: int = 3
 
     def validate(self):
@@ -46,6 +47,8 @@ class SimulationParameters:
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
                 raise ValueError(f"{name} must be a positive integer")
+        if self.maximum_timestep is not None and (not math.isfinite(self.maximum_timestep) or self.maximum_timestep <= 0):
+            raise ValueError("maximum_timestep must be finite and positive")
         if self.devices not in (1, 2) or self.nr % self.devices:
             raise ValueError("Use one or two devices, with nr divisible by devices")
         if self.nr // self.devices < 4 or self.ntheta < 8 or self.ntheta % 2:
@@ -114,9 +117,20 @@ def shard_array(array, static):
     return jax.device_put(array, NamedSharding(static.field_mesh, P("tile_x", "tile_y", "tile_z")))
 
 
-def build_runtime(parameters=SimulationParameters()):
-    """Build the production runtime without TOML, test fixtures, or old demos."""
+def build_runtime(parameters=SimulationParameters(), *, timestep_policy="cfl", particle_batch_size=65536,
+                  horizon_field_cells=0, field_interpolation='physical', geodesic_iterations=0,
+                  particle_coordinates='native'):
+    """Build a runtime with explicitly selected numerical methods.
+
+    This low-level builder retains native/physical defaults for component
+    tests and callers; the demo CLI supplies the accepted Cartesian preset.
+    """
     p = parameters.validate()
+    if isinstance(particle_batch_size, bool) or not isinstance(particle_batch_size, int) or particle_batch_size <= 0:
+        raise ValueError('particle_batch_size must be a positive integer')
+    if horizon_field_cells and (p.r_min+(horizon_field_cells+1)*p.dr >= p.horizon
+                                or horizon_field_cells >= p.nr//p.devices):
+        raise ValueError('Horizon field layer and its reference plane must lie inside the horizon and first tile')
     jax.config.update("jax_enable_x64", True)
     config = dict(Nx=p.nr, Ny=p.ntheta, Nz=1, x_wind=p.r_max-p.r_min,
                   y_wind=math.pi, z_wind=2*math.pi, x_min=p.r_min,
@@ -128,7 +142,11 @@ def build_runtime(parameters=SimulationParameters()):
         particle_pusher="hybrid_boris_geodesic", current_deposition="GR_esirkepov",
         current_filter="none", shape_factor=1, guard_cells=p.guard_cells,
         tile_shape=(p.nr//p.devices, p.ntheta, 1), boundary_conditions=(3, 4, 0),
-        particle_boundary_conditions=(2, 4, 0), particle_batch_size=256))
+        # Two-GPU timing of the same checkpoint favors larger active batches;
+        # 256-particle batches spend more time in loop/kernel overhead.
+        particle_boundary_conditions=(2, 4, 0), particle_batch_size=particle_batch_size,
+        horizon_field_cells=horizon_field_cells, polar_field_interpolation=field_interpolation,
+        geodesic_iterations=geodesic_iterations, particle_coordinates=particle_coordinates))
     center, vertex = build_yee_grid(SimpleNamespace(**config))
     theta=jnp.arange(-1,p.ntheta+1,dtype=jnp.float64)*p.dtheta
     center=(center[0],theta,center[2])
@@ -138,6 +156,11 @@ def build_runtime(parameters=SimulationParameters()):
     dynamic = build_dynamic_parameters(config)
     metric = initialize_kerr_schild_spherical_metric(static, dynamic, mass=1., spin=p.spin)
     metric = jax.tree.map(lambda a: shard_array(a, static), metric)
+    from PyPIC3D.relativity.particle_metric import validate_particle_metric_grids
+    validate_particle_metric_grids(metric, dynamic.grids.tiled_center_grid, (True,True,False), p.guard_cells)
+    if particle_coordinates == 'cartesian':
+        from PyPIC3D.relativity.cartesian_particle_metric import validate_regularized_axes
+        validate_regularized_axes(metric, dynamic.grids.tiled_center_grid)
     interior = (slice(None),)*3 + (slice(p.guard_cells, -p.guard_cells),)*3
     m = metric.center
     # Directional characteristic bounds use regular analytic inverse components,
@@ -151,11 +174,28 @@ def build_runtime(parameters=SimulationParameters()):
     st=m.lapse/jnp.sqrt(sig)
     speed=jnp.stack((sr,st,jnp.zeros_like(sr)),axis=-1)
     cfl_dt = p.courant / float(jnp.max((speed[..., 0]/p.dr + speed[..., 1]/p.dtheta)[interior]))
-    gyro_dt = p.gyro_angle / (p.B0 / p.r_min**2)
-    dynamic = dynamic._replace(dt=jnp.asarray(min(cfl_dt, gyro_dt)))
+    if timestep_policy != "cfl":
+        raise ValueError('Unknown timestep policy: use cfl')
+    limits=[cfl_dt]
+    if p.maximum_timestep is not None:limits.append(p.maximum_timestep)
+    maximum_dt = p.maximum_timestep
+    dynamic = dynamic._replace(dt=jnp.asarray(min(limits)))
     lengths = jnp.sqrt(jnp.diagonal(m.gamma, axis1=-2, axis2=-1))[interior]
     report = dict(parameters=asdict(p), dt=float(dynamic.dt), cfl_dt=cfl_dt,
-                  gyro_dt=gyro_dt, n0_total=p.n0, B0=p.B0, rho0=p.larmor_radius,
+                  field_interpolation=field_interpolation,
+                  geodesic_iterations=geodesic_iterations,
+                  particle_coordinates=particle_coordinates,
+                  geodesic_nonlinear_solver=(
+                      ('cartesian_implicit_midpoint_v1' if geodesic_iterations else 'cartesian_explicit_midpoint_v1')
+                      if particle_coordinates == 'cartesian' else
+                      ('picard_newton_cyclic_chart_retry_v4' if geodesic_iterations else 'explicit_midpoint')),
+                  horizon_field_cells=horizon_field_cells,
+                  particle_batch_size=static.particle_batch_size,
+                  timestep_policy=timestep_policy,
+                  maximum_timestep=maximum_dt,
+                  metric_reconstruction=("orthonormal_spherical_hermite_v1" if particle_coordinates == 'cartesian'
+                                         else "cardinal_cubic_hermite_consistent_v1"),
+                  n0_total=p.n0, B0=p.B0, rho0=p.larmor_radius,
                   species_weight=p.weight, slots_per_species_per_tile=p.slots_per_species,
                   particle_storage_bytes=p.devices*2*p.slots_per_species*(6*8+1),
                   metric_storage_bytes=sum(a.size*a.dtype.itemsize for a in jax.tree.leaves(metric)),

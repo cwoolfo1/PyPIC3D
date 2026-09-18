@@ -29,3 +29,14 @@ demos/ot_vortex/*/
 *.mp4
 *.pmd
 *.png
+
+# Generated BZ demo outputs; retain only the compact measured reference.
+/demos/bz_monopole/**/*.npz
+/demos/bz_monopole/**/*.json
+/demos/bz_monopole/**/*.jsonl
+/demos/bz_monopole/**/*.log
+!/demos/bz_monopole/reference/diagnostics.npz
+!/demos/bz_monopole/reference/manifest.json
+!/demos/bz_monopole/reference/summary.json
+!/demos/bz_monopole/reference/entity_bz_diagnostics.png
+!/demos/bz_monopole/reference/evolution.gif

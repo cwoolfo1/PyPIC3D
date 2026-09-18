@@ -13,8 +13,8 @@ from PyPIC3D.boundary_conditions.grid_and_stencil import (
     prepare_particle_axis_stencil,
 )
 from PyPIC3D.deposition.shapes import get_first_order_weights, get_second_order_weights
-from PyPIC3D.pusher.boris import interpolate_field_to_particles
 from PyPIC3D.relativity.core import Metric, contravariant_three_velocity
+from PyPIC3D.relativity.particle_metric import sample_particle_metric, safe_inactive_positions
 from PyPIC3D.utilities.filters import tiled_bilinear_filter_vector, tiled_digital_filter_vector
 
 
@@ -26,47 +26,16 @@ def _collapse_tiled_axis_stencil(points, weights, local_n, reduced_axis, g):
     return collapse_axis_stencil(points, weights, local_n, ghost_cells=True)
 
 
-def _sample_scalar(field, x, y, z, grid, shape_factor):
-    particle_shape = x.shape
-    return interpolate_field_to_particles(
-        field,
-        x.reshape(-1),
-        y.reshape(-1),
-        z.reshape(-1),
-        grid,
-        shape_factor,
-        ghost_cells=True,
-    ).reshape(particle_shape)
-
-
-def _sample_vector(field, x, y, z, grid, shape_factor):
-    return jnp.stack(
-        tuple(_sample_scalar(field[..., i], x, y, z, grid, shape_factor) for i in range(3)),
-        axis=-1,
-    )
-
-
-def _sample_tensor(field, x, y, z, grid, shape_factor):
-    rows = []
-    for i in range(3):
-        columns = []
-        for j in range(3):
-            columns.append(_sample_scalar(field[..., i, j], x, y, z, grid, shape_factor))
-        rows.append(jnp.stack(tuple(columns), axis=-1))
-    return jnp.stack(tuple(rows), axis=-2)
-
-
-def _sample_current_metric(metric, x, y, z, grid, shape_factor):
-    return Metric(
-        lapse=_sample_scalar(metric.lapse, x, y, z, grid, shape_factor),
-        shift=_sample_vector(metric.shift, x, y, z, grid, shape_factor),
-        gamma=_sample_tensor(metric.gamma, x, y, z, grid, shape_factor),
-        gamma_inv=_sample_tensor(metric.gamma_inv, x, y, z, grid, shape_factor),
-        sqrt_gamma=_sample_scalar(metric.sqrt_gamma, x, y, z, grid, shape_factor),
-        christoffel=metric.christoffel,
-        grad_lapse=metric.grad_lapse,
-        grad_shift=metric.grad_shift,
-    )
+def _sample_current_metric(metric, x, y, z, grid, shape_factor,
+                           metric_name="flat_cartesian", active_axes=None,
+                           inactive_axis_indices=None, regularize_spherical=False):
+    if active_axes is None:
+        from PyPIC3D.boundary_conditions.grid_and_stencil import axis_has_active_cells
+        active_axes = tuple(axis_has_active_cells(len(a), ghost_cells=True) for a in grid)
+    return sample_particle_metric(
+        metric, jnp.stack((x,y,z), axis=-1), grid, shape_factor,
+        metric_name, active_axes, inactive_axis_indices, derivatives=False,
+        regularize_spherical=regularize_spherical)[0]
 
 
 def _metric_tile(metric, tx, ty, tz):
@@ -147,13 +116,19 @@ def GR_direct_deposition(
         tiled_z_grid = tiled_grid[2][tx, ty, tz]
         center_grid = (tiled_x_grid, tiled_y_grid, tiled_z_grid)
 
+        active_axes = (not reduced_x, not reduced_y, not reduced_z)
+        evaluation_position = safe_inactive_positions(
+            jnp.stack((x,y,z), axis=-1), active.astype(bool), center_grid, active_axes, g)
+        u_cov = jnp.where(active[:, None].astype(bool), u_cov, 0.)
         metric_at_particles = _sample_current_metric(
             _metric_tile(metric.center, tx, ty, tz),
-            x,
-            y,
-            z,
+            evaluation_position[:,0],
+            evaluation_position[:,1],
+            evaluation_position[:,2],
             center_grid,
             shape_factor,
+            static_parameters.metric, active_axes, (g,g,g),
+            regularize_spherical=static_parameters.particle_coordinates == 'cartesian',
         )
         v_con = contravariant_three_velocity(u_cov, metric_at_particles.gamma_inv)
         source_velocity = metric_at_particles.lapse[:, jnp.newaxis] * v_con - metric_at_particles.shift

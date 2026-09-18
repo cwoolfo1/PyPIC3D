@@ -2,7 +2,7 @@
 import unittest
 import jax.numpy as jnp
 import numpy as np
-from tests.code_tests.polar_test import setup, particle
+from tests.code_tests.polar_test import polar_runtime as polar_setup, particle
 from PyPIC3D.pusher.hybrid_boris_geodesic import (
     _sample_center_metric_at_position, _sample_center_grad_gamma_inv_at_position)
 from PyPIC3D.deposition.GR_direct_deposition import GR_direct_deposition
@@ -11,7 +11,7 @@ from PyPIC3D.boundary_conditions.polar import current_factors
 
 class TestParticleMetricGrid(unittest.TestCase):
     def supplied_metric(self):
-        p,s,d,m=setup()
+        p,s,d,m=polar_setup()
         shape=m.center.sqrt_gamma.shape
         gamma=jnp.diag(jnp.array([2.,3.,4.]))
         center=m.center._replace(
@@ -30,7 +30,9 @@ class TestParticleMetricGrid(unittest.TestCase):
         derivative=_sample_center_grad_gamma_inv_at_position(*args)
         np.testing.assert_allclose(sampled.gamma,np.broadcast_to(np.diag([2.,3.,4.]),(2,3,3)),atol=1e-12)
         np.testing.assert_allclose(sampled.lapse,.7,atol=1e-12)
-        np.testing.assert_allclose(derivative,np.broadcast_to(np.arange(27).reshape(3,3,3)*.01,(2,3,3,3)),atol=1e-12)
+        # Derivatives come from the supplied primitive metric, not the legacy
+        # independently stored inverse-derivative array.
+        np.testing.assert_allclose(derivative,0.,atol=1e-12)
 
     def test_direct_current_follows_supplied_metric(self):
         p,s,d,m=self.supplied_metric()

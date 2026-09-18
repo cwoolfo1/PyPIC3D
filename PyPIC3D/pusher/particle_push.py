@@ -276,6 +276,16 @@ def seed_leapfrog_velocity(
             static_parameters,
             half_step_parameters,
         )
+        if static_parameters.particle_coordinates == 'cartesian':
+            from PyPIC3D.relativity.cartesian_particle_metric import (
+                covariant_to_cartesian, cartesian_to_covariant,
+            )
+            # The Cartesian chart stores its staggered covector in the basis
+            # at the stored position. Discarding the seeding drift therefore
+            # also requires expressing that covector back at the original x.
+            seeded = cartesian_to_covariant(particles.x,
+                covariant_to_cartesian(stepped.x, stepped.u))
+            return particles._replace(u=jnp.where(particles.active[..., None], seeded, particles.u))
         # the geodesic push also advances x; only the velocity is wanted here
         return particles._replace(u=stepped.u)
 

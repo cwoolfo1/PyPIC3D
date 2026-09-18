@@ -58,8 +58,10 @@ def GR_Esirkepov_current(
     ``particles.u`` stores covariant ``u_i``, so the flat shortcut
     ``x^n = x^{n+1} - dt u^{n+1/2}`` does not hold in a curved chart.
 
-    No current filter is applied.  Filtering destroys the exact continuity that
-    is the entire purpose of the scheme, so the configuration layer rejects it.
+    No current filter is applied here. Filtering only J destroys continuity
+    with the raw deposited charge, so the configuration layer rejects it.
+    A caller may instead transform integrated current and charge with compatible
+    operators that commute with the discrete divergence.
     """
 
     tile_shape = tuple(int(width) for width in static_parameters.tile_shape)

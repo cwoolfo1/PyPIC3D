@@ -106,7 +106,7 @@ def _metric_locations_with_grids(metric, dynamic_parameters):
 
 
 def test_flat_cartesian_metric_matches_center_grid_shape():
-    static_parameters, dynamic_parameters = kernel_parameters(Nx=4, Ny=3, Nz=2)
+    static_parameters, dynamic_parameters = kernel_parameters(Nx=4, Ny=3, Nz=2, guard_cells=3)
 
     metric = initialize_flat_cartesian_metric(static_parameters, dynamic_parameters)
     g = int(static_parameters.guard_cells)
@@ -123,6 +123,7 @@ def test_flat_cartesian_metric_matches_center_grid_shape():
 
 def test_kerr_schild_metric_initializers_build_finite_derivatives():
     static_parameters, dynamic_parameters = kernel_parameters(
+        guard_cells=3,
         Nx=4,
         Ny=4,
         Nz=4,
@@ -165,6 +166,7 @@ def test_kerr_schild_metric_initializers_build_finite_derivatives():
 
 def test_flat_cylindrical_metric_fills_nonzero_christoffels():
     static_parameters, dynamic_parameters = kernel_parameters(
+        guard_cells=3,
         Nx=8,
         Ny=2,
         Nz=1,
@@ -198,6 +200,7 @@ def test_flat_cylindrical_metric_fills_nonzero_christoffels():
 
 def test_static_metric_constitutive_fields_include_lapse_and_shift_terms():
     static_parameters, dynamic_parameters = kernel_parameters(
+        guard_cells=3,
         Nx=4,
         Ny=4,
         Nz=4,
@@ -325,6 +328,7 @@ def test_geodesic_velocity_returns_zero_for_flat_constant_metric():
 
 def test_hybrid_boris_geodesic_push_advances_flat_neutral_particle_with_u_over_gamma():
     static_parameters, dynamic_parameters = kernel_parameters(
+        guard_cells=3,
         Nx=4,
         Ny=4,
         Nz=4,
@@ -357,6 +361,7 @@ def test_hybrid_boris_geodesic_push_advances_flat_neutral_particle_with_u_over_g
 
 def test_hybrid_boris_geodesic_push_uses_current_position_for_both_electric_half_steps():
     static_parameters, dynamic_parameters = kernel_parameters(
+        guard_cells=3,
         Nx=8,
         Ny=2,
         Nz=2,
@@ -443,6 +448,7 @@ def test_hybrid_boris_geodesic_push_uses_current_position_for_both_electric_half
 
 def test_hybrid_boris_geodesic_push_accepts_multiple_species_in_one_tile():
     static_parameters, dynamic_parameters = kernel_parameters(
+        guard_cells=3,
         Nx=4,
         Ny=4,
         Nz=4,
@@ -493,6 +499,7 @@ def test_hybrid_boris_geodesic_push_accepts_multiple_species_in_one_tile():
 
 def test_hybrid_boris_geodesic_push_masks_position_and_velocity_by_species_direction():
     static_parameters, dynamic_parameters = kernel_parameters(
+        guard_cells=3,
         Nx=4,
         Ny=4,
         Nz=4,
@@ -542,6 +549,7 @@ def test_hybrid_boris_geodesic_push_masks_position_and_velocity_by_species_direc
 
 def test_GR_direct_deposition_uses_lapse_scaled_contravariant_three_velocity():
     static_parameters, dynamic_parameters = kernel_parameters(
+        guard_cells=3,
         Nx=1,
         Ny=1,
         Nz=1,
@@ -579,6 +587,7 @@ def test_GR_direct_deposition_uses_lapse_scaled_contravariant_three_velocity():
 
 def _assert_GR_direct_deposition_uses_distributed_filters():
     static_parameters, dynamic_parameters = kernel_parameters(
+        guard_cells=3,
         Nx=8,
         Ny=1,
         Nz=1,
@@ -658,6 +667,7 @@ class TestDistributedGRFiltering(unittest.TestCase):
 
 def test_GR_direct_deposition_returns_fpic_shifted_source_current():
     static_parameters, dynamic_parameters = kernel_parameters(
+        guard_cells=3,
         Nx=1,
         Ny=1,
         Nz=1,
@@ -693,6 +703,7 @@ def test_GR_direct_deposition_returns_fpic_shifted_source_current():
 
 def test_GR_direct_deposition_masks_complete_shifted_current_by_direction():
     static_parameters, dynamic_parameters = kernel_parameters(
+        guard_cells=3,
         Nx=1,
         Ny=1,
         Nz=1,
@@ -764,6 +775,7 @@ def test_GR_direct_deposition_is_adjoint_to_staggered_field_gather():
 
     for shape_factor in (1, 2):
         static_parameters, dynamic_parameters = kernel_parameters(
+        guard_cells=3,
             Nx=8,
             Ny=4,
             Nz=4,
@@ -884,6 +896,7 @@ def test_flat_GR_direct_deposition_matches_standard_stencil_on_reduced_axes():
 
     for shape_factor in (1, 2):
         static_parameters, dynamic_parameters = kernel_parameters(
+        guard_cells=3,
             Nx=8,
             Ny=1,
             Nz=1,
@@ -933,6 +946,7 @@ def test_flat_GR_direct_deposition_matches_standard_stencil_on_reduced_axes():
 
 def test_GR_direct_deposition_returns_physical_spherical_current():
     static_parameters, dynamic_parameters = kernel_parameters(
+        guard_cells=3,
         Nx=8,
         Ny=1,
         Nz=1,
@@ -1005,6 +1019,7 @@ def test_GR_direct_deposition_returns_physical_spherical_current():
 
 def test_update_D_relativity_consumes_physical_current_without_metric_rescaling():
     static_parameters, dynamic_parameters = kernel_parameters(
+        guard_cells=3,
         Nx=4,
         Ny=4,
         Nz=1,
@@ -1053,6 +1068,7 @@ def test_update_D_relativity_consumes_physical_current_without_metric_rescaling(
 
 def test_static_metric_time_loop_retiles_midpoint_and_fullstep_particles():
     static_parameters, dynamic_parameters = kernel_parameters(
+        guard_cells=3,
         Nx=8,
         Ny=1,
         Nz=1,
@@ -1106,6 +1122,7 @@ def test_static_metric_time_loop_retiles_midpoint_and_fullstep_particles():
 
 def test_static_metric_time_loop_reports_particle_refresh_overflow():
     static_parameters, dynamic_parameters = kernel_parameters(
+        guard_cells=3,
         Nx=8,
         Ny=1,
         Nz=1,
@@ -1156,6 +1173,7 @@ def test_static_metric_time_loop_reports_particle_refresh_overflow():
 
 def test_flat_cylindrical_metric_stores_signed_sqrt_gamma_at_all_yee_locations():
     static_parameters, dynamic_parameters = kernel_parameters(
+        guard_cells=3,
         Nx=8,
         Ny=2,
         Nz=1,
@@ -1186,6 +1204,7 @@ def test_spherical_metrics_store_signed_sqrt_gamma_at_all_yee_locations():
     ntheta = 8
     dtheta = 2.0 * jnp.pi / ntheta
     static_parameters, dynamic_parameters = kernel_parameters(
+        guard_cells=3,
         Nx=4,
         Ny=ntheta,
         Nz=1,
@@ -1239,6 +1258,7 @@ def test_spherical_metrics_store_signed_sqrt_gamma_at_all_yee_locations():
 
 def test_static_metric_time_loop_keeps_metric_state_tail():
     static_parameters, dynamic_parameters = kernel_parameters(
+        guard_cells=3,
         Nx=4,
         Ny=4,
         Nz=4,
@@ -1279,6 +1299,7 @@ def test_static_metric_time_loop_keeps_metric_state_tail():
 
 def test_static_metric_time_loop_accepts_empty_particle_storage():
     static_parameters, dynamic_parameters = kernel_parameters(
+        guard_cells=3,
         Nx=4,
         Ny=4,
         Nz=1,
@@ -1331,6 +1352,7 @@ def test_static_metric_time_loop_accepts_empty_particle_storage():
 
 def test_static_metric_dispatch_contract_accepts_hybrid_gr_direct_path():
     static_parameters, dynamic_parameters = kernel_parameters(
+        guard_cells=3,
         solver="static_metric",
         current_deposition="GR_direct",
         particle_pusher="hybrid_boris_geodesic",

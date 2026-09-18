@@ -43,7 +43,7 @@ def kernel_parameters(
     dz=None,
     dt=0.05,
     tile_shape=None,
-    guard_cells=2,
+    guard_cells=None,
     shape_factor=1,
     boundary_conditions=(BC_PERIODIC, BC_PERIODIC, BC_PERIODIC),
     particle_boundary_conditions=(0, 0, 0),
@@ -77,6 +77,8 @@ def kernel_parameters(
     particle_tile_capacity_factor=1.0,
     particle_batch_size=256,
 ):
+    if guard_cells is None:
+        guard_cells = 3 if solver == "static_metric" or particle_pusher == "hybrid_boris_geodesic" else 2
     if dx is None:
         dx = x_wind / Nx
     if dy is None:

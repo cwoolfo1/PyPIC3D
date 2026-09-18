@@ -62,6 +62,14 @@ def refresh_vector(vector, static, locations, field_kind=None):
     g, n = static.guard_cells, static.tile_shape[1]
     result=[]
     for i,(a,loc) in enumerate(zip(vector,locations)):
+        cells = static.horizon_field_cells
+        if cells and field_kind in ('D', 'B'):
+            # Entity II sec. 3.3.3: freeze the inner n_filter+1 physical
+            # planes and their ghosts to the next plane, inside the horizon.
+            # Auxiliary E/H have metric factors and must not be flattened.
+            if cells >= static.tile_shape[0]:
+                raise ValueError('Horizon boundary reference must lie in the first radial tile')
+            a = a.at[0, :, :, :g+cells].set(a[0, :, :, g+cells:g+cells+1])
         if (field_kind == 'D' and i == 2) or (field_kind == 'B' and i == 1):
             a=a.at[plane(a,g)].set(0).at[plane(a,g+n)].set(0)
         result.append(refresh(a,g,n,loc[1]=='V',-1 if i==1 else 1))

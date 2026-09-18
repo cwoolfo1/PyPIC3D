@@ -24,12 +24,17 @@ def time_loop_static_metric(
     static_parameters,
     dynamic_parameters,
     return_diagnostics=False,
+    return_errors=False,
+    current_transform=None,
 ):
     """
     Advance a tiled PIC system in a prescribed 3+1 metric.
 
     The first field slot is the contravariant displacement field ``D^i``.  The
     particle velocity slot stores covariant spatial components ``u_i``.
+    An optional ``current_transform`` may apply a compatible source filter.
+    Its caller must use the same commuting transform for deposited charge
+    when checking Gauss's law; arbitrary current-only smoothing is not valid.
     """
 
     D_n, B_n_minushalf, J_n_minushalf, rho, phi, external_fields, metric, previous_fields, overflow_previous = fields
@@ -50,7 +55,8 @@ def time_loop_static_metric(
     B_n_minusone = tuple( 0.5 * (B_n_minushalf[i] + B_n_minusthreehalves[i]) for i in range(3) )
     # compute the centered fields for the current time step
 
-    E_n_minusonehalf = compute_covariant_E(D_n_minushalf, B_n_minushalf, metric)
+    interpolation = static_parameters.polar_field_interpolation
+    E_n_minusonehalf = compute_covariant_E(D_n_minushalf, B_n_minushalf, metric, interpolation)
     # compute the covariant electric field from the centered displacement and magnetic fields
 
     B_n = update_B_relativity(E_n_minusonehalf, B_n_minusone, metric, static_parameters, dynamic_parameters, dynamic_parameters.dt)
@@ -68,15 +74,14 @@ def time_loop_static_metric(
     # particles share one tile frame and differencing their positions gives the
     # true displacement.
 
-    particles, centered_particles = hybrid_boris_geodesic_push(
-        particles,
-        species_config,
-        push_D,
-        push_B,
-        metric,
-        static_parameters,
-        dynamic_parameters,
-    )
+    push_args=(particles, species_config, push_D, push_B, metric,
+               static_parameters, dynamic_parameters)
+    if return_errors:
+        from jax.experimental import checkify
+        push_errors, (particles, centered_particles) = checkify.checkify(
+            lambda pts: hybrid_boris_geodesic_push(pts,*push_args[1:]))(particles)
+    else:
+        particles, centered_particles = hybrid_boris_geodesic_push(*push_args)
     # advance full-step particles and keep the intermediate particles (x_n_plushalf, v_n_plushalf) for the centered current deposition
 
     centered_particles, centered_overflow = refresh_tiled_particle_tiles(
@@ -109,15 +114,13 @@ def time_loop_static_metric(
         )
     # direct deposition from the centered particles
 
-    J_n_plushalf = jax.lax.cond(
-        static_parameters.current_deposition == "GR_esirkepov",
-        esirkepov_current,
-        direct_current,
-        operand=None,
-    )
-    # select the contravariant current deposition scheme.  Both branches return
-    # the physical J^i at the same Yee locations, so the field update downstream
-    # is identical either way.
+    # The scheme is static configuration. Trace only the selected source kernel;
+    # their checkify error trees need not have identical batched shapes.
+    J_n_plushalf = (esirkepov_current(None)
+                   if static_parameters.current_deposition == "GR_esirkepov"
+                   else direct_current(None))
+    if current_transform is not None:
+        J_n_plushalf = current_transform(J_n_plushalf)
 
     boundary_diagnostics=None
     if metric.geometry is not None and return_diagnostics:
@@ -133,9 +136,9 @@ def time_loop_static_metric(
     # apply boundaries and restore full-step tile ownership for the next push while preserving all overflow events
 
 
-    E_n = compute_covariant_E(D_n, B_n, metric)
+    E_n = compute_covariant_E(D_n, B_n, metric, interpolation)
     # compute the covariant electric field from the updated displacement and magnetic fields
-    H_n = compute_covariant_H(D_n, B_n, metric)
+    H_n = compute_covariant_H(D_n, B_n, metric, interpolation)
     # compute the covariant magnetic field from the updated displacement and magnetic fields
 
     B_n_plushalf = update_B_relativity(E_n, B_n_minushalf, metric, static_parameters, dynamic_parameters, dynamic_parameters.dt)
@@ -147,7 +150,7 @@ def time_loop_static_metric(
     D_n_plushalf = update_D_relativity(D_n_minushalf, H_n, J_n, metric, static_parameters, dynamic_parameters, dynamic_parameters.dt)
     # update the contravariant displacement field using the updated magnetic field and current
 
-    H_n_plushalf = compute_covariant_H(D_n_plushalf, B_n_plushalf, metric)
+    H_n_plushalf = compute_covariant_H(D_n_plushalf, B_n_plushalf, metric, interpolation)
     # compute the covariant magnetic field from the updated displacement and magnetic fields
 
     D_n_plusone = update_D_relativity(D_n, H_n_plushalf, J_n_plushalf, metric, static_parameters, dynamic_parameters, dynamic_parameters.dt)
@@ -170,4 +173,5 @@ def time_loop_static_metric(
     )
     # pack the fixed-metric field state
 
-    return (particles, fields, boundary_diagnostics) if return_diagnostics else (particles, fields)
+    result = (particles, fields, boundary_diagnostics) if return_diagnostics else (particles, fields)
+    return (push_errors,result) if return_errors else result

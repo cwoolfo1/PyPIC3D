@@ -1,1 +1,1 @@
-"""Fresh, independently testable Blandford--Znajek monopole experiment."""
+"""Low-resolution Blandford–Znajek monopole demonstration."""

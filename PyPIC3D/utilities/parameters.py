@@ -43,6 +43,10 @@ class StaticParameters(NamedTuple):
     boundary_conditions: tuple
     particle_boundary_conditions: tuple
     field_mesh: object
+    horizon_field_cells: int = 0
+    polar_field_interpolation: str = 'physical'
+    geodesic_iterations: int = 0
+    particle_coordinates: str = 'native'
 
 
 class DynamicParameters(NamedTuple):
@@ -106,6 +110,39 @@ def build_static_parameters(static_config):
     non-jitted Python dispatch, not traced as dynamic arrays.
     """
 
+    static_config = dict(static_config)
+    geodesic_iterations = static_config.get('geodesic_iterations', 0)
+    particle_coordinates = static_config.get('particle_coordinates', 'native')
+    if particle_coordinates not in ('native', 'cartesian'):
+        raise ValueError('particle_coordinates must be native or cartesian')
+    if particle_coordinates == 'cartesian' and (
+            static_config.get('metric') not in ('flat_spherical', 'kerr_schild_spherical')
+            or int(static_config.get('Nz', 1)) != 1
+            or static_config.get('solver') != 'static_metric'
+            or static_config.get('particle_pusher') != 'hybrid_boris_geodesic'):
+        raise ValueError('Cartesian particle chart requires an axisymmetric spherical hybrid pusher')
+    if isinstance(geodesic_iterations, bool) or not isinstance(geodesic_iterations, Integral) or geodesic_iterations < 0:
+        raise ValueError('geodesic_iterations must be a nonnegative integer')
+    interpolation = static_config.get('polar_field_interpolation', 'physical')
+    if interpolation not in ('physical', 'entity'):
+        raise ValueError('Unknown polar field interpolation')
+    if interpolation == 'entity' and (static_config.get('solver') != 'static_metric'
+            or static_config.get('metric') not in ('kerr_schild_spherical', 'flat_spherical')
+            or _axis_tuple(static_config['boundary_conditions'])[1] != 4):
+        raise ValueError('Entity field interpolation requires the polar spherical solver')
+    horizon_cells = static_config.get('horizon_field_cells', 0)
+    if isinstance(horizon_cells, bool) or not isinstance(horizon_cells, Integral) or horizon_cells < 0:
+        raise ValueError('horizon_field_cells must be a nonnegative integer')
+    if horizon_cells and (static_config.get('solver') != 'static_metric'
+                          or static_config.get('metric') != 'kerr_schild_spherical'
+                          or _axis_tuple(static_config['boundary_conditions'])[1] != 4):
+        raise ValueError('Horizon field layers require the polar spherical Kerr-Schild solver')
+    hybrid = (static_config.get("solver") == "static_metric" or
+              static_config.get("particle_pusher") == "hybrid_boris_geodesic")
+    if static_config.get("guard_cells") is None:
+        static_config["guard_cells"] = 3 if hybrid else 2
+    if hybrid and int(static_config["guard_cells"]) < 3:
+        raise ValueError("Hybrid Hermite particle metrics require guard_cells >= 3")
     tile_shape = _tile_shape(static_config)
     particle_batch_size = static_config.get("particle_batch_size", 1)
     if isinstance(particle_batch_size, bool) or not isinstance(particle_batch_size, Integral):
@@ -158,6 +195,10 @@ def build_static_parameters(static_config):
             static_config.get("particle_boundary_conditions", {"x": 0, "y": 0, "z": 0})
         ),
         field_mesh=_field_mesh(static_config, tile_shape),
+        horizon_field_cells=int(horizon_cells),
+        polar_field_interpolation=interpolation,
+        geodesic_iterations=int(geodesic_iterations),
+        particle_coordinates=particle_coordinates,
     )
 
 
@@ -214,6 +255,12 @@ def _output_value(value):
 def static_parameters_for_output(static_parameters):
     skip = {"field_mesh"}
     static_items = static_parameters._asdict()
+    if static_parameters.solver == "static_metric":
+        if static_parameters.particle_coordinates == 'cartesian':
+            from PyPIC3D.relativity.cartesian_particle_metric import RECONSTRUCTION
+        else:
+            from PyPIC3D.relativity.particle_metric import RECONSTRUCTION
+        static_items["particle_metric_reconstruction"] = RECONSTRUCTION
     return {
         key: _output_value(value)
         for key, value in static_items.items()

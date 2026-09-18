@@ -702,7 +702,10 @@ class TestAnalyticMetricsAgainstClosedForm(unittest.TestCase):
             )
             radius_drift = abs(float(x_final[0]) - radius) / radius
             theta_drift = abs(float(x_final[1]) - 0.5 * math.pi)
-            azimuth_error = abs(float(x_final[2]) - 0.98 * 2.0 * math.pi)
+            # run_production_pusher rounds the step count; compare at that
+            # actual time, not the unachieved requested endpoint.
+            actual_time = round((0.98 * period) / 0.05) * 0.05
+            azimuth_error = abs(float(x_final[2]) - omega * actual_time)
             momentum_error = abs(float(u_final[2]) - angular_momentum) / abs(angular_momentum)
             self.assertLess(radius_drift, 2.0e-3, f"spin={spin} radius drift {radius_drift}")
             self.assertLess(theta_drift, 1.0e-4, f"spin={spin} theta drift {theta_drift}")

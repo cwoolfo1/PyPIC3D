@@ -449,6 +449,13 @@ def initialize_simulation(toml_file):
             plotting_parameters,
         )
 
+    explicitly_configured_guards = any(
+        "guard_cells" in config.get(section, {})
+        for section in ("simulation_parameters", "static_parameters")
+    )
+    if not explicitly_configured_guards and static_config["solver"] == "static_metric":
+        static_config["guard_cells"] = 3
+
     print(f"Initializing Simulation: { static_config['name'] }\n")
     print(f"Using boundary conditions: x: {static_config['x_bc']}, y: {static_config['y_bc']}, z: {static_config['z_bc']}\n")
 
@@ -485,6 +492,8 @@ def initialize_simulation(toml_file):
     guard_cells = int(static_config["guard_cells"])
     if guard_cells < 1:
         raise ValueError("Tiled fields require at least one guard cell.")
+    if static_metric and guard_cells < 3:
+        raise ValueError("Hybrid Hermite particle metrics require guard_cells >= 3")
     static_config["guard_cells"] = guard_cells
     _validate_current_filter_contract(static_config)
 
@@ -594,6 +603,9 @@ def initialize_simulation(toml_file):
         if static_metric
         else None
     )
+    if static_metric and static_parameters.particle_coordinates == 'cartesian':
+        from PyPIC3D.relativity.cartesian_particle_metric import validate_regularized_axes
+        validate_regularized_axes(metric, dynamic_parameters.grids.tiled_center_grid)
 
     particles, species_config, particle_species_names, particle_metadata = load_particles_from_toml(
         config,
