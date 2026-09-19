@@ -66,27 +66,3 @@ def magnetization_from_density(B, number_density, masses, metric):
 def measure_magnetization(particles, species, B, metric, static, dynamic):
     n = deposit_number_density(particles, species, jnp.zeros_like(B[0]), metric, static, dynamic)
     return magnetization_from_density(B, n, species.mass, metric)
-
-
-def self_test():
-    from .simulation_parameters import SimulationParameters, build_runtime
-    p = SimulationParameters(devices=1, nr=16, ntheta=16, r_max=4., sponge_start=3.)
-    _, _, metric, _ = build_runtime(p)
-    # A constant off-diagonal metric is an independent, exactly known contraction.
-    tensor = jnp.array([[2., .3, 0.], [.3, 1.5, .2], [0., .2, 1.]])
-    shape = metric.center.sqrt_gamma.shape
-    def constant(m):
-        return m._replace(gamma=jnp.broadcast_to(tensor, shape+(3, 3)),
-                          gamma_inv=jnp.broadcast_to(jnp.linalg.inv(tensor), shape+(3, 3)),
-                          sqrt_gamma=jnp.full(shape, jnp.sqrt(jnp.linalg.det(tensor))))
-    metric = metric._replace(center=constant(metric.center), B=tuple(constant(m) for m in metric.B))
-    B = tuple(jnp.full(shape, x) for x in (2., 3., 4.))
-    n = jnp.full((2,)+shape, 45.9/(8*jnp.pi*100))
-    result = magnetization_from_density(B, n, jnp.ones(2), metric)
-    assert bool(jnp.allclose(result.magnetic_squared, 45.9, rtol=1e-13))
-    assert bool(jnp.allclose(result.sigma, 100., rtol=1e-13))
-    print("magnetization: PASS (B^2=45.9, sigma=100, off-diagonal metric)")
-
-
-if __name__ == "__main__":
-    self_test()

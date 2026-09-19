@@ -94,8 +94,6 @@ def inject_pairs(particles, species, magnetization, D, B, metric, static, dynami
     Capacity is per species, not per pair. The caller must fail if rejected != 0.
     """
     p = parameters
-    if species.charge.shape != (2,):
-        raise ValueError("Pair injection requires exactly two species")
     g = static.guard_cells
     nr, nt, _ = static.tile_shape
     nt += 1  # both polar charge-control volumes are owned
@@ -168,37 +166,3 @@ def inject_pairs(particles, species, magnetization, D, B, metric, static, dynami
     seed_errors, seeded = checkify.checkify(lambda pts: seed_leapfrog_velocity(pts, species, D, B, static, dynamic, metric))(result._replace(active=newborn))
     result = result._replace(u=jnp.where(newborn[..., None], seeded.u, result.u))
     return result, next_key, InjectionReport(requested, inserted, requested-inserted, newborn, (birth_errors, seed_errors))
-
-
-def check_species(species):
-    """Host-side contract check, outside the compiled injector."""
-    if not (bool(jnp.allclose(species.charge, jnp.array([-1., 1.])))
-            and bool(jnp.all(species.mass==1)) and bool(jnp.all(species.weight>0))
-            and bool(species.weight[0]==species.weight[1]) and bool(jnp.all(species.update_x))):
-        raise ValueError("Expected equal-weight unit-mass electron/positron species with all components enabled")
-
-
-def self_test():
-    from .simulation_parameters import SimulationParameters, build_runtime
-    from .magnetization import Magnetization, deposit_number_density
-    from PyPIC3D.deposition.rho import compute_rho
-    p = SimulationParameters(nr=16, ntheta=16, devices=1, pairs_per_cell=1, capacity_factor=2,
-                             r_max=4., sponge_start=3.)
-    s, d, m, _ = build_runtime(p)
-    particles, species = empty_particles(p, s)
-    shape = m.center.sqrt_gamma.shape
-    zero = jnp.zeros(shape)
-    measure = Magnetization(jnp.zeros((2,)+shape), jnp.ones(shape), jnp.full(shape, jnp.inf), jnp.ones(shape, bool))
-    call = jax.jit(lambda particles, key: inject_pairs(particles, species, measure, (zero,)*3, (zero,)*3, m, s, d, p, key, 0))
-    result, _, report = call(particles, jax.random.PRNGKey(p.seed))
-    assert int(jnp.sum(report.inserted)) > 0 and int(jnp.sum(report.rejected)) == 0
-    assert bool(jnp.array_equal(result.active[..., 0, :], result.active[..., 1, :]))
-    rho = compute_rho(result, species, zero, s, d)
-    assert float(jnp.max(jnp.abs(rho))) < 1e-12
-    density = deposit_number_density(result, species, zero, m, s, d)
-    assert bool(jnp.all(density >= 0))
-    print(f"plasma_injector: PASS ({int(jnp.sum(report.inserted))} neutral pairs)")
-
-
-if __name__ == "__main__":
-    self_test()

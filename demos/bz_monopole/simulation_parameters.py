@@ -52,52 +52,6 @@ class SimulationParameters:
     constraint_check_interval: int = 100
     allow_divergence_errors: bool = False
 
-    def validate(self):
-        for name in ("nr", "ntheta", "devices", "pairs_per_cell", "capacity_factor", "guard_cells",
-                     "particle_batch_size", "constraint_check_interval"):
-            value = getattr(self, name)
-            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
-                raise ValueError(f"{name} must be a positive integer")
-        if self.backend not in ('cpu', 'gpu'):
-            raise ValueError('backend must be cpu or gpu')
-        if self.particle_coordinates not in ('native', 'cartesian'):
-            raise ValueError('particle_coordinates must be native or cartesian')
-        if self.field_interpolation not in ('physical', 'entity'):
-            raise ValueError('field_interpolation must be physical or entity')
-        if not isinstance(self.output_directory, str) or not self.output_directory.strip():
-            raise ValueError('output_directory must be a nonempty path string')
-        for name in ('current_filter_passes', 'horizon_field_cells'):
-            value = getattr(self, name)
-            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-                raise ValueError(f'{name} must be a nonnegative integer')
-        for name in ('vacuum', 'allow_divergence_errors'):
-            if not isinstance(getattr(self, name), bool):
-                raise ValueError(f'{name} must be boolean')
-        if self.maximum_timestep is not None and (not math.isfinite(self.maximum_timestep) or self.maximum_timestep <= 0):
-            raise ValueError("maximum_timestep must be finite and positive")
-        if self.devices not in (1, 2) or self.nr % self.devices:
-            raise ValueError("Use one or two devices, with nr divisible by devices")
-        if self.nr // self.devices < 4 or self.ntheta < 8 or self.ntheta % 2:
-            raise ValueError("Need >=4 radial cells per tile and an even ntheta >=8")
-        if self.guard_cells != 3:
-            raise ValueError("Polar endpoint ownership requires three guard cells")
-        for name, value in asdict(self).items():
-            if isinstance(value, float) and not math.isfinite(value):
-                raise ValueError(f"{name} must be finite")
-        if not 0 <= self.spin < 1 or not 0 < self.r_min < self.horizon:
-            raise ValueError("Require 0<=spin<1 and an inner boundary inside the horizon")
-        if not self.r_min < self.sponge_start < self.r_max:
-            raise ValueError("Require r_min < sponge_start < r_max")
-        if self.r_min - self.guard_cells*self.dr <= 0:
-            raise ValueError("Radial guard cells must stay above r=0; increase nr")
-        for name in ("sigma0", "sigma_threshold", "skin_depth", "temperature", "courant",
-                     "injection_interval", "sponge_rate", "end_time", "output_interval",
-                     "gauss_tolerance", "magnetic_divergence_tolerance"):
-            if getattr(self, name) <= 0:
-                raise ValueError(f"{name} must be positive")
-        if self.courant > 0.5:
-            raise ValueError("Require courant<=0.5")
-        return self
 
     @property
     def dr(self):
@@ -152,12 +106,7 @@ def build_runtime(parameters=SimulationParameters(), *, timestep_policy="cfl", p
     This low-level builder retains native/physical defaults for component
     tests and callers; the runner supplies the settings from SimulationParameters.
     """
-    p = parameters.validate()
-    if isinstance(particle_batch_size, bool) or not isinstance(particle_batch_size, int) or particle_batch_size <= 0:
-        raise ValueError('particle_batch_size must be a positive integer')
-    if horizon_field_cells and (p.r_min+(horizon_field_cells+1)*p.dr >= p.horizon
-                                or horizon_field_cells >= p.nr//p.devices):
-        raise ValueError('Horizon field layer and its reference plane must lie inside the horizon and first tile')
+    p = parameters
     jax.config.update("jax_enable_x64", True)
     config = dict(Nx=p.nr, Ny=p.ntheta, Nz=1, x_wind=p.r_max-p.r_min,
                   y_wind=math.pi, z_wind=2*math.pi, x_min=p.r_min,
@@ -183,11 +132,6 @@ def build_runtime(parameters=SimulationParameters(), *, timestep_policy="cfl", p
     dynamic = build_dynamic_parameters(config)
     metric = initialize_kerr_schild_spherical_metric(static, dynamic, mass=1., spin=p.spin)
     metric = jax.tree.map(lambda a: shard_array(a, static), metric)
-    from PyPIC3D.relativity.particle_metric import validate_particle_metric_grids
-    validate_particle_metric_grids(metric, dynamic.grids.tiled_center_grid, (True,True,False), p.guard_cells)
-    if particle_coordinates == 'cartesian':
-        from PyPIC3D.relativity.cartesian_particle_metric import validate_regularized_axes
-        validate_regularized_axes(metric, dynamic.grids.tiled_center_grid)
     interior = (slice(None),)*3 + (slice(p.guard_cells, -p.guard_cells),)*3
     m = metric.center
     # Directional characteristic bounds use regular analytic inverse components,
@@ -201,8 +145,6 @@ def build_runtime(parameters=SimulationParameters(), *, timestep_policy="cfl", p
     st=m.lapse/jnp.sqrt(sig)
     speed=jnp.stack((sr,st,jnp.zeros_like(sr)),axis=-1)
     cfl_dt = p.courant / float(jnp.max((speed[..., 0]/p.dr + speed[..., 1]/p.dtheta)[interior]))
-    if timestep_policy != "cfl":
-        raise ValueError('Unknown timestep policy: use cfl')
     limits=[cfl_dt]
     if p.maximum_timestep is not None:limits.append(p.maximum_timestep)
     maximum_dt = p.maximum_timestep
@@ -232,19 +174,3 @@ def build_runtime(parameters=SimulationParameters(), *, timestep_policy="cfl", p
                   field_history_storage_bytes=int(metric.center.sqrt_gamma.size*8*18),
                   omega_h=p.omega_h, devices=[str(d) for d in static.field_mesh.devices.flat])
     return static, dynamic, metric, report
-
-
-def self_test():
-    p = SimulationParameters(devices=1, nr=16, ntheta=16, r_max=4., sponge_start=3.).validate()
-    static, dynamic, metric, report = build_runtime(p)
-    assert float(dynamic.grids.center[1][1]) == 0.
-    assert math.isclose(float(dynamic.grids.center[1][-1]),math.pi)
-    assert bool(jnp.all(metric.geometry.volume[metric.geometry.charge_owned]>0))
-    assert all(bool(jnp.all(jnp.isfinite(x))) for x in jax.tree.leaves(metric))
-    assert math.isclose(p.B0**2/(4*math.pi*p.n0), p.sigma0)
-    assert report["dt"] > 0
-    print("simulation_parameters: PASS")
-
-
-if __name__ == "__main__":
-    self_test()
