@@ -45,7 +45,6 @@ class StaticParameters(NamedTuple):
     field_mesh: object
     horizon_field_cells: int = 0
     polar_field_interpolation: str = 'physical'
-    geodesic_iterations: int = 0
     particle_coordinates: str = 'native'
 
 
@@ -111,7 +110,8 @@ def build_static_parameters(static_config):
     """
 
     static_config = dict(static_config)
-    geodesic_iterations = static_config.get('geodesic_iterations', 0)
+    if 'geodesic_iterations' in static_config:
+        raise ValueError('geodesic_iterations was removed; the hybrid pusher is explicit-only. Remove this key.')
     particle_coordinates = static_config.get('particle_coordinates', 'native')
     if particle_coordinates not in ('native', 'cartesian'):
         raise ValueError('particle_coordinates must be native or cartesian')
@@ -121,8 +121,6 @@ def build_static_parameters(static_config):
             or static_config.get('solver') != 'static_metric'
             or static_config.get('particle_pusher') != 'hybrid_boris_geodesic'):
         raise ValueError('Cartesian particle chart requires an axisymmetric spherical hybrid pusher')
-    if isinstance(geodesic_iterations, bool) or not isinstance(geodesic_iterations, Integral) or geodesic_iterations < 0:
-        raise ValueError('geodesic_iterations must be a nonnegative integer')
     interpolation = static_config.get('polar_field_interpolation', 'physical')
     if interpolation not in ('physical', 'entity'):
         raise ValueError('Unknown polar field interpolation')
@@ -197,7 +195,6 @@ def build_static_parameters(static_config):
         field_mesh=_field_mesh(static_config, tile_shape),
         horizon_field_cells=int(horizon_cells),
         polar_field_interpolation=interpolation,
-        geodesic_iterations=int(geodesic_iterations),
         particle_coordinates=particle_coordinates,
     )
 

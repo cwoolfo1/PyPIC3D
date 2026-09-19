@@ -43,6 +43,8 @@ class TestEvolution(unittest.TestCase):
             for x,y in zip(jax.tree.leaves(result[:3]),jax.tree.leaves((expected_pts,expected_fields,expected_key))):
                 np.testing.assert_allclose(x,y,rtol=1e-12,atol=1e-12)
             self.assertEqual(result[3],4);runner.check_sharding(result[0],result[1],s)
+            metadata=json.loads((root/'resumed/manifest.json').read_text())
+            self.assertEqual(metadata['particle_integrator'],'explicit_midpoint_strang_v1')
             with self.assertRaisesRegex(ValueError,'timestep differs'):
                 runner.load_checkpoint(saved,self.pts,self.fields,p,s,expected_dt=2*float(d.dt))
             first=execute(self.pts,self.fields,self.key,0)

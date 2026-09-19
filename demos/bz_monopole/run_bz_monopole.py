@@ -40,7 +40,7 @@ from PyPIC3D.solvers.gr_static.static_metric import (
     compute_covariant_E, compute_covariant_H, update_B_relativity,
     update_D_relativity, _location_interpolate)
 from PyPIC3D.solvers.gr_static.time_loop import time_loop_static_metric
-from .simulation_parameters import SimulationParameters, build_runtime, shard_array
+from .simulation_parameters import PARTICLE_INTEGRATOR, SimulationParameters, build_runtime, shard_array
 from .magnetization import measure_magnetization, collocate_magnetic_field
 from .plasma_injector import empty_particles, inject_pairs, check_species
 
@@ -394,10 +394,32 @@ def diagnostics(particles, species, fields, p, static, dynamic, *, current_filte
                 active_per_tile=np.asarray(jnp.sum(particles.active, axis=(-1, -2))).reshape(-1))
 
 
+def check_checkpoint_integrator(metadata):
+    """Accept explicit checkpoints without changing their staggered integrator."""
+    if metadata.get('particle_integrator', PARTICLE_INTEGRATOR) != PARTICLE_INTEGRATOR:
+        raise ValueError('Unknown checkpoint particle integrator; explicit midpoint Strang splitting is required')
+    # Legacy v3 checkpoints describe the integrator using these two fields.
+    if 'geodesic_iterations' in metadata:
+        iterations = metadata['geodesic_iterations']
+        if type(iterations) is not int or iterations != 0:
+            raise ValueError('Checkpoint particle integrator is not explicit; implicit restarts are unsupported')
+    if 'geodesic_nonlinear_solver' in metadata:
+        expected = ('cartesian_explicit_midpoint_v1'
+                    if metadata.get('particle_coordinates', 'native') == 'cartesian'
+                    else 'explicit_midpoint')
+        if metadata['geodesic_nonlinear_solver'] != expected:
+            raise ValueError('Checkpoint particle integrator is unknown, implicit, or conflicts with its coordinate chart')
+
+
 def save_checkpoint(path, particles, fields, key, step, p, run_metadata=None):
     """Portable array-only checkpoint; no pickle or executable serialized objects."""
+    metadata = dict(run_metadata or {})
+    check_checkpoint_integrator(metadata)
+    metadata.pop('geodesic_iterations', None)
+    metadata.pop('geodesic_nonlinear_solver', None)
+    metadata['particle_integrator'] = PARTICLE_INTEGRATOR
     arrays = dict(checkpoint_version=np.asarray(3),
-                  reconstruction_id=np.asarray((run_metadata or {}).get(
+                  reconstruction_id=np.asarray(metadata.get(
                       'metric_reconstruction', 'cardinal_cubic_hermite_consistent_v1')),
                   configuration_sha256=np.asarray(hashlib.sha256(json.dumps(asdict(p),sort_keys=True).encode()).hexdigest()),geometry_id=np.asarray("polar-cap-v1"),x=particles.x, u=particles.u, active=particles.active, key=key,
                   step=np.asarray(step), parameters=np.asarray(json.dumps(asdict(p))))
@@ -405,7 +427,7 @@ def save_checkpoint(path, particles, fields, key, step, p, run_metadata=None):
                            ("previous_D", fields[7][0]), ("previous_B", fields[7][1])):
         arrays.update({f"{label}_{i}": value for i, value in enumerate(vector)})
     arrays.update(rho=fields[3], phi=fields[4], overflow=fields[8],
-                  run_metadata=np.asarray(json.dumps(run_metadata or {})))
+                  run_metadata=np.asarray(json.dumps(metadata)))
     temporary = path.with_suffix(".tmp.npz")
     np.savez(temporary, **{k: np.asarray(jax.device_get(v)) for k, v in arrays.items()})
     temporary.replace(path)
@@ -418,13 +440,7 @@ def load_checkpoint(path, particles, fields, p, static, expected_dt=None):
         coordinates = getattr(static, 'particle_coordinates', 'native')
         if metadata.get('particle_coordinates', 'native') != coordinates:
             raise ValueError('Checkpoint particle coordinates differ; momentum bases cannot be mixed')
-        saved_iterations = metadata.get('geodesic_iterations', 0)
-        # Increasing a converged implicit solve's iteration budget preserves
-        # the midpoint equation, residual tolerance, and staggered time levels.
-        # Switching explicit/implicit schemes or reducing the budget does not.
-        if (saved_iterations != static.geodesic_iterations
-                and not (0 < saved_iterations < static.geodesic_iterations)):
-            raise ValueError('Checkpoint geodesic integrator differs')
+        check_checkpoint_integrator(metadata)
         if metadata.get('field_interpolation', 'physical') != static.polar_field_interpolation:
             raise ValueError('Checkpoint auxiliary field interpolation differs')
         if metadata.get('horizon_field_cells', 0) != static.horizon_field_cells:
@@ -528,7 +544,8 @@ def evolve(particles, species, fields, key, p, static, dynamic, background, outp
     target = math.ceil(p.end_time/dt)
     if steps is not None:
         target = min(target, step+int(steps))
-    manifest = dict(manifest or {}, dt=dt, parameters=asdict(p), step=step,
+    manifest = dict(manifest or {}, particle_integrator=PARTICLE_INTEGRATOR,
+                    dt=dt, parameters=asdict(p), step=step,
                     time=step*dt, target_step=target, status='running',
                     checkpoint_seconds=checkpoint_seconds,
                     checkpoint_interval=checkpoint_interval, checkpoint_stride_steps=checkpoint_stride,
@@ -700,7 +717,6 @@ def run(args):
                                                    particle_batch_size=args.particle_batch_size,
                                                    horizon_field_cells=args.horizon_field_cells,
                                                    field_interpolation=args.field_interpolation,
-                                                   geodesic_iterations=args.geodesic_iterations,
                                                    particle_coordinates=getattr(args, 'particle_coordinates', 'native'))
     report.update(constraint_policy(p, args.gauss_tolerance, args.magnetic_divergence_tolerance,
                                     args.constraint_check_interval))
@@ -785,8 +801,6 @@ def main():
                         help='Use Entity II metric-weighted auxiliary fields or the original interpolation')
     parser.add_argument('--particle-coordinates', choices=('native', 'cartesian'), default='cartesian',
                         help='Particle coordinate chart; restart must use the same chart')
-    parser.add_argument('--geodesic-iterations', type=int, default=4,
-                        help='Iteration budget per implicit midpoint solve (paper: 10); zero retains explicit midpoint')
     parser.add_argument("--maximum-timestep", type=float, default=SimulationParameters().maximum_timestep)
     parser.add_argument("--nr", type=int, default=SimulationParameters().nr)
     parser.add_argument("--ntheta", type=int, default=SimulationParameters().ntheta)

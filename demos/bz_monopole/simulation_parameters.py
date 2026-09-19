@@ -117,8 +117,11 @@ def shard_array(array, static):
     return jax.device_put(array, NamedSharding(static.field_mesh, P("tile_x", "tile_y", "tile_z")))
 
 
+PARTICLE_INTEGRATOR = 'explicit_midpoint_strang_v1'
+
+
 def build_runtime(parameters=SimulationParameters(), *, timestep_policy="cfl", particle_batch_size=65536,
-                  horizon_field_cells=0, field_interpolation='physical', geodesic_iterations=0,
+                  horizon_field_cells=0, field_interpolation='physical',
                   particle_coordinates='native'):
     """Build a runtime with explicitly selected numerical methods.
 
@@ -146,7 +149,7 @@ def build_runtime(parameters=SimulationParameters(), *, timestep_policy="cfl", p
         # 256-particle batches spend more time in loop/kernel overhead.
         particle_boundary_conditions=(2, 4, 0), particle_batch_size=particle_batch_size,
         horizon_field_cells=horizon_field_cells, polar_field_interpolation=field_interpolation,
-        geodesic_iterations=geodesic_iterations, particle_coordinates=particle_coordinates))
+        particle_coordinates=particle_coordinates))
     center, vertex = build_yee_grid(SimpleNamespace(**config))
     theta=jnp.arange(-1,p.ntheta+1,dtype=jnp.float64)*p.dtheta
     center=(center[0],theta,center[2])
@@ -183,12 +186,8 @@ def build_runtime(parameters=SimulationParameters(), *, timestep_policy="cfl", p
     lengths = jnp.sqrt(jnp.diagonal(m.gamma, axis1=-2, axis2=-1))[interior]
     report = dict(parameters=asdict(p), dt=float(dynamic.dt), cfl_dt=cfl_dt,
                   field_interpolation=field_interpolation,
-                  geodesic_iterations=geodesic_iterations,
                   particle_coordinates=particle_coordinates,
-                  geodesic_nonlinear_solver=(
-                      ('cartesian_implicit_midpoint_v1' if geodesic_iterations else 'cartesian_explicit_midpoint_v1')
-                      if particle_coordinates == 'cartesian' else
-                      ('picard_newton_cyclic_chart_retry_v4' if geodesic_iterations else 'explicit_midpoint')),
+                  particle_integrator=PARTICLE_INTEGRATOR,
                   horizon_field_cells=horizon_field_cells,
                   particle_batch_size=static.particle_batch_size,
                   timestep_policy=timestep_policy,

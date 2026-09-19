@@ -9,9 +9,9 @@ from PyPIC3D.particles.particle_class import TiledParticles, SpeciesConfig
 from PyPIC3D.pusher.hybrid_boris_geodesic import hybrid_boris_geodesic_push
 
 @pytest.mark.parametrize('coordinates', ['native', 'cartesian'])
-def test_implicit_single_tile_matches_vmapped_tiles(coordinates):
+def test_explicit_single_tile_matches_vmapped_tiles(coordinates):
     s,d,m,D,B=make_runtime('spherical',16,32)
-    s=s._replace(geodesic_iterations=20, particle_batch_size=2, particle_coordinates=coordinates)
+    s=s._replace(particle_batch_size=2, particle_coordinates=coordinates)
     particles=TiledParticles(jnp.array([2.,.02,.2]).reshape(1,1,1,1,1,3),
                             jnp.array([.01,.02,.003]).reshape(1,1,1,1,1,3),
                             jnp.ones((1,1,1,1,1),bool))

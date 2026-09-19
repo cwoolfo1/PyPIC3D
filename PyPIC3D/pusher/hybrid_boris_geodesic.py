@@ -9,7 +9,6 @@ from PyPIC3D.particles.particle_batching import (
 )
 from PyPIC3D.relativity.particle_metric import (
     sample_particle_metric, safe_inactive_positions, check_particle_samples,
-    particle_metric_valid,
 )
 from PyPIC3D.pusher.boris import interpolate_field_to_particles
 from PyPIC3D.relativity.cartesian_particle_metric import (
@@ -110,14 +109,14 @@ def _metric_tile(metric, tx, ty, tz):
 
 
 def _runtime_particle_metric(metric, position, grid, static_parameters,
-                             active_axes, inactive_axis_indices, *, derivatives=True, check=True):
+                             active_axes, inactive_axis_indices, *, derivatives=True):
     if static_parameters.particle_coordinates == 'cartesian':
         return sample_regularized_metric(
             metric, position, grid, static_parameters.metric, active_axes, inactive_axis_indices,
-            cartesian=True, derivatives=derivatives, check=check)
+            cartesian=True, derivatives=derivatives)
     return sample_particle_metric(
         metric, position, grid, static_parameters.shape_factor, static_parameters.metric,
-        active_axes, inactive_axis_indices, derivatives=derivatives, check=check)
+        active_axes, inactive_axis_indices, derivatives=derivatives)
 
 
 def GR_position_update(position, u_cov, metric):
@@ -147,137 +146,6 @@ def geodesic_velocity(position, u_cov, metric, grad_gamma_inv):
     )
 
     return -Gamma[..., jnp.newaxis] * metric.grad_lapse + grad_beta_term + metric_force
-
-
-def _implicit_velocity_newton(old, guess, metric, grad_inverse, dt, iterations, active,
-                              dynamic_iterations=False):
-    """Damped Newton fallback for the same fixed-position midpoint equation.
-
-    Picard iteration need not contract near a coordinate pole. This changes
-    only the nonlinear solution method, not the equation or its acceptance
-    tolerance. The caller still checks the final residual.
-    """
-    def residual(value):
-        return value-old-dt*geodesic_velocity(None, .5*(old+value), metric, grad_inverse)
-
-    def iteration(_, value):
-        midpoint = .5*(old+value)
-        gamma = covariant_lorentz_factor(midpoint, metric.gamma_inv)
-        contravariant = jnp.einsum('...ij,...j->...i', metric.gamma_inv, midpoint)
-        quadratic = jnp.einsum('...i,...kij,...j->...k', midpoint, grad_inverse, midpoint)
-        derivative = (
-            -metric.grad_lapse[..., :, None]*contravariant[..., None, :]/gamma[..., None, None]
-            + jnp.swapaxes(metric.grad_shift, -1, -2)
-            - metric.lapse[..., None, None]/gamma[..., None, None]
-              * jnp.einsum('...ijk,...k->...ij', grad_inverse, midpoint)
-            + (.5*metric.lapse/gamma**3)[..., None, None]
-              * quadratic[..., :, None]*contravariant[..., None, :])
-        jacobian = jnp.eye(3)-.5*dt*derivative
-        initial_residual = residual(value)
-        delta = jnp.linalg.solve(jacobian, initial_residual[..., None])[..., 0]
-        initial_norm = jnp.max(jnp.abs(initial_residual), axis=-1)
-        unresolved = active & (initial_norm > 1e-8*jnp.maximum(1., jnp.max(jnp.abs(value), axis=-1)))
-        # Backtrack independently per particle and retain the best finite step.
-        def trial(k, state):
-            best, norm = state
-            candidate = value-(.5**k)*delta
-            candidate_norm = jnp.max(jnp.abs(residual(candidate)), axis=-1)
-            better = unresolved & jnp.isfinite(candidate_norm) & (candidate_norm < norm)
-            return jnp.where(better[..., None], candidate, best), jnp.where(better, candidate_norm, norm)
-        return jax.lax.fori_loop(0, 8, trial, (value, initial_norm))[0]
-
-    if dynamic_iterations:
-        def unfinished(state):
-            count, value = state
-            norm = jnp.max(jnp.abs(residual(value)), axis=-1)
-            scale = jnp.maximum(1., jnp.max(jnp.abs(value), axis=-1))
-            return (count < iterations) & jnp.any(active & (norm > 1e-8*scale))
-        return jax.lax.while_loop(
-            unfinished, lambda state: (state[0]+1, iteration(state[0], state[1])), (0, guess))[1]
-    # A static loop is needed with checkify outside the multiple-tile vmap.
-    return jax.lax.fori_loop(0, iterations, iteration, guess)
-
-
-def _implicit_position_newton(old, guess, momentum, sample, dt, iterations,
-                              active, update_x, spacing, dynamic_iterations=False,
-                              cyclic_coordinate=None):
-    """Solve the unchanged coordinate midpoint equation with a line search.
-
-    Trial metrics are validated before accepting a step; rejected line-search
-    points are not physical particle states. The caller checks the accepted
-    midpoint metric and final residual through the normal diagnostic path.
-    A coordinate absent from the metric interpolant can be eliminated exactly:
-    its midpoint equation gives that coordinate directly once the others are
-    known. This prevents its large near-axis sensitivity from dominating the
-    line search. The caller must establish independence of that coordinate.
-    """
-    def project(value):
-        if cyclic_coordinate is None:
-            return value
-        midpoint = .5*(old+value)
-        metric, _, _ = sample(midpoint, False)
-        rhs = old+dt*GR_position_update(midpoint, momentum, metric)
-        k = cyclic_coordinate
-        component = jnp.where(update_x[..., k], rhs[..., k], old[..., k])
-        return value.at[..., k].set(jnp.where(active, component, value[..., k]))
-
-    def residual(value):
-        midpoint = .5*(old+value)
-        metric, _, valid = sample(midpoint, False)
-        rhs = old+dt*GR_position_update(midpoint, momentum, metric)
-        error = value-jnp.where(update_x, rhs, old)
-        norm = jnp.max(jnp.abs(error)/spacing, axis=-1)
-        return error, jnp.where(valid & jnp.isfinite(norm), norm, jnp.inf)
-
-    def linearization(value):
-        midpoint = .5*(old+value)
-        metric, grad_inverse, _ = sample(midpoint, True)
-        gamma = covariant_lorentz_factor(momentum, metric.gamma_inv)
-        contravariant = jnp.einsum('...ij,...j->...i', metric.gamma_inv, momentum)
-        quadratic = jnp.einsum('...jkl,...k,...l->...j', grad_inverse, momentum, momentum)
-        derivative = (
-            contravariant[..., :, None]*metric.grad_lapse[..., None, :]/gamma[..., None, None]
-            + (metric.lapse/gamma)[..., None, None]
-              * jnp.einsum('...jik,...k->...ij', grad_inverse, momentum)
-            - (.5*metric.lapse/gamma**3)[..., None, None]
-              * contravariant[..., :, None]*quadratic[..., None, :]
-            - metric.grad_shift)
-        jacobian = jnp.eye(3)-.5*dt*jnp.where(update_x[..., :, None], derivative, 0.)
-        error, initial_norm = residual(value)
-        delta = jnp.linalg.solve(jacobian, error[..., None])[..., 0]
-        return delta, initial_norm
-
-    def needs_correction(delta, norm):
-        # Eliminating phi makes its residual identically zero, but small
-        # errors in theta may still imply a large azimuth error. Require the
-        # Newton correction in every coordinate to resolve that conditioning.
-        estimate = (jnp.max(jnp.abs(delta)/spacing, axis=-1)
-                    if cyclic_coordinate is not None else jnp.zeros_like(norm))
-        return active & ((norm > 1e-8) | (estimate > 1e-8))
-
-    def iteration(_, value):
-        delta, initial_norm = linearization(value)
-        unresolved = needs_correction(delta, initial_norm)
-        def trial(k, state):
-            best, norm = state
-            candidate = project(value-(.5**k)*delta)
-            _, candidate_norm = residual(candidate)
-            better = unresolved & (candidate_norm < norm)
-            return jnp.where(better[..., None], candidate, best), jnp.where(better, candidate_norm, norm)
-        return jax.lax.fori_loop(0, 8, trial, (value, initial_norm))[0]
-
-    guess = project(guess)
-    if dynamic_iterations:
-        def unfinished(state):
-            count, value = state
-            if cyclic_coordinate is not None:
-                delta, norm = linearization(value)
-                return (count < iterations) & jnp.any(needs_correction(delta, norm))
-            _, norm = residual(value)
-            return (count < iterations) & jnp.any(active & (norm > 1e-8))
-        return jax.lax.while_loop(
-            unfinished, lambda state: (state[0]+1, iteration(state[0], state[1])), (0, guess))[1]
-    return jax.lax.fori_loop(0, iterations, iteration, guess)
 
 
 def _magnetic_boris_rotation(u_minus, B_con, metric, q_over_m, dt):
@@ -419,7 +287,7 @@ def hybrid_boris_geodesic_push(
     dynamic_parameters,
 ):
     """
-    Strang-split second-order 3+1 particle push.
+    Explicit Strang-split second-order 3+1 particle push.
 
     Particle positions are contravariant coordinates.  ``particles.u`` stores
     covariant spatial velocity components ``u_i``.
@@ -451,7 +319,6 @@ def hybrid_boris_geodesic_push(
         raise ValueError("Hybrid Hermite particle metrics require guard_cells >= 3")
     dt = dynamic_parameters.dt
     ntx, nty, ntz = particles.active.shape[:3]
-    single_tile = (ntx, nty, ntz) == (1, 1, 1)
     active_axes = (
         int(ntx) * tile_nx > 1,
         int(nty) * tile_ny > 1,
@@ -531,28 +398,6 @@ def hybrid_boris_geodesic_push(
             grad_gamma_inv_n,
         )
         u_after_geodesic = u_after_first_em + dt * du_dt_mid
-        if static_parameters.geodesic_iterations:
-            # Entity II implicit midpoint at fixed x^n, iterated from u_old.
-            def velocity_iteration(_, guess):
-                midpoint = .5*(u_after_first_em+guess)
-                return u_after_first_em + dt*geodesic_velocity(
-                    x_tile, midpoint, metric_n, grad_gamma_inv_n)
-            u_after_geodesic = jax.lax.fori_loop(
-                0, static_parameters.geodesic_iterations, velocity_iteration, u_after_first_em)
-            picard_residual = u_after_geodesic-velocity_iteration(0, u_after_geodesic)
-            picard_scale = jnp.maximum(1., jnp.max(jnp.abs(u_after_geodesic), axis=-1))
-            needs_newton = active_tile & (jnp.max(jnp.abs(picard_residual), axis=-1) > 1e-8*picard_scale)
-            u_after_geodesic = jax.lax.cond(
-                jnp.any(needs_newton),
-                lambda value: _implicit_velocity_newton(
-                    u_after_first_em, value, metric_n, grad_gamma_inv_n, dt,
-                    static_parameters.geodesic_iterations, needs_newton, single_tile),
-                lambda value: value, u_after_geodesic)
-            u_geo_mid = .5*(u_after_first_em+u_after_geodesic)
-            residual = u_after_geodesic-velocity_iteration(0, u_after_geodesic)
-            scale = jnp.maximum(1., jnp.max(jnp.abs(u_after_geodesic), axis=-1))
-            check_particle_samples(~active_tile | (jnp.max(jnp.abs(residual), axis=-1) <= 1e-8*scale),
-                                   x_tile, 'implicit velocity convergence', jnp.array([tx,ty,tz]))
         u_after_geodesic = jnp.where(active & update_x, u_after_geodesic, u_tile)
         # midpoint geodesic velocity source at x^n; positions remain staggered until the velocity update is complete.
 
@@ -583,65 +428,10 @@ def hybrid_boris_geodesic_push(
         x_half = x_tile + 0.5 * dt * dx_dt_n
         x_half = jnp.where(active & update_x, x_half, x_tile)
 
-        if static_parameters.geodesic_iterations:
-            def position_iteration(_, guess):
-                midpoint = .5*(x_tile+guess)
-                midpoint_metric = _sample_center_metric_at_position(
-                    midpoint, metric, static_parameters, dynamic_parameters,
-                    tx, ty, tz, active_axes, inactive_axis_indices, derivatives=False)
-                candidate = x_tile + dt*GR_position_update(midpoint, u_new, midpoint_metric)
-                return jnp.where(active & update_x, candidate, x_tile)
-            spacing = jnp.array([dynamic_parameters.dx,dynamic_parameters.dy,dynamic_parameters.dz])
-            if static_parameters.particle_coordinates == 'cartesian':
-                spacing = jnp.full((3,), dynamic_parameters.dx)
-            x_new = jax.lax.fori_loop(
-                0, static_parameters.geodesic_iterations, position_iteration, x_tile)
-            residual = x_new-position_iteration(0, x_new)
-            needs_newton = active_tile & (jnp.max(jnp.abs(residual)/spacing, axis=-1) > 1e-8)
-            def position_sample(position, derivatives):
-                sampled, gradient = _runtime_particle_metric(
-                    _metric_tile(metric.center, tx, ty, tz), position, center_grid,
-                    static_parameters,
-                    active_axes, inactive_axis_indices, derivatives=derivatives, check=False)
-                name = ('flat_cartesian' if static_parameters.particle_coordinates == 'cartesian'
-                        else static_parameters.metric)
-                valid = particle_metric_valid(sampled, position, name)
-                return sampled, gradient, valid
-            x_new = jax.lax.cond(
-                jnp.any(needs_newton),
-                lambda value: _implicit_position_newton(
-                    x_tile, value, u_new, position_sample, dt,
-                    static_parameters.geodesic_iterations, needs_newton, update_x, spacing, single_tile),
-                lambda value: value, x_new)
-            residual = x_new-position_iteration(0, x_new)
-            if (static_parameters.particle_coordinates == 'native' and not active_axes[2]
-                    and static_parameters.metric in ('flat_spherical', 'kerr_schild_spherical')):
-                # An unconverged Picard/Newton sequence can land beyond the
-                # polar singularity. Retry from the old position in its chart,
-                # eliminating cyclic phi from the line search exactly. Bounds
-                # constrain trial midpoints, not accepted particle endpoints;
-                # endpoints may still cross a pole and undergo normal reflection.
-                retry = active_tile & (jnp.max(jnp.abs(residual)/spacing, axis=-1) > 1e-8)
-                def chart_sample(position, derivatives):
-                    sampled, gradient, valid = position_sample(position, derivatives)
-                    valid &= (position[..., 1] > 0.) & (position[..., 1] < jnp.pi)
-                    return sampled, gradient, valid
-                x_new = jax.lax.cond(
-                    jnp.any(retry),
-                    lambda value: _implicit_position_newton(
-                        x_tile, jnp.where(retry[..., None], x_tile, value), u_new,
-                        chart_sample, dt, static_parameters.geodesic_iterations,
-                        retry, update_x, spacing, single_tile, cyclic_coordinate=2),
-                    lambda value: value, x_new)
-                residual = x_new-position_iteration(0, x_new)
-            check_particle_samples(~active_tile | (jnp.max(jnp.abs(residual)/spacing, axis=-1) <= 1e-8),
-                                   x_tile, 'implicit position convergence', jnp.array([tx,ty,tz]))
-            x_half = .5*(x_tile+x_new)
-        else:
-            metric_half = _sample_center_metric_at_position(
-                x_half, metric, static_parameters, dynamic_parameters,
-                tx, ty, tz, active_axes, inactive_axis_indices, derivatives=False)
-            x_new = x_tile + dt*GR_position_update(x_half, u_new, metric_half)
+        metric_half = _sample_center_metric_at_position(
+            x_half, metric, static_parameters, dynamic_parameters,
+            tx, ty, tz, active_axes, inactive_axis_indices, derivatives=False)
+        x_new = x_tile + dt*GR_position_update(x_half, u_new, metric_half)
         x_new = jnp.where(active & update_x, x_new, x_tile)
         for stage, value in (("first magnetic half-step", u_after_first_em),
                              ("geodesic midpoint", u_geo_mid),
@@ -675,9 +465,7 @@ def hybrid_boris_geodesic_push(
 
     def map_tiles(function):
         if tile_shape == (1, 1, 1):
-            # vmap turns a particle-batch conditional into selection and runs
-            # both branches. A local single tile can retain the actual Newton
-            # fallback conditional instead of solving already converged batches.
+            # Keep the direct single-tile dispatch used by active-only batching.
             def one_tile(*args):
                 result = function(*(value[0, 0, 0] for value in args))
                 return jax.tree.map(lambda value: value[None, None, None], result)

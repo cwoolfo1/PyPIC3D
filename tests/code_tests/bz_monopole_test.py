@@ -141,15 +141,9 @@ class TestRunner(unittest.TestCase):
                 np.testing.assert_array_equal(a,bb)
             with self.assertRaisesRegex(ValueError,'parameters do not match'):
                 load_checkpoint(path,particles,fields,replace(p,skin_depth=2*p.skin_depth),s)
-            for option in ({'horizon_field_cells': 1}, {'polar_field_interpolation': 'entity'},
-                           {'geodesic_iterations': 10}):
+            for option in ({'horizon_field_cells': 1}, {'polar_field_interpolation': 'entity'}):
                 with self.assertRaisesRegex(ValueError,'differs'):
                     load_checkpoint(path,particles,fields,p,s._replace(**option))
-            save_checkpoint(path,particles,fields,key,7,p,run_metadata={'geodesic_iterations':10})
-            resumed=load_checkpoint(path,particles,fields,p,s._replace(geodesic_iterations=20))
-            np.testing.assert_array_equal(resumed[0].u,particles.u)
-            with self.assertRaisesRegex(ValueError,'differs'):
-                load_checkpoint(path,particles,fields,p,s._replace(geodesic_iterations=5))
             np.savez(path,x=np.asarray(particles.x))
             with self.assertRaises(ValueError):load_checkpoint(path,particles,fields,p,s)
         stationary=(fields[0],b)+fields[2:]
