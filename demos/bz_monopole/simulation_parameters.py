@@ -4,7 +4,6 @@ Run independently with ``python -m demos.bz_monopole.simulation_parameters``.
 The density normalization n0 is the TOTAL electron plus positron density.
 """
 from dataclasses import asdict, dataclass
-import json
 import math
 from types import SimpleNamespace
 
@@ -34,19 +33,46 @@ class SimulationParameters:
     capacity_factor: int = 8
     seed: int = 20260908
     courant: float = 0.2
-    gyro_angle: float = 0.1  # Legacy checkpoint parameter; unused by CFL timestepping.
     injection_interval: float = 0.1
     sponge_rate: float = 10.0
     end_time: float = 200.0
     output_interval: float = 5.0
     maximum_timestep: float | None = 0.004
     guard_cells: int = 3
+    output_directory: str = "data"
+    backend: str = "gpu"
+    particle_coordinates: str = "cartesian"
+    field_interpolation: str = "entity"
+    particle_batch_size: int = 8192
+    current_filter_passes: int = 4
+    horizon_field_cells: int = 5
+    vacuum: bool = False
+    gauss_tolerance: float = 1e-10
+    magnetic_divergence_tolerance: float = 1e-10
+    constraint_check_interval: int = 100
+    allow_divergence_errors: bool = False
 
     def validate(self):
-        for name in ("nr", "ntheta", "devices", "pairs_per_cell", "capacity_factor", "guard_cells"):
+        for name in ("nr", "ntheta", "devices", "pairs_per_cell", "capacity_factor", "guard_cells",
+                     "particle_batch_size", "constraint_check_interval"):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
                 raise ValueError(f"{name} must be a positive integer")
+        if self.backend not in ('cpu', 'gpu'):
+            raise ValueError('backend must be cpu or gpu')
+        if self.particle_coordinates not in ('native', 'cartesian'):
+            raise ValueError('particle_coordinates must be native or cartesian')
+        if self.field_interpolation not in ('physical', 'entity'):
+            raise ValueError('field_interpolation must be physical or entity')
+        if not isinstance(self.output_directory, str) or not self.output_directory.strip():
+            raise ValueError('output_directory must be a nonempty path string')
+        for name in ('current_filter_passes', 'horizon_field_cells'):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError(f'{name} must be a nonnegative integer')
+        for name in ('vacuum', 'allow_divergence_errors'):
+            if not isinstance(getattr(self, name), bool):
+                raise ValueError(f'{name} must be boolean')
         if self.maximum_timestep is not None and (not math.isfinite(self.maximum_timestep) or self.maximum_timestep <= 0):
             raise ValueError("maximum_timestep must be finite and positive")
         if self.devices not in (1, 2) or self.nr % self.devices:
@@ -65,11 +91,12 @@ class SimulationParameters:
         if self.r_min - self.guard_cells*self.dr <= 0:
             raise ValueError("Radial guard cells must stay above r=0; increase nr")
         for name in ("sigma0", "sigma_threshold", "skin_depth", "temperature", "courant",
-                     "gyro_angle", "injection_interval", "sponge_rate", "end_time", "output_interval"):
+                     "injection_interval", "sponge_rate", "end_time", "output_interval",
+                     "gauss_tolerance", "magnetic_divergence_tolerance"):
             if getattr(self, name) <= 0:
                 raise ValueError(f"{name} must be positive")
-        if self.courant > 0.5 or self.gyro_angle > 0.2:
-            raise ValueError("Require courant<=0.5 and gyro_angle<=0.2")
+        if self.courant > 0.5:
+            raise ValueError("Require courant<=0.5")
         return self
 
     @property
@@ -123,7 +150,7 @@ def build_runtime(parameters=SimulationParameters(), *, timestep_policy="cfl", p
     """Build a runtime with explicitly selected numerical methods.
 
     This low-level builder retains native/physical defaults for component
-    tests and callers; the demo CLI supplies the accepted Cartesian preset.
+    tests and callers; the runner supplies the settings from SimulationParameters.
     """
     p = parameters.validate()
     if isinstance(particle_batch_size, bool) or not isinstance(particle_batch_size, int) or particle_batch_size <= 0:
@@ -142,7 +169,7 @@ def build_runtime(parameters=SimulationParameters(), *, timestep_policy="cfl", p
         particle_pusher="hybrid_boris_geodesic", current_deposition="GR_esirkepov",
         current_filter="none", shape_factor=1, guard_cells=p.guard_cells,
         tile_shape=(p.nr//p.devices, p.ntheta, 1), boundary_conditions=(3, 4, 0),
-        # Two-GPU timing of the same checkpoint favors larger active batches;
+        # Two-GPU timing favors larger active batches;
         # 256-particle batches spend more time in loop/kernel overhead.
         particle_boundary_conditions=(2, 4, 0), particle_batch_size=particle_batch_size,
         horizon_field_cells=horizon_field_cells, polar_field_interpolation=field_interpolation,
@@ -216,7 +243,6 @@ def self_test():
     assert all(bool(jnp.all(jnp.isfinite(x))) for x in jax.tree.leaves(metric))
     assert math.isclose(p.B0**2/(4*math.pi*p.n0), p.sigma0)
     assert report["dt"] > 0
-    print(json.dumps(report, indent=2))
     print("simulation_parameters: PASS")
 
 

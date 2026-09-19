@@ -1,7 +1,6 @@
 """Independent tests for the fresh half-domain BZ components (no long run)."""
 from dataclasses import replace
-from pathlib import Path
-import tempfile,unittest
+import unittest
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -9,7 +8,7 @@ from tests.code_tests.polar_test import polar_runtime as polar_setup,particle
 from demos.bz_monopole import magnetization as mag
 from demos.bz_monopole.simulation_parameters import SimulationParameters
 from demos.bz_monopole.plasma_injector import empty_particles,inject_pairs,thermal_momentum,orthonormal_to_covariant
-from demos.bz_monopole.run_bz_monopole import initialize_fields,save_checkpoint,load_checkpoint,diagnostics,apply_sponge
+from demos.bz_monopole.run_bz_monopole import initialize_fields,diagnostics,apply_sponge
 from PyPIC3D.boundary_conditions.polar import refresh_vector
 from PyPIC3D.relativity.core import B_FIELD_LOCATIONS
 from PyPIC3D.deposition.rho import compute_rho
@@ -125,27 +124,9 @@ class TestInjection(unittest.TestCase):
 
 
 class TestRunner(unittest.TestCase):
-    def test_initialize_restart_sponge(self):
+    def test_initialize_sponge(self):
         p,s,d,m=polar_setup();particles,sp=empty_particles(p,s);fields,b=initialize_fields(p,s,d,m)
         self.assertTrue(all(np.isfinite(np.asarray(a)).all() for a in jax.tree.leaves(fields)))
-        with tempfile.TemporaryDirectory() as out:
-            path=Path(out)/'state.npz';key=jax.random.PRNGKey(4)
-            save_checkpoint(path,particles,fields,key,7,p)
-            pp,ff,kk,step=load_checkpoint(path,particles,fields,p,s)
-            self.assertEqual(step,7)
-            for a,bb in zip(jax.tree.leaves((particles,fields,key)),jax.tree.leaves((pp,ff,kk))):
-                np.testing.assert_array_equal(a,bb)
-            extended=replace(p,end_time=200.,output_interval=10.)
-            resumed=load_checkpoint(path,particles,fields,extended,s)
-            for a,bb in zip(jax.tree.leaves((pp,ff,kk)),jax.tree.leaves(resumed[:3])):
-                np.testing.assert_array_equal(a,bb)
-            with self.assertRaisesRegex(ValueError,'parameters do not match'):
-                load_checkpoint(path,particles,fields,replace(p,skin_depth=2*p.skin_depth),s)
-            for option in ({'horizon_field_cells': 1}, {'polar_field_interpolation': 'entity'}):
-                with self.assertRaisesRegex(ValueError,'differs'):
-                    load_checkpoint(path,particles,fields,p,s._replace(**option))
-            np.savez(path,x=np.asarray(particles.x))
-            with self.assertRaises(ValueError):load_checkpoint(path,particles,fields,p,s)
         stationary=(fields[0],b)+fields[2:]
         damped=apply_sponge(stationary,b,p,s,d)
         for a,bb in zip(damped[1],b):np.testing.assert_array_equal(a,bb)

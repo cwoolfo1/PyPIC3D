@@ -1,30 +1,15 @@
-"""Fresh BZ monopole runner. Default mode validates only; --mode run is explicit.
+"""Run a fresh BZ monopole using settings in simulation_parameters.py.
 
-Examples (from the repository root)::
+Run from the repository root with:
+    python -m demos.bz_monopole.run_bz_monopole
 
-    JAX_PLATFORMS=cpu python -m demos.bz_monopole.run_bz_monopole --mode validate --backend cpu --devices 1 --nr 32 --ntheta 32
-    CUDA_VISIBLE_DEVICES=1 JAX_PLATFORMS=cuda XLA_PYTHON_CLIENT_PREALLOCATE=false python -m demos.bz_monopole.run_bz_monopole --mode run --output data
-
-The runner owns initialization, evolve(), periodic diagnostics and checkpoints.
-Defaults use the grid from SimulationParameters, one GPU, and a CFL
-timestep. Use CUDA_VISIBLE_DEVICES to select the GPU, or --devices 2 to use
-two visible GPUs. Validation checks
-the initialized state.
-Runtime metric, finite-state, displacement, capacity and sharding checks remain
-fatal. Divergence/Gauss acceptance uses the exterior r>=r_H, excluding two
-physical boundary cells and the sponge plus two cells. Horizon-interior and
-outer-boundary residuals are recorded separately. Constraints are checked every
-100 steps by default, with independently configurable tolerances (1e-10 each).
-Output defaults to ./data in the caller's cwd.
-SIGINT/SIGTERM request a checkpointed stop after the current checked step.
+The fixed-step explicit simulation runs from zero to SimulationParameters.end_time.
+Diagnostic snapshots and final particle/field arrays are saved as NumPy files.
+Runtime metric, finite-state, displacement, capacity, and exterior field-constraint
+checks remain enabled. Interruptions leave completed snapshots in place.
 """
-import argparse
 from dataclasses import asdict
-import json
-import hashlib
 import math
-import os
-import signal
 from pathlib import Path
 import time
 
@@ -116,15 +101,13 @@ def apply_sponge(fields, background, p, static, dynamic):
 
 
 def make_step(p, species, static, dynamic, background, *, sponge=True,
-              injection_rng_policy='event_ordinal_v1', inject_plasma=True,
+              inject_plasma=True,
               current_filter_passes=0):
     """Check deterministic kernels, leaving rejection sampling outside checkify.
 
     Errors cross the host boundary before any failed state can be consumed.
     """
     injection_steps = max(1, math.ceil(p.injection_interval/float(dynamic.dt)))
-    if injection_rng_policy not in ('event_ordinal_v1', 'step_v0'):
-        raise ValueError('Unknown injection RNG policy')
     @jax.jit
     def inject(particles, fields, key, index):
         metric = fields[6]
@@ -149,7 +132,7 @@ def make_step(p, species, static, dynamic, background, *, sponge=True,
         if inject_plasma and int(index) % injection_steps == 0:
             # Key by injection event, not timestep: matched physical injection
             # schedules must draw the same candidates during dt refinement.
-            event = index // injection_steps if injection_rng_policy == 'event_ordinal_v1' else index
+            event = index // injection_steps
             particles, key, report = inject(particles, fields, key, event)
             for error in report.errors:
                 error.throw()
@@ -284,16 +267,6 @@ def check_constraints(residuals, allow_divergence_errors=False, *,
         raise RuntimeError('Exterior divergence acceptance failed: '+', '.join(exceeded))
 
 
-def constraint_payload(residuals):
-    """JSON-safe measurements, retaining validity for empty/overflowed regions."""
-    values = {k: (int(v) if k.endswith('_cells') else
-                  float(v) if math.isfinite(float(v)) else None)
-              for k, v in residuals.items()}
-    valid = {k: v is not None and values.get(k+'_cells', 1) > 0
-             for k, v in values.items() if not k.endswith('_cells')}
-    return dict(constraints=values, constraint_validity=valid)
-
-
 def constraint_policy(p, gauss_tolerance, magnetic_divergence_tolerance,
                       constraint_check_interval):
     return dict(constraint_policy_version=2, constraint_region=CONSTRAINT_REGION,
@@ -302,23 +275,6 @@ def constraint_policy(p, gauss_tolerance, magnetic_divergence_tolerance,
                 gauss_tolerance=gauss_tolerance,
                 magnetic_divergence_tolerance=magnetic_divergence_tolerance,
                 constraint_check_interval=constraint_check_interval)
-
-
-def write_manifest(path, data):
-    temporary = path.with_suffix('.tmp.json')
-    temporary.write_text(json.dumps(data, indent=2, allow_nan=False))
-    temporary.replace(path)
-
-
-def rolling_checkpoint(output, particles, fields, key, step, p, manifest):
-    pending = output/'checkpoint_pending.npz'
-    save_checkpoint(pending, particles, fields, key, step, p, run_metadata=manifest)
-    current = output/'checkpoint.npz'
-    if current.exists():
-        current.replace(output/'checkpoint_previous.npz')
-    pending.replace(current)
-    manifest['checkpoint_step'] = step
-    write_manifest(output/'manifest.json', manifest)
 
 
 def assemble(array, g=3, theta_base=True):
@@ -394,96 +350,13 @@ def diagnostics(particles, species, fields, p, static, dynamic, *, current_filte
                 active_per_tile=np.asarray(jnp.sum(particles.active, axis=(-1, -2))).reshape(-1))
 
 
-def check_checkpoint_integrator(metadata):
-    """Accept explicit checkpoints without changing their staggered integrator."""
-    if metadata.get('particle_integrator', 'explicit_midpoint_strang_v1') != 'explicit_midpoint_strang_v1':
-        raise ValueError('Unknown checkpoint particle integrator; explicit midpoint Strang splitting is required')
-    # Legacy v3 checkpoints describe the integrator using these two fields.
-    if 'geodesic_iterations' in metadata:
-        iterations = metadata['geodesic_iterations']
-        if type(iterations) is not int or iterations != 0:
-            raise ValueError('Checkpoint particle integrator is not explicit; implicit restarts are unsupported')
-    if 'geodesic_nonlinear_solver' in metadata:
-        expected = ('cartesian_explicit_midpoint_v1'
-                    if metadata.get('particle_coordinates', 'native') == 'cartesian'
-                    else 'explicit_midpoint')
-        if metadata['geodesic_nonlinear_solver'] != expected:
-            raise ValueError('Checkpoint particle integrator is unknown, implicit, or conflicts with its coordinate chart')
-
-
-def save_checkpoint(path, particles, fields, key, step, p, run_metadata=None):
-    """Portable array-only checkpoint; no pickle or executable serialized objects."""
-    metadata = dict(run_metadata or {})
-    check_checkpoint_integrator(metadata)
-    metadata.pop('geodesic_iterations', None)
-    metadata.pop('geodesic_nonlinear_solver', None)
-    metadata.pop('particle_integrator', None)
-    arrays = dict(checkpoint_version=np.asarray(3),
-                  reconstruction_id=np.asarray(metadata.get(
-                      'metric_reconstruction', 'cardinal_cubic_hermite_consistent_v1')),
-                  configuration_sha256=np.asarray(hashlib.sha256(json.dumps(asdict(p),sort_keys=True).encode()).hexdigest()),geometry_id=np.asarray("polar-cap-v1"),x=particles.x, u=particles.u, active=particles.active, key=key,
-                  step=np.asarray(step), parameters=np.asarray(json.dumps(asdict(p))))
-    for label, vector in (("D", fields[0]), ("B", fields[1]), ("J", fields[2]),
-                           ("previous_D", fields[7][0]), ("previous_B", fields[7][1])):
-        arrays.update({f"{label}_{i}": value for i, value in enumerate(vector)})
-    arrays.update(rho=fields[3], phi=fields[4], overflow=fields[8],
-                  run_metadata=np.asarray(json.dumps(metadata)))
-    temporary = path.with_suffix(".tmp.npz")
-    np.savez(temporary, **{k: np.asarray(jax.device_get(v)) for k, v in arrays.items()})
-    temporary.replace(path)
-
-
-def load_checkpoint(path, particles, fields, p, static, expected_dt=None):
-    from PyPIC3D.particles.particle_tile_communication import shard_tiled_particles
-    with np.load(path, allow_pickle=False) as saved:
-        metadata=json.loads(str(saved.get('run_metadata','{}')))
-        coordinates = getattr(static, 'particle_coordinates', 'native')
-        if metadata.get('particle_coordinates', 'native') != coordinates:
-            raise ValueError('Checkpoint particle coordinates differ; momentum bases cannot be mixed')
-        check_checkpoint_integrator(metadata)
-        if metadata.get('field_interpolation', 'physical') != static.polar_field_interpolation:
-            raise ValueError('Checkpoint auxiliary field interpolation differs')
-        if metadata.get('horizon_field_cells', 0) != static.horizon_field_cells:
-            raise ValueError('Checkpoint horizon field boundary differs')
-        if expected_dt is not None and 'dt' in metadata and float(metadata['dt']) != float(expected_dt):
-            raise ValueError('Checkpoint timestep differs; leapfrog history cannot be reused at a different timestep')
-        if expected_dt is None and metadata.get('timestep_policy') == 'cfl-plus-gyro':
-            raise ValueError('CFL benchmark checkpoint requires an explicit matching expected_dt')
-        if 'checkpoint_version' not in saved or int(saved['checkpoint_version']) != 3 or str(saved['geometry_id']) != 'polar-cap-v1':
-            raise ValueError('Checkpoint requires polar-cap-v1 geometry; full-theta restarts are incompatible')
-        reconstruction = ('orthonormal_spherical_hermite_v1' if coordinates == 'cartesian'
-                          else 'cardinal_cubic_hermite_consistent_v1')
-        if str(saved.get('reconstruction_id','')) != reconstruction:
-            raise ValueError("Checkpoint particle metric reconstruction is incompatible")
-        saved_parameters = json.loads(str(saved['parameters']))
-        expected=hashlib.sha256(json.dumps(saved_parameters,sort_keys=True).encode()).hexdigest()
-        if str(saved.get('configuration_sha256','')) != expected:
-            raise ValueError("Checkpoint configuration identifier differs")
-        # Output cadence and stopping time do not enter any evolution kernel.
-        # Permit extending a validated short run without changing its physics,
-        # timestep, RNG, particle storage, or staggered field history.
-        operational = {'end_time', 'output_interval'}
-        if ({k:v for k,v in saved_parameters.items() if k not in operational}
-                != {k:v for k,v in asdict(p).items() if k not in operational}):
-            raise ValueError("Checkpoint parameters do not match this run")
-        particles = shard_tiled_particles(particles._replace(**{k:jnp.asarray(saved[k]) for k in ("x", "u", "active")}), static)
-        def vector(label):
-            return tuple(shard_array(saved[f"{label}_{i}"], static) for i in range(3))
-        fields = (vector("D"), vector("B"), vector("J"), shard_array(saved["rho"], static),
-                  shard_array(saved["phi"], static), fields[5], fields[6],
-                  (vector("previous_D"), vector("previous_B")), jnp.asarray(saved["overflow"]))
-        return particles, fields, jnp.asarray(saved["key"]), int(saved["step"])
-
-
 def plot_diagnostics(snapshot, p, output):
-    """Use the same measured-field plotter for live and saved diagnostics."""
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
     from .plot_entity_bz import Normalization, make_figure
-    norm = Normalization.from_manifest(dict(parameters=asdict(p)))
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
     radii = tuple(r for r in (2., 3., 4., 5.) if snapshot['r'][0] <= r <= snapshot['r'][-1])
-    figure, _ = make_figure(snapshot, norm, radii=radii)
+    figure, _ = make_figure(snapshot, Normalization.from_snapshot(snapshot), radii=radii)
     figure.savefig(output, dpi=150)
     plt.close(figure)
 
@@ -518,333 +391,146 @@ def comparison_errors(snapshot, p):
     return result
 
 
-def evolve(particles, species, fields, key, p, static, dynamic, background, output,
-           *, start_step=0, steps=None, allow_divergence_errors=False,
-           manifest=None, checkpoint_seconds=300., checkpoint_interval=None, constraint_check_interval=100,
-           gauss_tolerance=1e-10, magnetic_divergence_tolerance=1e-10):
-    """Advance the BZ state with transactional steps and bounded streamed output.
+def output_metadata(p, static, dynamic):
+    """Flat scalar arrays shared by snapshots and the final analysis dump.
 
-    Injection precedes the push. The caller's state is only replaced after every
-    scheduled fatal check passes, so failures save the last committed state.
-    ``steps`` limits this invocation; otherwise evolution ends at p.end_time.
+    NaN for maximum_timestep means there is no explicit cap on the CFL step.
+    Stored particle positions are spherical and momenta are covariant and
+    leapfrog-staggered; particle_coordinates names the integration chart.
+    Field arrays retain their tiled Yee layout and guards.
     """
-    import threading
-    if steps is not None and steps < 0:
-        raise ValueError('steps must be nonnegative')
-    if not math.isfinite(checkpoint_seconds) or checkpoint_seconds < 0:
-        raise ValueError('checkpoint_seconds must be finite and nonnegative')
-    if checkpoint_interval is not None and (not math.isfinite(checkpoint_interval) or checkpoint_interval <= 0):
-        raise ValueError('checkpoint_interval must be finite and positive')
-    validate_constraint_settings(gauss_tolerance, magnetic_divergence_tolerance,
-                                 constraint_check_interval)
-    output = Path(output); output.mkdir(parents=True, exist_ok=True)
-    dt = float(dynamic.dt); step = int(start_step)
-    checkpoint_stride = (None if checkpoint_interval is None else
-                         max(1, math.ceil(checkpoint_interval/dt-1e-12)))
+    data = {name: np.asarray(np.nan if value is None else value)
+            for name, value in asdict(p).items()}
+    data.update(dt=np.asarray(dynamic.dt), B0=np.asarray(p.B0),
+                omega_h=np.asarray(p.omega_h), horizon=np.asarray(p.horizon),
+                n0_total=np.asarray(p.n0),
+                particle_coordinates=np.asarray(static.particle_coordinates),
+                field_interpolation=np.asarray(static.polar_field_interpolation),
+                particle_batch_size=np.asarray(static.particle_batch_size),
+                horizon_field_cells=np.asarray(static.horizon_field_cells),
+                **{name: np.asarray(value) for name, value in constraint_policy(
+                    p, p.gauss_tolerance, p.magnetic_divergence_tolerance,
+                    p.constraint_check_interval).items()})
+    return data
+
+
+def save_final_state(path, particles, species, fields, step, metadata, dynamic, budget):
+    """Write analysis arrays without recovery history or executable objects."""
+    arrays = dict(metadata, x=particles.x, u=particles.u, active=particles.active,
+                  step=np.asarray(step), time=np.asarray(step*float(dynamic.dt)),
+                  rho=fields[3], phi=fields[4], boundary_budget=budget)
+    for label, vector in (("D", fields[0]), ("B", fields[1]), ("J", fields[2])):
+        arrays.update({f"{label}_{i}": value for i, value in enumerate(vector)})
+    for name in ('charge', 'mass', 'weight', 'update_x'):
+        arrays['species_'+name] = getattr(species, name)
+    for label, grids in (('center', dynamic.grids.tiled_center_grid),
+                         ('vertex', dynamic.grids.tiled_vertex_grid)):
+        arrays.update({f'grid_{label}_{axis}': value for axis, value in zip('xyz', grids)})
+    np.savez(path, **{name: np.asarray(jax.device_get(value)) for name, value in arrays.items()})
+
+
+def prepare_output_directory(output):
+    output = Path(output).expanduser().resolve()
+    if output.exists() and (not output.is_dir() or any(output.iterdir())):
+        raise FileExistsError(f'Output directory must be empty: {output}')
+    output.mkdir(parents=True, exist_ok=True)
+    return output
+
+
+def evolve(particles, species, fields, key, p, static, dynamic, background, output):
+    """Evolve a fresh initial state to p.end_time, saving checked snapshots."""
+    p.validate()
+    output = prepare_output_directory(output)
+    dt = float(dynamic.dt)
+    if not math.isfinite(dt) or dt <= 0:
+        raise ValueError('dt must be finite and positive')
     target = math.ceil(p.end_time/dt)
-    if steps is not None:
-        target = min(target, step+int(steps))
-    manifest = dict(manifest or {}, dt=dt, parameters=asdict(p), step=step,
-                    time=step*dt, target_step=target, status='running',
-                    checkpoint_seconds=checkpoint_seconds,
-                    checkpoint_interval=checkpoint_interval, checkpoint_stride_steps=checkpoint_stride,
-                    divergence_checks_waived=allow_divergence_errors,
-                    output_directory=str(output.resolve()))
-    check_checkpoint_integrator(manifest)
-    manifest.pop('particle_integrator', None)
-    manifest.update(constraint_policy(p, gauss_tolerance, magnetic_divergence_tolerance,
-                                      constraint_check_interval))
-    budget = np.asarray(manifest.get('boundary_budget', np.zeros(11)), dtype=float)
-    filter_passes = manifest.get('current_filter_passes', 0)
-    options = {}
-    if manifest.get('vacuum', False): options['inject_plasma'] = False
-    if manifest.get('injection_rng_policy') == 'step_v0': options['injection_rng_policy'] = 'step_v0'
-    if filter_passes: options['current_filter_passes'] = filter_passes
-    execute = make_step(p, species, static, dynamic, background, **options)
-    measure = jax.jit(lambda pts, fs: constraint_residuals(pts, species, fs, static, dynamic, p,
-                         **({'current_filter_passes': filter_passes} if filter_passes else {})))
-    started = time.perf_counter(); last_save = last_log = started
-    last_checked_step = None
-    next_snapshot = (math.floor(step*dt/p.output_interval)+1)*p.output_interval
-    warmup = []; stop = [False]; old_handlers = {}
-    if threading.current_thread() is threading.main_thread():
-        for sig in (signal.SIGINT, signal.SIGTERM):
-            old_handlers[sig] = signal.signal(sig, lambda *_: stop.__setitem__(0, True))
+    metadata = output_metadata(p, static, dynamic)
+    execute = make_step(p, species, static, dynamic, background,
+                        inject_plasma=not p.vacuum, current_filter_passes=p.current_filter_passes)
+    measure = jax.jit(lambda pts, fs: constraint_residuals(
+        pts, species, fs, static, dynamic, p, current_filter_passes=p.current_filter_passes))
+    budget = np.zeros(11)
+    next_snapshot = p.output_interval
 
-    def snapshot(final=False):
-        data = diagnostics(particles, species, fields, p, static, dynamic,
-                           **({'current_filter_passes': filter_passes} if filter_passes else {}))
-        data['time'] = step*dt
-        np.savez(output/('diagnostics.npz' if final else f'snapshot_{step:012d}.npz'), **data)
-        if final:
-            (output/'comparison.json').write_text(json.dumps(comparison_errors(data, p), indent=2))
-            plot_diagnostics(data, p, output/'figure6_diagnostics.png')
-
-    with (output/'progress.jsonl').open('a', buffering=1) as stream, tqdm(
-            total=max(target, step), initial=step, desc='BZ monopole',
-            unit='step', dynamic_ncols=True, disable=step >= target) as progress:
-        def record(row):
-            message = json.dumps(row, allow_nan=False)
-            stream.write(message+'\n'); tqdm.write(message)
-
-        def check_state(pts, fs, checked_step):
-            nonlocal last_checked_step
-            residuals = measure(pts, fs)
-            payload = constraint_payload(residuals)
-            event = dict(event='constraints', step=checked_step, time=checked_step*dt,
-                         gauss_tolerance=gauss_tolerance,
-                         magnetic_divergence_tolerance=magnetic_divergence_tolerance,
-                         **payload)
-            try:
-                check_constraints(residuals, allow_divergence_errors,
-                                  gauss_tolerance=gauss_tolerance,
-                                  magnetic_divergence_tolerance=magnetic_divergence_tolerance)
-            except (RuntimeError, FloatingPointError) as error:
-                manifest.update(failed_candidate_step=checked_step,
-                                failed_candidate_time=checked_step*dt,
-                                failure_constraints=payload['constraints'],
-                                failure_constraint_validity=payload['constraint_validity'])
-                record(dict(event, status='failed', error=str(error)))
-                raise
-            waived = (float(residuals['gauss']) >= gauss_tolerance
-                      or float(residuals['magnetic_divergence']) >= magnetic_divergence_tolerance)
-            record(dict(event, status='waived' if waived else 'passed'))
-            manifest.update(payload, constraints_step=checked_step, constraints_time=checked_step*dt)
-            last_checked_step = checked_step
-            return payload
-
+    def check_state(pts, fs, step):
         try:
-            check_species(species); check_sharding(particles, fields, static)
-            if not bool(finite_state(particles, fields)):
-                raise FloatingPointError('Nonfinite initial state')
-            initial = check_state(particles, fields, step)
-            manifest['initial_constraints'] = initial['constraints']
-            manifest['initial_constraint_validity'] = initial['constraint_validity']
-            rolling_checkpoint(output, particles, fields, key, step, p, manifest)
-            snapshot()
-            while step < target and not stop[0]:
-                before = time.perf_counter()
-                new, newfields, newkey, report = execute(particles, fields, key, step)
-                now = time.perf_counter()
-                if (step+1) % constraint_check_interval == 0 or step+1 == target:
-                    check_state(new, newfields, step+1)
-                # All acceptance checks completed; commit this step and its RNG.
-                particles, fields, key = new, newfields, newkey
-                step += 1
-                progress.update(1)
-                requested, inserted, rejected, boundary = report
-                budget += np.concatenate((np.asarray(boundary.absorbed_count).reshape(-1),
-                    np.asarray(boundary.absorbed_charge).reshape(-1),
-                    [float(jnp.sum(boundary.removed_grid_charge))],
-                    np.asarray(boundary.radial_current_outflow)*dt))
-                elapsed = now-before
-                if bool(jnp.any(requested)):
-                    record(dict(event='injection', step=step-1, requested=np.asarray(requested).tolist(),
-                                inserted=np.asarray(inserted).tolist(), rejected=np.asarray(rejected).tolist()))
-                if len(warmup) < 32:
-                    warmup.append(elapsed)
-                    if len(warmup) == 32:
-                        median = float(np.median(warmup[1:]))
-                        manifest.update(first_step_compile_injection_execution_seconds=warmup[0],
-                            steady_step_seconds=median, estimated_remaining_seconds=(target-step)*median,
-                            device_memory=[d.memory_stats() for d in static.field_mesh.devices.flat])
-                        record(dict(event='32_step_timing', step=step, seconds_per_step=median,
-                                    estimated_remaining_seconds=(target-step)*median))
-                manifest.update(step=step, time=step*dt, elapsed_seconds=now-started,
-                                boundary_budget=budget.tolist(), last_update_unix=time.time())
-                if now-last_log >= 30 or step == target:
-                    record(dict(event='progress', step=step, time=step*dt, seconds=elapsed,
-                                constraints=manifest['constraints'],
-                                constraint_validity=manifest['constraint_validity'],
-                                constraints_step=manifest['constraints_step'],
-                                boundary_budget=budget.tolist(),
-                                active_per_tile=np.asarray(particles.active.sum(axis=(-1,-2))).reshape(-1).tolist()))
-                    write_manifest(output/'manifest.json', manifest); last_log = now
-                if step*dt >= next_snapshot:
-                    snapshot(); next_snapshot += p.output_interval
-                if (now-last_save >= checkpoint_seconds
-                        or (checkpoint_stride is not None and step % checkpoint_stride == 0)):
-                    rolling_checkpoint(output, particles, fields, key, step, p, manifest)
-                    last_save = time.perf_counter()
-            if last_checked_step != step:
-                check_state(particles, fields, step)
-            manifest.update(status='finalizing', step=step, time=step*dt,
-                            device_memory=[d.memory_stats() for d in static.field_mesh.devices.flat])
-            rolling_checkpoint(output, particles, fields, key, step, p, manifest)
-            snapshot(final=True)
-            manifest['status'] = 'stopped' if stop[0] else 'completed'
-        except Exception as error:
-            manifest.update(status='failed', error=str(error), step=step, time=step*dt)
-            write_manifest(output/'manifest.json', manifest)
-            try:
-                save_checkpoint(output/'failed_checkpoint.npz', particles, fields, key, step, p,
-                                run_metadata=manifest)
-            except Exception as save_error:
-                manifest['failure_checkpoint_error'] = str(save_error)
-            raise
-        finally:
-            write_manifest(output/'manifest.json', manifest)
-            for sig, handler in old_handlers.items():
-                signal.signal(sig, handler)
-    return particles, fields, key, step
+            check_constraints(measure(pts, fs), p.allow_divergence_errors,
+                              gauss_tolerance=p.gauss_tolerance,
+                              magnetic_divergence_tolerance=p.magnetic_divergence_tolerance)
+        except (RuntimeError, FloatingPointError) as error:
+            raise type(error)(f'Step {step}, t={step*dt:g}: {error}') from error
+
+    def snapshot(step):
+        data = diagnostics(particles, species, fields, p, static, dynamic,
+                           current_filter_passes=p.current_filter_passes)
+        data.update(metadata, step=np.asarray(step), time=np.asarray(step*dt),
+                    boundary_budget=budget.copy())
+        np.savez(output/f'snapshot_{step:012d}.npz', **data)
+        return data
+
+    check_species(species)
+    check_sharding(particles, fields, static)
+    if not bool(finite_state(particles, fields)):
+        raise FloatingPointError('Nonfinite initial state')
+    check_state(particles, fields, 0)
+    snapshot(0)
+    last_refresh = time.perf_counter()
+    with tqdm(total=target, desc='BZ monopole', unit='step', mininterval=1.,
+              dynamic_ncols=True) as progress:
+        progress.set_postfix(time='0 M', active=int(particles.active.sum()), refresh=False)
+        for step in range(1, target+1):
+            new, newfields, newkey, report = execute(particles, fields, key, step-1)
+            if step % p.constraint_check_interval == 0 or step == target:
+                check_state(new, newfields, step)
+            particles, fields, key = new, newfields, newkey
+            _, _, _, boundary = report
+            budget += np.concatenate((np.asarray(boundary.absorbed_count).reshape(-1),
+                np.asarray(boundary.absorbed_charge).reshape(-1),
+                [float(jnp.sum(boundary.removed_grid_charge))],
+                np.asarray(boundary.radial_current_outflow)*dt))
+            now = time.perf_counter()
+            if now-last_refresh >= 1. or step == target:
+                progress.set_postfix(time=f'{step*dt:g} M', active=int(particles.active.sum()),
+                                     refresh=False)
+                last_refresh = now
+            progress.update(1)
+            if step*dt >= next_snapshot or step == target:
+                data = snapshot(step)
+                next_snapshot = (math.floor(step*dt/p.output_interval)+1)*p.output_interval
+    np.savez(output/'diagnostics.npz', **data)
+    save_final_state(output/'final_state.npz', particles, species, fields, target,
+                     metadata, dynamic, budget)
+    plot_diagnostics(data, p, output/'figure6_diagnostics.png')
+    return particles, fields, key, target
 
 
-def run(args):
-    if args.steps is not None and args.steps <= 0:
-        raise ValueError('--steps must be positive')
-    validate_constraint_settings(args.gauss_tolerance, args.magnetic_divergence_tolerance,
-                                 args.constraint_check_interval)
-    if args.backend == 'gpu':
-        available = len(jax.devices('gpu'))
-        if available < args.devices:
-            raise RuntimeError(f'GPU execution requested {args.devices} device(s), '
-                               f'but only {available} CUDA GPU(s) are visible')
-    elif jax.default_backend() != 'cpu':
-        raise RuntimeError('CPU execution requires JAX_PLATFORMS=cpu')
-    p = SimulationParameters(nr=args.nr, ntheta=args.ntheta, devices=args.devices,
-                             maximum_timestep=args.maximum_timestep,
-                             end_time=args.end_time, output_interval=args.output_interval,
-                             courant=args.courant, pairs_per_cell=args.pairs_per_cell,
-                             capacity_factor=args.capacity_factor, seed=args.seed,
-                             skin_depth=args.skin_depth, injection_interval=args.injection_interval)
-    if args.current_filter_passes < 0:
-        raise ValueError('current_filter_passes must be nonnegative')
-    if args.current_filter_passes and p.r_min+(args.current_filter_passes+2)*p.dr >= p.horizon:
+def run(parameters=None):
+    p = (parameters if parameters is not None else SimulationParameters()).validate()
+    output = prepare_output_directory(p.output_directory)
+    jax.config.update('jax_enable_x64', True)
+    jax.config.update('jax_platforms', 'cpu' if p.backend == 'cpu' else 'cuda')
+    if jax.default_backend() not in (('cpu',) if p.backend == 'cpu' else ('gpu', 'cuda')):
+        raise RuntimeError(f'The initialized JAX backend differs from backend={p.backend!r}')
+    if len(jax.devices()) < p.devices:
+        raise RuntimeError(f'Requested {p.devices} devices, but only {len(jax.devices())} are visible')
+    if p.current_filter_passes and p.r_min+(p.current_filter_passes+2)*p.dr >= p.horizon:
         raise ValueError('Source filter and absorption stencil must fit inside the horizon; increase nr')
-    output = Path(args.output).resolve(); output.mkdir(parents=True, exist_ok=True)
-    if (output/'manifest.json').exists():
-        raise FileExistsError('Choose a fresh output directory, including when restarting')
-    static, dynamic, metric, report = build_runtime(p, timestep_policy=args.timestep_policy,
-                                                   particle_batch_size=args.particle_batch_size,
-                                                   horizon_field_cells=args.horizon_field_cells,
-                                                   field_interpolation=args.field_interpolation,
-                                                   particle_coordinates=getattr(args, 'particle_coordinates', 'native'))
-    report.update(constraint_policy(p, args.gauss_tolerance, args.magnetic_divergence_tolerance,
-                                    args.constraint_check_interval))
+    static, dynamic, metric, _ = build_runtime(
+        p, particle_batch_size=p.particle_batch_size, horizon_field_cells=p.horizon_field_cells,
+        field_interpolation=p.field_interpolation, particle_coordinates=p.particle_coordinates)
     particles, species = empty_particles(p, static)
     fields, background = initialize_fields(p, static, dynamic, metric)
-    key = jax.random.PRNGKey(p.seed); step = 0; previous_metadata = {}
-    if args.restart:
-        particles, fields, key, step = load_checkpoint(Path(args.restart), particles, fields, p,
-                                                       static, expected_dt=dynamic.dt)
-        with np.load(args.restart, allow_pickle=False) as saved:
-            previous_metadata = json.loads(str(saved.get('run_metadata', '{}')))
-        if bool(previous_metadata.get('vacuum', False)) != args.vacuum:
-            raise ValueError('Checkpoint vacuum/plasma mode differs')
-        if previous_metadata.get('current_filter_passes', 0) != args.current_filter_passes:
-            raise ValueError('Checkpoint current filter differs')
-        if previous_metadata.get('horizon_field_cells', 0) != args.horizon_field_cells:
-            raise ValueError('Checkpoint horizon field boundary differs')
-    manifest = dict(report, seed=p.seed, pid=os.getpid(), started_unix=time.time(),
-        vacuum=args.vacuum,
-        current_filter_passes=args.current_filter_passes,
-        charge_constraint_source=('binomial_filtered_integrated_charge' if args.current_filter_passes
-                                  else 'raw_integrated_charge'),
-        injection_rng_policy=(previous_metadata.get('injection_rng_policy', 'step_v0')
-                              if args.restart else 'event_ordinal_v1'),
-        boundary_budget=previous_metadata.get('boundary_budget', [0.]*11),
-        resumed_from=str(Path(args.restart).resolve()) if args.restart else None,
-        device_information=[dict(id=d.id, kind=d.device_kind, platform=d.platform)
-                            for d in static.field_mesh.devices.flat])
-    print(json.dumps(report), flush=True)
-    if args.mode == 'validate':
-        check_species(species); check_sharding(particles, fields, static)
-        if not bool(finite_state(particles, fields)):
-            raise FloatingPointError('Nonfinite initialized state')
-        residuals = constraint_residuals(particles,species,fields,static,dynamic,p,
-                                         current_filter_passes=args.current_filter_passes)
-        payload = constraint_payload(residuals)
-        manifest.update(payload, status='validated', step=step, time=step*float(dynamic.dt),
-                        constraints_step=step, constraints_time=step*float(dynamic.dt),
-                        divergence_checks_waived=args.allow_divergence_errors,
-                        output_directory=str(output))
-        event = dict(event='constraints', step=step, time=step*float(dynamic.dt),
-                     gauss_tolerance=args.gauss_tolerance,
-                     magnetic_divergence_tolerance=args.magnetic_divergence_tolerance, **payload)
-        try:
-            check_constraints(residuals, args.allow_divergence_errors,
-                              gauss_tolerance=args.gauss_tolerance,
-                              magnetic_divergence_tolerance=args.magnetic_divergence_tolerance)
-            waived = (float(residuals['gauss']) >= args.gauss_tolerance
-                      or float(residuals['magnetic_divergence']) >= args.magnetic_divergence_tolerance)
-            event['status'] = 'waived' if waived else 'passed'
-        except (RuntimeError, FloatingPointError) as error:
-            event.update(status='failed', error=str(error))
-            manifest.update(status='failed', error=str(error), failed_candidate_step=step,
-                            failed_candidate_time=step*float(dynamic.dt),
-                            failure_constraints=payload['constraints'],
-                            failure_constraint_validity=payload['constraint_validity'])
-            raise
-        finally:
-            write_manifest(output/'manifest.json', manifest)
-            with (output/'progress.jsonl').open('a') as stream:
-                stream.write(json.dumps(event, allow_nan=False)+'\n')
-        return
-    steps = 0 if args.mode == 'initialize' else (32 if args.mode == 'smoke' else None)
-    if args.steps is not None:
-        steps = args.steps if steps is None else min(steps, args.steps)
-    return evolve(particles, species, fields, key, p, static, dynamic, background, output,
-                  start_step=step, steps=steps, allow_divergence_errors=args.allow_divergence_errors,
-                  gauss_tolerance=args.gauss_tolerance,
-                  magnetic_divergence_tolerance=args.magnetic_divergence_tolerance,
-                  constraint_check_interval=args.constraint_check_interval,
-                  checkpoint_seconds=getattr(args, 'checkpoint_seconds', 300.),
-                  checkpoint_interval=getattr(args, 'checkpoint_interval', None),
-                  manifest=manifest)
+    return evolve(particles, species, fields, jax.random.PRNGKey(p.seed), p,
+                  static, dynamic, background, output)
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--mode", choices=("validate", "initialize", "smoke", "run", "analyze"), default="validate")
-    parser.add_argument("--backend", choices=("cpu", "gpu"), default="gpu")
-    parser.add_argument("--devices", type=int, choices=(1, 2), default=1)
-    parser.add_argument('--field-interpolation', choices=('physical', 'entity'), default='entity',
-                        help='Use Entity II metric-weighted auxiliary fields or the original interpolation')
-    parser.add_argument('--particle-coordinates', choices=('native', 'cartesian'), default='cartesian',
-                        help='Particle coordinate chart; restart must use the same chart')
-    parser.add_argument("--maximum-timestep", type=float, default=SimulationParameters().maximum_timestep)
-    parser.add_argument("--nr", type=int, default=SimulationParameters().nr)
-    parser.add_argument("--ntheta", type=int, default=SimulationParameters().ntheta)
-    parser.add_argument("--particle-batch-size", type=int, default=8192,
-                        help="Active pusher batch size; smaller batches suit lightweight runs")
-    parser.add_argument("--vacuum", action="store_true",
-                        help="Disable pair injection for a field-solver stability control")
-    parser.add_argument("--current-filter-passes", type=int, default=4,
-                        help="Conservative binomial source passes; Gauss uses the same filtered charge")
-    parser.add_argument("--horizon-field-cells", type=int, default=5,
-                        help="Freeze this many inner physical field planes; Entity uses filter passes + 1")
-    for name in ("end_time", "output_interval", "courant", "skin_depth", "injection_interval"):
-        parser.add_argument("--"+name.replace("_", "-"), type=float,
-                            default=getattr(SimulationParameters(), name))
-    for name in ("pairs_per_cell", "capacity_factor", "seed"):
-        parser.add_argument("--"+name.replace("_", "-"), type=int,
-                            default=getattr(SimulationParameters(), name))
-    parser.add_argument("--timestep-policy", choices=("cfl",), default="cfl")
-    parser.add_argument("--steps", type=int)
-    parser.add_argument('--checkpoint-seconds', type=float, default=300.,
-                        help='Wall-clock interval for recovery checkpoints')
-    parser.add_argument('--checkpoint-interval', type=float,
-                        help='Also checkpoint every interval in M, rounded up to a whole number of steps')
-    parser.add_argument("--gauss-tolerance", type=float, default=1e-10,
-                        help="Exterior normalized Gauss residual stopping threshold (default: 1e-10)")
-    parser.add_argument("--magnetic-divergence-tolerance", type=float, default=1e-10,
-                        help="Exterior normalized magnetic divergence stopping threshold (default: 1e-10)")
-    parser.add_argument("--constraint-check-interval", type=int, default=100,
-                        help="Check constraints every N absolute steps, plus initial/final states (default: 100)")
-    parser.add_argument("--allow-divergence-errors", action="store_true",
-                        help="Explicitly waive exterior constraint tolerances; nonfinite state remains fatal")
-    parser.add_argument("--restart")
-    parser.add_argument("--output", default="data", help="Output directory (default: ./data in the current working directory)")
-    args = parser.parse_args()
-    jax.config.update("jax_enable_x64", True)
-    if args.mode == "analyze":
-        output = Path(args.output)
-        p = SimulationParameters(**json.loads((output/"manifest.json").read_text())["parameters"])
-        with np.load(output/"diagnostics.npz", allow_pickle=False) as snap:
-            plot_diagnostics(dict(snap), p, output/"figure6_diagnostics.png")
-    else:
-        run(args)
+    import sys
+    if len(sys.argv) != 1:
+        raise SystemExit('This runner takes no arguments; edit simulation_parameters.py.')
+    run(SimulationParameters())
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()

@@ -8,7 +8,7 @@ import numpy as np
 from demos.bz_monopole import run_bz_monopole as runner
 
 class TestInjectionSchedule(unittest.TestCase):
-    def draw_events(self, dt, policy='event_ordinal_v1'):
+    def draw_events(self, dt):
         p = SimpleNamespace(injection_interval=.1, devices=1)
         fields = (None, None, None, None, None, None, None, None, False)
         boundary = SimpleNamespace(invalid_push=False)
@@ -27,7 +27,7 @@ class TestInjectionSchedule(unittest.TestCase):
                 stack.enter_context(patch.object(runner, name, replacement))
             stack.enter_context(patch.object(runner.jax, 'jit', lambda f: f))
             step = runner.make_step(p, None, None, SimpleNamespace(dt=dt), None,
-                                    sponge=False, injection_rng_policy=policy)
+                                    sponge=False)
             key = jax.random.PRNGKey(17)
             for index in range(round(.3/dt)):
                 _, _, key, _ = step(None, fields, key, index)
@@ -35,8 +35,3 @@ class TestInjectionSchedule(unittest.TestCase):
 
     def test_matched_physical_events_share_random_candidates(self):
         np.testing.assert_array_equal(self.draw_events(.002), self.draw_events(.001))
-        # Preserve the old stream when restarting checkpoints without a policy.
-        old = self.draw_events(.002, 'step_v0')
-        self.assertFalse(np.array_equal(old[1:], self.draw_events(.001, 'step_v0')[1:]))
-
-

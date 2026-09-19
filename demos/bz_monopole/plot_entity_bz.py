@@ -12,8 +12,8 @@ Examples (activate an environment with NumPy and Matplotlib)::
     python plot_entity_bz.py --snapshot data/snapshot_000000032000.npz
     python plot_entity_bz.py --paper-limits --format svg
 
-Inputs are manifest.json and snapshot_*.npz or diagnostics.npz from the BZ
-runner. Failed/incomplete runs are supported; checkpoints are not snapshots.
+Inputs are self-contained snapshot_*.npz or diagnostics.npz files from the BZ
+runner. Saved snapshots from incomplete runs are supported.
 No JAX, GPU, simulation initialization, or LaTeX installation is required.
 
 Panels: (a) -H_phi/B0 with contours of measured poloidal magnetic flux;
@@ -23,8 +23,7 @@ Hphi, omega, and luminosity are the runner's collocated diagnostics. Profiles
 are linearly interpolated in radius without angular smoothing. Flux contours
 integrate the saved radial_flux=sqrt(gamma)*B^r with the trapezoidal rule.
 
-Normalization uses the manifest's B0 and omega_h; if absent, it derives
-B0=sqrt(sigma0)/skin_depth and omega_h=a/(2*r_H), as in this runner's metric.
+Normalization uses B0 and omega_h embedded in each NumPy snapshot.
 In particular, it does not replace omega_h by the a/r_H shorthand printed in
 the preprint. The figure always displays the actual saved time, not the
 paper's t=200. Default axes include the full exterior profile range; use
@@ -33,15 +32,17 @@ paper's t=200. Default axes include the full exterior profile range; use
 
 import argparse
 from dataclasses import dataclass
-import json
 from pathlib import Path
 import sys
 
 import numpy as np
+from tqdm import tqdm
 
 
 REFERENCE = "https://arxiv.org/abs/2511.17701"
 REQUIRED = ('r', 'theta', 'Hphi', 'omega', 'radial_flux', 'luminosity', 'time')
+SCALARS = ('spin', 'B0', 'omega_h', 'r_min', 'r_max', 'sponge_start',
+           'nr', 'ntheta', 'skin_depth', 'pairs_per_cell')
 
 
 @dataclass(frozen=True)
@@ -59,19 +60,18 @@ class Normalization:
         return self.B0**2 * self.omega_h**2 / 6
 
     @classmethod
-    def from_manifest(cls, manifest):
-        p = manifest['parameters']
+    def from_snapshot(cls, p):
         spin = float(p['spin'])
         if not np.isfinite(spin) or not 0 < spin < 1:
             raise ValueError('Figure 6 normalization requires 0 < spin < 1 (omega_h and L_BZ must be nonzero).')
         horizon = 1 + np.sqrt(1 - spin**2)
-        B0 = float(manifest['B0']) if 'B0' in manifest else np.sqrt(float(p['sigma0'])) / float(p['skin_depth'])
-        omega_h = float(manifest.get('omega_h', spin / (2*horizon)))
+        B0 = float(p['B0'])
+        omega_h = float(p['omega_h'])
         values = [B0, omega_h, p['r_min'], p['r_max'], p['sponge_start']]
         if not np.isfinite(values).all() or B0 <= 0 or omega_h <= 0:
-            raise ValueError('Manifest normalization values must be finite, with B0 and omega_h positive.')
+            raise ValueError('Snapshot normalization values must be finite, with B0 and omega_h positive.')
         if not 0 < p['r_min'] < p['sponge_start'] < p['r_max']:
-            raise ValueError('Manifest must satisfy 0 < r_min < sponge_start < r_max.')
+            raise ValueError('Snapshot must satisfy 0 < r_min < sponge_start < r_max.')
         return cls(spin, float(horizon), B0, omega_h, float(p['r_min']),
                    float(p['r_max']), float(p['sponge_start']))
 
@@ -79,11 +79,14 @@ class Normalization:
 def load_snapshot(path):
     """Load only the plot diagnostics; never deserialize pickle objects."""
     with np.load(path, allow_pickle=False) as saved:
-        missing = set(REQUIRED) - set(saved.files)
+        missing = set(REQUIRED + SCALARS) - set(saved.files)
         if missing:
             raise ValueError(f'{path}: missing {", ".join(sorted(missing))}. '
-                             'Use snapshot_*.npz or diagnostics.npz, not a checkpoint.')
-        data = {key: np.asarray(saved[key], dtype=float) for key in REQUIRED}
+                             'Use a self-contained snapshot_*.npz or diagnostics.npz file.')
+        data = {key: np.asarray(saved[key], dtype=float) for key in REQUIRED + SCALARS}
+    for key in SCALARS:
+        if data[key].ndim != 0 or not np.isfinite(data[key]):
+            raise ValueError(f'{path}: {key} must be a finite scalar.')
     for key in ('r', 'theta'):
         x = data[key]
         if x.ndim != 1 or len(x) < 2 or not np.isfinite(x).all() or not np.all(np.diff(x) > 0):
@@ -158,7 +161,7 @@ def poloidal_flux(theta, radial_flux):
 
 def cell_edges(nodes, lower, upper):
     if nodes[0] < lower-1e-12 or nodes[-1] > upper+1e-12:
-        raise ValueError('Snapshot coordinates lie outside the manifest domain.')
+        raise ValueError('Snapshot coordinates lie outside the snapshot domain.')
     return np.r_[lower, .5*(nodes[:-1]+nodes[1:]), upper]
 
 
@@ -261,13 +264,12 @@ def make_figure(data, norm, *, radii=(2., 3., 4., 5.), paper_limits=False):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument('--data', type=Path, default=Path(__file__).resolve().parent/'data',
-                        help='Run directory containing manifest.json and snapshots (default: data beside this script)')
+    parser.add_argument('--data', type=Path, default=Path('data'),
+                        help='Run directory containing NumPy snapshots (default: ./data)')
     selection = parser.add_mutually_exclusive_group()
     selection.add_argument('--time', type=float, help='Nearest saved simulation time, within the available range')
-    selection.add_argument('--snapshot', type=Path, help='Explicit diagnostic NPZ file; uses its adjacent manifest by default')
+    selection.add_argument('--snapshot', type=Path, help='Self-contained diagnostic NPZ file')
     selection.add_argument('--all', action='store_true', help='Plot every saved time')
-    parser.add_argument('--manifest', type=Path, help='Override the manifest.json path')
     parser.add_argument('--output-dir', type=Path, help='Output directory (default: RUN/entity_plots)')
     parser.add_argument('--radii', type=float, nargs='+', default=[2., 3., 4., 5.], help='Profile radii in r_g')
     parser.add_argument('--paper-limits', action='store_true', help='Use paper comparison ranges; clipped profiles are annotated')
@@ -288,13 +290,10 @@ def main(argv=None):
             selected = [(float(data['time']), path)]
         else:
             selected = select_snapshots(snapshot_catalog(directory), args.time, args.all)
-        manifest_path = args.manifest.expanduser() if args.manifest else directory/'manifest.json'
-        manifest = json.loads(manifest_path.read_text())
-        norm = Normalization.from_manifest(manifest)
         output = args.output_dir.expanduser().resolve() if args.output_dir else directory/'entity_plots'
-        print(f'B0={norm.B0:.9g}, omega_H={norm.omega_h:.9g}, L_BZ={norm.luminosity_bz:.9g}; reference: {REFERENCE}')
-        for time, path in selected:
+        for time, path in tqdm(selected, desc='BZ plots', unit='figure'):
             data = load_snapshot(path)
+            norm = Normalization.from_snapshot(data)
             fig, notes = make_figure(data, norm, radii=args.radii, paper_limits=args.paper_limits)
             output.mkdir(parents=True, exist_ok=True)
             name = f'entity_bz_{path.stem}'+('_paper_limits' if args.paper_limits else '')
