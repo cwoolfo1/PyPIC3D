@@ -1,14 +1,7 @@
-"""Generate a quiet-start pair-plasma Harris current sheet.
-
-Run this script from ``demos/reconnection_2d`` before starting PyPIC3D.  The
-saved magnetic components use PyPIC3D's Yee staggering and the particle files
-contain the sheet and uniform background populations combined by species.
-"""
+# Harris-sheet initial conditions for the 2D reconnection demo.
 
 from pathlib import Path
-
 import numpy as np
-
 
 from parameters import (
     B0,

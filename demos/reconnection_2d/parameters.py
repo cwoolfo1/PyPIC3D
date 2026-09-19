@@ -1,4 +1,4 @@
-"""Shared SI parameters for the Harris-sheet generator and field-line movie."""
+# Harris-sheet initial conditions for the 2D reconnection demo.
 
 import numpy as np
 

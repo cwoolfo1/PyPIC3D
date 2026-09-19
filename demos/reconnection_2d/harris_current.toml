@@ -1,5 +1,3 @@
-# Electron-positron reconnection from a pressure-balanced Harris current sheet.
-# Run initial_conditions.py in this directory before launching PyPIC3D.
 [simulation_parameters]
 name = "Electron-Positron Harris-Sheet Reconnection"
 Nt = 14000

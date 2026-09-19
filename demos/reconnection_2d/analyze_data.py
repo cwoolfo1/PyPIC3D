@@ -1,25 +1,14 @@
-#!/usr/bin/env python3
-"""Make a full-domain field-line movie from the Harris-sheet openPMD output.
-
-Magnetic components retain PyPIC3D's Yee staggering. We collocate them before
-applying a two-cell display filter, with periodic x and nonperiodic z edges.
-A first pass fixes the color scale; a second renders one frame at a time.
-"""
+# Generate a movie of the magnetic field lines in the reconnection_2d demo.
 
 import argparse
 import os
 from pathlib import Path
-
-os.environ.setdefault("MPLCONFIGDIR", "/tmp/pypic3d-reconnection-matplotlib")
-
 import matplotlib
-
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib import animation, colors
 import numpy as np
 import openpmd_api as io
-
 from parameters import B0, CYCLOTRON_FREQUENCY, SKIN_DEPTH
 
 
