@@ -7,9 +7,9 @@ import unittest
 import jax
 import jax.numpy as jnp
 import numpy as np
-from demos.bz_monopole import run_bz_monopole as runner
-from demos.bz_monopole.simulation_parameters import SimulationParameters,build_runtime
-from demos.bz_monopole.plasma_injector import empty_particles
+from demos.static_metric_relativity.bz_monopole import run_bz_monopole as runner
+from demos.static_metric_relativity.bz_monopole.simulation_parameters import SimulationParameters,build_runtime
+from demos.static_metric_relativity.bz_monopole.plasma_injector import empty_particles
 
 class TestEvolution(unittest.TestCase):
     @classmethod
@@ -56,7 +56,7 @@ class TestEvolution(unittest.TestCase):
                 for name,value in zip(('charge','mass','weight','update_x'),self.sp):
                     np.testing.assert_array_equal(saved['species_'+name],value)
                 self.assertTrue(all(saved[key].dtype.kind!='O' for key in saved.files))
-            from demos.bz_monopole.plot_entity_bz import load_snapshot,Normalization
+            from demos.static_metric_relativity.bz_monopole.plot_entity_bz import load_snapshot,Normalization
             data=load_snapshot(output/'diagnostics.npz')
             self.assertAlmostEqual(Normalization.from_snapshot(data).B0,p.B0)
             self.assertTrue((output/'figure6_diagnostics.png').exists())

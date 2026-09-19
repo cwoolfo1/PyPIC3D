@@ -5,7 +5,7 @@ import unittest
 from unittest.mock import patch
 import jax
 import numpy as np
-from demos.bz_monopole import run_bz_monopole as runner
+from demos.static_metric_relativity.bz_monopole import run_bz_monopole as runner
 
 class TestInjectionSchedule(unittest.TestCase):
     def draw_events(self, dt):

@@ -4,7 +4,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from jax.experimental import checkify
-from demos.bz_monopole.plasma_injector import birth_covariant_momentum
+from demos.static_metric_relativity.bz_monopole.plasma_injector import birth_covariant_momentum
 from PyPIC3D.relativity.particle_metric import sample_particle_metric
 from tests.code_tests.polar_test import polar_runtime as polar_setup
 
@@ -33,7 +33,7 @@ class TestBirthMetric(unittest.TestCase):
 
     def test_timestep_cap_and_invalid_override(self):
         from dataclasses import replace
-        from demos.bz_monopole.simulation_parameters import SimulationParameters,build_runtime
+        from demos.static_metric_relativity.bz_monopole.simulation_parameters import SimulationParameters,build_runtime
         p=SimulationParameters(nr=16,ntheta=16,devices=1,r_max=4.,sponge_start=3.,
                                maximum_timestep=None)
         _,d,_,report=build_runtime(p)

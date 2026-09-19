@@ -5,7 +5,7 @@ from functools import lru_cache
 import jax
 import jax.numpy as jnp
 import numpy as np
-from demos.bz_monopole.simulation_parameters import SimulationParameters,build_runtime
+from demos.static_metric_relativity.bz_monopole.simulation_parameters import SimulationParameters,build_runtime
 from PyPIC3D.boundary_conditions.polar import divergence,refresh_vector,fold,refresh,divide
 from PyPIC3D.relativity.core import D_FIELD_LOCATIONS,B_FIELD_LOCATIONS
 from PyPIC3D.relativity.flat import initialize_flat_spherical_metric
@@ -13,7 +13,7 @@ from PyPIC3D.deposition.rho import compute_rho
 from PyPIC3D.deposition.GR_Esirkepov import GR_Esirkepov_current
 from PyPIC3D.particles.particle_class import TiledParticles,SpeciesConfig
 from PyPIC3D.solvers.gr_static.static_metric import update_D_relativity,update_B_relativity,compute_covariant_E,compute_covariant_H
-from demos.bz_monopole.run_bz_monopole import monopole_field
+from demos.static_metric_relativity.bz_monopole.run_bz_monopole import monopole_field
 jax.config.update('jax_enable_x64',True)
 
 @lru_cache(None)

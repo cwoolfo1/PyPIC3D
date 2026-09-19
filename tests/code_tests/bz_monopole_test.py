@@ -4,10 +4,10 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from tests.code_tests.polar_test import polar_runtime as polar_setup,particle
-from demos.bz_monopole import magnetization as mag
-from demos.bz_monopole.simulation_parameters import SimulationParameters
-from demos.bz_monopole.plasma_injector import empty_particles,inject_pairs,thermal_momentum,orthonormal_to_covariant
-from demos.bz_monopole.run_bz_monopole import initialize_fields,diagnostics,apply_sponge
+from demos.static_metric_relativity.bz_monopole import magnetization as mag
+from demos.static_metric_relativity.bz_monopole.simulation_parameters import SimulationParameters
+from demos.static_metric_relativity.bz_monopole.plasma_injector import empty_particles,inject_pairs,thermal_momentum,orthonormal_to_covariant
+from demos.static_metric_relativity.bz_monopole.run_bz_monopole import initialize_fields,diagnostics,apply_sponge
 from PyPIC3D.boundary_conditions.polar import refresh_vector
 from PyPIC3D.relativity.core import B_FIELD_LOCATIONS
 from PyPIC3D.deposition.rho import compute_rho

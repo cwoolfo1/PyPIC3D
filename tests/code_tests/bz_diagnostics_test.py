@@ -1,7 +1,7 @@
 """BZ measurements retain normalization and expose polar extrema."""
 import numpy as np
-from demos.bz_monopole.run_bz_monopole import comparison_errors
-from demos.bz_monopole.simulation_parameters import SimulationParameters
+from demos.static_metric_relativity.bz_monopole.run_bz_monopole import comparison_errors
+from demos.static_metric_relativity.bz_monopole.simulation_parameters import SimulationParameters
 
 
 def test_analytic_profiles_and_polar_screening_are_reported_separately():

@@ -3,8 +3,9 @@ from pathlib import Path
 import numpy as np
 import pytest
 from PIL import Image
-from demos.bz_monopole import plot_entity_bz as plotter, animate_bz
-from demos.bz_monopole.simulation_parameters import SimulationParameters
+from demos.static_metric_relativity.bz_monopole import plot_entity_bz as plotter
+from demos.static_metric_relativity.bz_monopole.simulation_parameters import SimulationParameters
+from demos.static_metric_relativity.bz_monopole import animate_bz
 
 
 def snapshot(p, time):

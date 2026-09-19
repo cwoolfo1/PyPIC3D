@@ -16,9 +16,9 @@ import jax.numpy as jnp
 import numpy as np
 from tqdm import tqdm
 
-from demos.bz_monopole import run_bz_monopole as runner
-from demos.bz_monopole.simulation_parameters import SimulationParameters, shard_array
-from demos.bz_monopole.plasma_injector import empty_particles
+from demos.static_metric_relativity.bz_monopole import run_bz_monopole as runner
+from demos.static_metric_relativity.bz_monopole.simulation_parameters import SimulationParameters, shard_array
+from demos.static_metric_relativity.bz_monopole.plasma_injector import empty_particles
 from PyPIC3D.relativity.core import D_FIELD_LOCATIONS, B_FIELD_LOCATIONS
 from PyPIC3D.relativity.kerr_schild import initialize_kerr_schild_spherical_metric
 from PyPIC3D.solvers.gr_static import static_metric as solver

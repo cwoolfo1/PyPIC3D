@@ -2,8 +2,8 @@
 import sys
 import pytest
 from PyPIC3D.utilities.parameters import build_static_parameters
-from demos.bz_monopole import run_bz_monopole as runner
-from demos.bz_monopole.simulation_parameters import build_runtime
+from demos.static_metric_relativity.bz_monopole import run_bz_monopole as runner
+from demos.static_metric_relativity.bz_monopole.simulation_parameters import build_runtime
 
 
 @pytest.mark.parametrize('value', [0, 4, True, None])
