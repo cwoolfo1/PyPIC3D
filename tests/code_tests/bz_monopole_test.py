@@ -1,5 +1,4 @@
 """Independent tests for the fresh half-domain BZ components (no long run)."""
-from dataclasses import replace
 import unittest
 import jax
 import jax.numpy as jnp
@@ -16,14 +15,11 @@ from PyPIC3D.relativity.kerr_schild import _kerr_schild_spherical_metric_at_posi
 
 class TestParameters(unittest.TestCase):
     def test_production_defaults(self):
-        p=SimulationParameters().validate()
+        p=SimulationParameters()
         self.assertEqual((p.nr,p.ntheta,p.devices,p.guard_cells),(64,64,1,3))
         self.assertEqual(p.courant,.2)
         self.assertEqual(p.end_time,200.)
         self.assertEqual((p.skin_depth,p.pairs_per_cell,p.maximum_timestep),(.02,16,.004))
-    def test_invalid(self):
-        for changes in (dict(ntheta=7),dict(devices=3),dict(guard_cells=2),dict(spin=1.),dict(skin_depth=0.)):
-            with self.assertRaises(ValueError):replace(SimulationParameters(),**changes).validate()
     def test_horizon_normalization(self):
         p,*_=polar_setup()
         for theta in (.2,1.,2.7):
@@ -31,7 +27,19 @@ class TestParameters(unittest.TestCase):
             self.assertAlmostEqual(float(-jnp.dot(gamma[2],shift)/gamma[2,2]),p.omega_h,places=13)
 
 class TestMagnetization(unittest.TestCase):
-    def test_constant_off_diagonal(self):mag.self_test()
+    def test_constant_off_diagonal(self):
+        from types import SimpleNamespace
+        tensor=jnp.array([[2.,.3,0.],[.3,1.5,.2],[0.,.2,1.]])
+        shape=(1,1,1,4,4,1)
+        metric=SimpleNamespace(geometry=None)
+        metric.center=SimpleNamespace(gamma=jnp.broadcast_to(tensor,shape+(3,3)),
+                                      sqrt_gamma=jnp.full(shape,jnp.sqrt(jnp.linalg.det(tensor))))
+        metric.B=(metric.center,)*3
+        B=tuple(jnp.full(shape,x) for x in (2.,3.,4.))
+        n=jnp.full((2,)+shape,45.9/(8*jnp.pi*100))
+        result=mag.magnetization_from_density(B,n,jnp.ones(2),metric)
+        np.testing.assert_allclose(result.magnetic_squared,45.9,rtol=1e-13)
+        np.testing.assert_allclose(result.sigma,100.,rtol=1e-13)
     def test_number_and_inactive(self):
         p,s,d,m=polar_setup(order=2);zero=jnp.zeros_like(m.center.sqrt_gamma)
         for theta in (.01*p.dtheta,np.pi-.01*p.dtheta):

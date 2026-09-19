@@ -216,7 +216,7 @@ class TestConstraintSchedule(unittest.TestCase):
             np.savez(path,step=step,marker=fields)
         with ExitStack() as stack:
             for name,replacement in [('make_step',lambda *a,**kw:execute),('constraint_residuals',measure),
-                    ('check_species',lambda *a:None),('check_sharding',lambda *a:None),
+                    ('check_sharding',lambda *a:None),
                     ('finite_state',lambda *a:True),('save_final_state',save),
                     ('output_metadata',lambda *a:dict(dt=.001)),
                     ('diagnostics',lambda *a,**kw:dict(marker=a[2])),('plot_diagnostics',lambda *a:None)]:

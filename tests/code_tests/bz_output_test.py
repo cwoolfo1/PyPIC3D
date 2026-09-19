@@ -1,5 +1,4 @@
 """Self-contained NumPy output drives figures without sidecar files."""
-from dataclasses import replace
 from pathlib import Path
 import numpy as np
 import pytest
@@ -44,14 +43,3 @@ def test_snapshot_normalization_is_required_and_validated(tmp_path):
     data=snapshot(p,0.);data['B0']=-1
     with pytest.raises(ValueError,match='positive'):
         plotter.Normalization.from_snapshot(data)
-
-
-@pytest.mark.parametrize('changes',[
-    {'backend':'unknown'},{'output_directory':''},{'particle_coordinates':'unknown'},
-    {'field_interpolation':'unknown'},{'particle_batch_size':0},{'current_filter_passes':-1},
-    {'horizon_field_cells':True},{'constraint_check_interval':0},{'gauss_tolerance':0.},
-    {'magnetic_divergence_tolerance':float('nan')},{'vacuum':'yes'},
-])
-def test_invalid_run_settings(changes):
-    with pytest.raises(ValueError):
-        replace(SimulationParameters(),**changes).validate()

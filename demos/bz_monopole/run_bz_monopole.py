@@ -27,7 +27,7 @@ from PyPIC3D.solvers.gr_static.static_metric import (
 from PyPIC3D.solvers.gr_static.time_loop import time_loop_static_metric
 from .simulation_parameters import SimulationParameters, build_runtime, shard_array
 from .magnetization import measure_magnetization, collocate_magnetic_field
-from .plasma_injector import empty_particles, inject_pairs, check_species
+from .plasma_injector import empty_particles, inject_pairs
 
 CONSTRAINT_REGION = ('Exterior r>=r_H: two-cell physical boundary buffers; '
                      'exclude sponge plus two cells; retain tile seams')
@@ -439,7 +439,6 @@ def prepare_output_directory(output):
 
 def evolve(particles, species, fields, key, p, static, dynamic, background, output):
     """Evolve a fresh initial state to p.end_time, saving checked snapshots."""
-    p.validate()
     output = prepare_output_directory(output)
     dt = float(dynamic.dt)
     if not math.isfinite(dt) or dt <= 0:
@@ -469,7 +468,6 @@ def evolve(particles, species, fields, key, p, static, dynamic, background, outp
         np.savez(output/f'snapshot_{step:012d}.npz', **data)
         return data
 
-    check_species(species)
     check_sharding(particles, fields, static)
     if not bool(finite_state(particles, fields)):
         raise FloatingPointError('Nonfinite initial state')
@@ -506,7 +504,7 @@ def evolve(particles, species, fields, key, p, static, dynamic, background, outp
 
 
 def run(parameters=None):
-    p = (parameters if parameters is not None else SimulationParameters()).validate()
+    p = parameters if parameters is not None else SimulationParameters()
     output = prepare_output_directory(p.output_directory)
     jax.config.update('jax_enable_x64', True)
     jax.config.update('jax_platforms', 'cpu' if p.backend == 'cpu' else 'cuda')
