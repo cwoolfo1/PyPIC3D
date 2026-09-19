@@ -40,7 +40,7 @@ from PyPIC3D.solvers.gr_static.static_metric import (
     compute_covariant_E, compute_covariant_H, update_B_relativity,
     update_D_relativity, _location_interpolate)
 from PyPIC3D.solvers.gr_static.time_loop import time_loop_static_metric
-from .simulation_parameters import PARTICLE_INTEGRATOR, SimulationParameters, build_runtime, shard_array
+from .simulation_parameters import SimulationParameters, build_runtime, shard_array
 from .magnetization import measure_magnetization, collocate_magnetic_field
 from .plasma_injector import empty_particles, inject_pairs, check_species
 
@@ -396,7 +396,7 @@ def diagnostics(particles, species, fields, p, static, dynamic, *, current_filte
 
 def check_checkpoint_integrator(metadata):
     """Accept explicit checkpoints without changing their staggered integrator."""
-    if metadata.get('particle_integrator', PARTICLE_INTEGRATOR) != PARTICLE_INTEGRATOR:
+    if metadata.get('particle_integrator', 'explicit_midpoint_strang_v1') != 'explicit_midpoint_strang_v1':
         raise ValueError('Unknown checkpoint particle integrator; explicit midpoint Strang splitting is required')
     # Legacy v3 checkpoints describe the integrator using these two fields.
     if 'geodesic_iterations' in metadata:
@@ -417,7 +417,7 @@ def save_checkpoint(path, particles, fields, key, step, p, run_metadata=None):
     check_checkpoint_integrator(metadata)
     metadata.pop('geodesic_iterations', None)
     metadata.pop('geodesic_nonlinear_solver', None)
-    metadata['particle_integrator'] = PARTICLE_INTEGRATOR
+    metadata.pop('particle_integrator', None)
     arrays = dict(checkpoint_version=np.asarray(3),
                   reconstruction_id=np.asarray(metadata.get(
                       'metric_reconstruction', 'cardinal_cubic_hermite_consistent_v1')),
@@ -544,13 +544,14 @@ def evolve(particles, species, fields, key, p, static, dynamic, background, outp
     target = math.ceil(p.end_time/dt)
     if steps is not None:
         target = min(target, step+int(steps))
-    manifest = dict(manifest or {}, particle_integrator=PARTICLE_INTEGRATOR,
-                    dt=dt, parameters=asdict(p), step=step,
+    manifest = dict(manifest or {}, dt=dt, parameters=asdict(p), step=step,
                     time=step*dt, target_step=target, status='running',
                     checkpoint_seconds=checkpoint_seconds,
                     checkpoint_interval=checkpoint_interval, checkpoint_stride_steps=checkpoint_stride,
                     divergence_checks_waived=allow_divergence_errors,
                     output_directory=str(output.resolve()))
+    check_checkpoint_integrator(manifest)
+    manifest.pop('particle_integrator', None)
     manifest.update(constraint_policy(p, gauss_tolerance, magnetic_divergence_tolerance,
                                       constraint_check_interval))
     budget = np.asarray(manifest.get('boundary_budget', np.zeros(11)), dtype=float)

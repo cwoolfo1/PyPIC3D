@@ -10,7 +10,7 @@ from PyPIC3D.utilities.parameters import build_static_parameters
 from demos.bz_monopole import run_bz_monopole as runner
 from demos.bz_monopole.plasma_injector import empty_particles
 from demos.bz_monopole.simulation_parameters import (
-    PARTICLE_INTEGRATOR, SimulationParameters, build_runtime,
+    SimulationParameters, build_runtime,
 )
 
 
@@ -31,12 +31,11 @@ def checkpoint(request, tmp_path_factory):
 def legacy_arrays(checkpoint, changes):
     *_, report, arrays = checkpoint
     metadata = dict(report)
-    metadata.pop('particle_integrator')
     metadata.update(changes)
     return dict(arrays, run_metadata=np.asarray(json.dumps(metadata)))
 
 
-@pytest.mark.parametrize('kind', ['missing', 'zero', 'legacy_solver', 'new', 'consistent_mixed'])
+@pytest.mark.parametrize('kind', ['missing', 'zero', 'legacy_solver', 'legacy_tag', 'consistent_mixed'])
 def test_explicit_checkpoint_restarts(checkpoint, tmp_path, kind):
     p, s, d, particles, fields, key, _, _ = checkpoint
     changes = {}
@@ -46,8 +45,8 @@ def test_explicit_checkpoint_restarts(checkpoint, tmp_path, kind):
         changes['geodesic_nonlinear_solver'] = (
             'cartesian_explicit_midpoint_v1' if s.particle_coordinates == 'cartesian'
             else 'explicit_midpoint')
-    if kind in ('new', 'consistent_mixed'):
-        changes['particle_integrator'] = PARTICLE_INTEGRATOR
+    if kind in ('legacy_tag', 'consistent_mixed'):
+        changes['particle_integrator'] = 'explicit_midpoint_strang_v1'
     path = tmp_path/'legacy.npz'
     np.savez(path, **legacy_arrays(checkpoint, changes))
     restored = runner.load_checkpoint(path, particles, fields, p, s, expected_dt=d.dt)
@@ -69,7 +68,7 @@ def test_explicit_checkpoint_restarts(checkpoint, tmp_path, kind):
     {'geodesic_nonlinear_solver': None},
     {'particle_integrator': 'unknown'},
     {'particle_integrator': None},
-    {'particle_integrator': PARTICLE_INTEGRATOR, 'geodesic_iterations': 4},
+    {'particle_integrator': 'explicit_midpoint_strang_v1', 'geodesic_iterations': 4},
     {'geodesic_iterations': 0, 'geodesic_nonlinear_solver': 'cartesian_implicit_midpoint_v1'},
 ])
 def test_incompatible_checkpoint_is_rejected(checkpoint, tmp_path, changes):
@@ -90,12 +89,13 @@ def test_legacy_solver_must_match_chart(checkpoint, tmp_path):
         runner.load_checkpoint(path, particles, fields, p, s, expected_dt=d.dt)
 
 
-def test_writer_emits_only_explicit_metadata(checkpoint, tmp_path):
+def test_writer_omits_integrator_metadata(checkpoint, tmp_path):
     p, s, d, particles, fields, key, report, _ = checkpoint
-    assert report['particle_integrator'] == PARTICLE_INTEGRATOR
+    assert 'particle_integrator' not in report
     assert 'geodesic_iterations' not in report
     assert 'geodesic_nonlinear_solver' not in report
-    legacy = dict(report, geodesic_iterations=0,
+    legacy = dict(report, particle_integrator='explicit_midpoint_strang_v1',
+                  geodesic_iterations=0,
                   geodesic_nonlinear_solver=('cartesian_explicit_midpoint_v1'
                       if s.particle_coordinates == 'cartesian' else 'explicit_midpoint'))
     path = tmp_path/'new.npz'
@@ -104,7 +104,7 @@ def test_writer_emits_only_explicit_metadata(checkpoint, tmp_path):
     with np.load(path, allow_pickle=False) as data:
         assert int(data['checkpoint_version']) == 3
         metadata = json.loads(str(data['run_metadata']))
-    assert metadata['particle_integrator'] == PARTICLE_INTEGRATOR
+    assert 'particle_integrator' not in metadata
     assert 'geodesic_iterations' not in metadata
     assert 'geodesic_nonlinear_solver' not in metadata
     assert runner.load_checkpoint(path, particles, fields, p, s, expected_dt=d.dt)[3] == 7

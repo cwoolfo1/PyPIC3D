@@ -117,9 +117,6 @@ def shard_array(array, static):
     return jax.device_put(array, NamedSharding(static.field_mesh, P("tile_x", "tile_y", "tile_z")))
 
 
-PARTICLE_INTEGRATOR = 'explicit_midpoint_strang_v1'
-
-
 def build_runtime(parameters=SimulationParameters(), *, timestep_policy="cfl", particle_batch_size=65536,
                   horizon_field_cells=0, field_interpolation='physical',
                   particle_coordinates='native'):
@@ -187,7 +184,6 @@ def build_runtime(parameters=SimulationParameters(), *, timestep_policy="cfl", p
     report = dict(parameters=asdict(p), dt=float(dynamic.dt), cfl_dt=cfl_dt,
                   field_interpolation=field_interpolation,
                   particle_coordinates=particle_coordinates,
-                  particle_integrator=PARTICLE_INTEGRATOR,
                   horizon_field_cells=horizon_field_cells,
                   particle_batch_size=static.particle_batch_size,
                   timestep_policy=timestep_policy,
