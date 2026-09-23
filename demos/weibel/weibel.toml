@@ -16,10 +16,9 @@ shape_factor = 2
 relativistic = true
 
 [plotting]
-plot_errors = false
-phaseSpace  = false
-plotfields = false
-plotting_interval = 30
+plot_openpmd_particles = true
+plot_openpmd_fields = true
+plotting_interval = 10
 
 [particle1]
 name = "electron1"

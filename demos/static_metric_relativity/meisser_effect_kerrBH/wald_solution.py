@@ -131,6 +131,17 @@ def build_pypic_parameters(config):
         boundary_conditions=(BC_CONSTANT, BC_PERIODIC, BC_PERIODIC),
         particle_boundary_conditions=(BC_CONSTANT, BC_PERIODIC, BC_PERIODIC),
         field_mesh=make_field_mesh((1, 1, 1)),
+
+
+        electrostatic_schwarz_tol=None,
+        electrostatic_schwarz_max_iterations=None,
+        electrostatic_local_cg_tol=None,
+        electrostatic_local_cg_max_iterations=None,
+        particle_batch_size=1,
+        # These parameters are not used in this demo,
+        # but are required for the PyPIC3D parameter dataclass.
+
+
     )
 
     grid_setup = SimpleNamespace(
