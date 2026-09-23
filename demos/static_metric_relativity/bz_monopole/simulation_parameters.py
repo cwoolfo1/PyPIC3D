@@ -41,7 +41,7 @@ class SimulationParameters:
     guard_cells: int = 3
     output_directory: str = "data"
     backend: str = "gpu"
-    particle_coordinates: str = "cartesian"
+    particle_coordinates: str = 'native' #"cartesian"
     field_interpolation: str = "entity"
     particle_batch_size: int = 8192
     current_filter_passes: int = 4

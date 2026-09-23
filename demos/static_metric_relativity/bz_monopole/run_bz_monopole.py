@@ -25,9 +25,9 @@ from PyPIC3D.solvers.gr_static.static_metric import (
     compute_covariant_E, compute_covariant_H, update_B_relativity,
     update_D_relativity, _location_interpolate)
 from PyPIC3D.solvers.gr_static.time_loop import time_loop_static_metric
-from .simulation_parameters import SimulationParameters, build_runtime, shard_array
-from .magnetization import measure_magnetization, collocate_magnetic_field
-from .plasma_injector import empty_particles, inject_pairs
+from simulation_parameters import SimulationParameters, build_runtime, shard_array
+from magnetization import measure_magnetization, collocate_magnetic_field
+from plasma_injector import empty_particles, inject_pairs
 
 CONSTRAINT_REGION = ('Exterior r>=r_H: two-cell physical boundary buffers; '
                      'exclude sponge plus two cells; retain tile seams')
@@ -117,7 +117,7 @@ def make_step(p, species, static, dynamic, background, *, sponge=True,
     def evolve(particles, fields):
         transform = None
         if current_filter_passes:
-            from .current_filter import filter_current
+            from current_filter import filter_current
             transform = lambda current: filter_current(current, fields[6].geometry,
                                                        static, current_filter_passes)
         errors, (particles, fields, boundary) = time_loop_static_metric(
@@ -213,7 +213,7 @@ def constraint_residuals(particles, species, fields, static, dynamic, p, *, curr
     charge *= 4*jnp.pi*dynamic.dx*dynamic.dy*dynamic.dz
     raw_charge = charge
     if current_filter_passes:
-        from .current_filter import smooth_integrated
+        from current_filter import smooth_integrated
         charge = smooth_integrated(charge, static, current_filter_passes)
     divD = divergence(fields[0], geometry, static)
     divB = divergence(fields[1], geometry, static, True)
@@ -325,7 +325,7 @@ def diagnostics(particles, species, fields, p, static, dynamic, *, current_filte
         divB=divergence(B,metric.geometry,static,True)
         rho=rho*dynamic.dx*dynamic.dy*dynamic.dz
     if current_filter_passes:
-        from .current_filter import smooth_integrated
+        from current_filter import smooth_integrated
         rho = smooth_integrated(rho, static, current_filter_passes)
     constraints = assemble(divD-4*jnp.pi*rho)
     residuals = {k:np.asarray(v) for k,v in constraint_residuals(
@@ -351,7 +351,7 @@ def diagnostics(particles, species, fields, p, static, dynamic, *, current_filte
 
 
 def plot_diagnostics(snapshot, p, output):
-    from .plot_entity_bz import Normalization, make_figure
+    from plot_entity_bz import Normalization, make_figure
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
@@ -363,7 +363,7 @@ def plot_diagnostics(snapshot, p, output):
 
 def comparison_errors(snapshot, p):
     """Measured BZ profiles, power, and screening; no run certification policy."""
-    from .plot_entity_bz import radial_profile
+    from plot_entity_bz import radial_profile
     theta = snapshot['theta']
     angular = (theta >= np.pi/12) & (theta <= 11*np.pi/12)
     radial = (snapshot['r'] >= 2.2) & (snapshot['r'] <= 7.5)
