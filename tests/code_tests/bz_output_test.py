@@ -1,7 +1,8 @@
 """Self-contained NumPy output drives figures without sidecar files."""
 from pathlib import Path
+from tempfile import TemporaryDirectory
+import unittest
 import numpy as np
-import pytest
 from PIL import Image
 from demos.static_metric_relativity.bz_monopole import plot_entity_bz as plotter
 from demos.static_metric_relativity.bz_monopole.simulation_parameters import SimulationParameters
@@ -21,26 +22,34 @@ def snapshot(p, time):
         pairs_per_cell=p.pairs_per_cell)
 
 
-def test_plots_and_animation_need_only_numpy_files(tmp_path):
-    p=SimulationParameters()
-    for step in (0,1):
-        np.savez(tmp_path/f'snapshot_{step:012d}.npz',**snapshot(p,float(step)))
-    assert plotter.main(['--data',str(tmp_path),'--all','--dpi','35'])==0
-    assert len(list((tmp_path/'entity_plots').glob('*.png')))==2
-    animate_bz.main([str(tmp_path),'--times','0','1','--output',str(tmp_path/'evolution.gif'),
-                     '--dpi','35'])
-    with Image.open(tmp_path/'evolution.gif') as gif:
-        assert gif.n_frames==2
-    assert (tmp_path/'evolution.png').is_file()
-    assert not list(tmp_path.rglob('*.json*'))
+class TestBZOutput(unittest.TestCase):
+    def test_plots_and_animation_need_only_numpy_files(self):
+        with TemporaryDirectory() as directory:
+            tmp_path=Path(directory)
+            p=SimulationParameters()
+            for step in (0,1):
+                np.savez(tmp_path/f'snapshot_{step:012d}.npz',**snapshot(p,float(step)))
+            self.assertEqual(plotter.main(['--data',str(tmp_path),'--all','--dpi','35']),0)
+            self.assertEqual(len(list((tmp_path/'entity_plots').glob('*.png'))),2)
+            animate_bz.main([str(tmp_path),'--times','0','1','--output',str(tmp_path/'evolution.gif'),
+                             '--dpi','35'])
+            with Image.open(tmp_path/'evolution.gif') as gif:
+                self.assertEqual(gif.n_frames,2)
+            self.assertTrue((tmp_path/'evolution.png').is_file())
+            self.assertFalse(list(tmp_path.rglob('*.json*')))
+
+    def test_snapshot_normalization_is_required_and_validated(self):
+        with TemporaryDirectory() as directory:
+            tmp_path=Path(directory)
+            p=SimulationParameters();data=snapshot(p,0.)
+            del data['B0']
+            path=tmp_path/'missing.npz';np.savez(path,**data)
+            with self.assertRaisesRegex(ValueError,'B0'):
+                plotter.load_snapshot(path)
+            data=snapshot(p,0.);data['B0']=-1
+            with self.assertRaisesRegex(ValueError,'positive'):
+                plotter.Normalization.from_snapshot(data)
 
 
-def test_snapshot_normalization_is_required_and_validated(tmp_path):
-    p=SimulationParameters();data=snapshot(p,0.)
-    del data['B0']
-    path=tmp_path/'missing.npz';np.savez(path,**data)
-    with pytest.raises(ValueError,match='B0'):
-        plotter.load_snapshot(path)
-    data=snapshot(p,0.);data['B0']=-1
-    with pytest.raises(ValueError,match='positive'):
-        plotter.Normalization.from_snapshot(data)
+if __name__=='__main__':
+    unittest.main()
