@@ -32,15 +32,11 @@ import jax.numpy as jnp
 
 jax.config.update("jax_enable_x64", True)
 
-from PyPIC3D.deposition.GR_direct_deposition import (
-    GR_direct_deposition,
-    _metric_tile,
-    _sample_current_metric,
-)
+from PyPIC3D.deposition.GR_direct_deposition import GR_direct_deposition
 from PyPIC3D.particles.particle_class import SpeciesConfig, TiledParticles
 from PyPIC3D.pusher.hybrid_boris_geodesic import (
-    _magnetic_boris_rotation,
     hybrid_boris_geodesic_push,
+    magnetic_boris_rotation,
 )
 from PyPIC3D.pusher.particle_push import seed_leapfrog_velocity
 from PyPIC3D.relativity.core import (
@@ -49,6 +45,7 @@ from PyPIC3D.relativity.core import (
     Metric,
     YeeMetric,
     analytic_metric_on_grid,
+    build_yee_metric,
     contravariant_three_velocity,
     covariant_lorentz_factor,
 )
@@ -61,6 +58,7 @@ from PyPIC3D.relativity.kerr_schild import (
     _kerr_schild_cartesian_metric_at_position,
     _kerr_schild_spherical_metric_at_position,
 )
+from PyPIC3D.relativity.interpolate_metric import interpolate_metric
 from PyPIC3D.solvers.gr_static.static_metric import (
     compute_covariant_E,
     compute_covariant_H,
@@ -255,37 +253,28 @@ def location_positions(location, dynamic_parameters):
 
 def build_center_metric(dynamic_parameters, metric_at_position):
     """
-    Only ``center`` and ``center_grad_gamma_inv`` are read by the pusher.
+    Only ``center`` is read by the pusher.
     """
-    center, grad_gamma_inv = analytic_metric_on_grid(
+    center = analytic_metric_on_grid(
         dynamic_parameters.grids.tiled_center_grid, metric_at_position
     )
-    return YeeMetric(
-        D=(center,) * 3,
-        B=(center,) * 3,
-        center=center,
-        vertex=center,
-        center_grad_gamma_inv=grad_gamma_inv,
-    )
+    return YeeMetric(D=(center,) * 3, B=(center,) * 3, center=center, vertex=center)
 
 
-def build_full_metric(dynamic_parameters, metric_at_position):
-    D = tuple(
-        analytic_metric_on_grid(location_grid(location, dynamic_parameters), metric_at_position)[0]
-        for location in D_FIELD_LOCATIONS
-    )
-    B = tuple(
-        analytic_metric_on_grid(location_grid(location, dynamic_parameters), metric_at_position)[0]
-        for location in B_FIELD_LOCATIONS
-    )
-    center, grad_gamma_inv = analytic_metric_on_grid(
-        dynamic_parameters.grids.tiled_center_grid, metric_at_position
-    )
-    vertex, _ = analytic_metric_on_grid(
-        dynamic_parameters.grids.tiled_vertex_grid, metric_at_position
-    )
-    return YeeMetric(
-        D=D, B=B, center=center, vertex=vertex, center_grad_gamma_inv=grad_gamma_inv
+build_full_metric = build_yee_metric
+
+
+def sample_center_metric(metric, positions, static_parameters, dynamic_parameters):
+    grid = tuple(axis[0, 0, 0] for axis in dynamic_parameters.grids.tiled_center_grid)
+    g = int(static_parameters.guard_cells)
+    return interpolate_metric(
+        jax.tree.map(lambda array: array[0, 0, 0], metric.center),
+        positions,
+        grid,
+        static_parameters.metric,
+        (True, True, True),
+        (g, g, g),
+        derivatives=False,
     )
 
 
@@ -1058,16 +1047,8 @@ class TestCurrentDepositionConvergence(unittest.TestCase):
                     for i in range(3)
                 ]
             )
-            grid = tuple(
-                dynamic_parameters.grids.tiled_center_grid[axis][0, 0, 0] for axis in range(3)
-            )
-            sampled = _sample_current_metric(
-                _metric_tile(metric.center, 0, 0, 0),
-                position[0].reshape(1),
-                position[1].reshape(1),
-                position[2].reshape(1),
-                grid,
-                static_parameters.shape_factor,
+            sampled = sample_center_metric(
+                metric, position.reshape(1, 3), static_parameters, dynamic_parameters
             )
             velocity = contravariant_three_velocity(momentum.reshape(1, 3), sampled.gamma_inv)
             expected = 6.0 * (sampled.lapse[:, None] * velocity - sampled.shift)[0]
@@ -1093,16 +1074,8 @@ class TestCurrentDepositionConvergence(unittest.TestCase):
                 metric = build_center_metric(dynamic_parameters, metric_at_position)
                 fractions = jax.random.uniform(key, (400, 3), minval=0.2, maxval=0.8)
                 positions = jnp.asarray(mins) + fractions * jnp.asarray(wind)
-                grid = tuple(
-                    dynamic_parameters.grids.tiled_center_grid[axis][0, 0, 0] for axis in range(3)
-                )
-                sampled = _sample_current_metric(
-                    _metric_tile(metric.center, 0, 0, 0),
-                    positions[:, 0],
-                    positions[:, 1],
-                    positions[:, 2],
-                    grid,
-                    static_parameters.shape_factor,
+                sampled = sample_center_metric(
+                    metric, positions, static_parameters, dynamic_parameters
                 )
                 momenta = jax.vmap(deposition_velocity_field)(positions)
                 velocity = contravariant_three_velocity(momenta, sampled.gamma_inv)
@@ -1351,9 +1324,6 @@ class TestInvariantsAndConstraints(unittest.TestCase):
                 gamma=gamma[None, :, :],
                 gamma_inv=gamma_inv[None, :, :],
                 sqrt_gamma=jnp.asarray([sqrt_gamma]),
-                christoffel=None,
-                grad_lapse=None,
-                grad_shift=None,
             )
             worst = 0.0
             for trial in range(25):
@@ -1361,7 +1331,7 @@ class TestInvariantsAndConstraints(unittest.TestCase):
                 u_cov = 1.5 * jax.random.normal(key_u, (1, 3))
                 B_con = 2.0 * jax.random.normal(key_B, (1, 3))
                 for dt in (0.01, 0.5, 5.0, 50.0):
-                    rotated = _magnetic_boris_rotation(
+                    rotated = magnetic_boris_rotation(
                         u_cov, B_con, sampled, jnp.asarray([1.3]), dt
                     )
                     before = float(covariant_lorentz_factor(u_cov, sampled.gamma_inv)[0])

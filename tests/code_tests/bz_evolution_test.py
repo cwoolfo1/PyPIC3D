@@ -17,7 +17,7 @@ class TestEvolution(unittest.TestCase):
         cls.p=SimulationParameters(nr=16,ntheta=16,devices=2,r_max=4.,sponge_start=3.,
                                   skin_depth=.0025,pairs_per_cell=4,maximum_timestep=None,
                                   end_time=5.,output_interval=1.,backend='cpu',current_filter_passes=0,
-                                  horizon_field_cells=0,particle_coordinates='native',field_interpolation='physical')
+                                  horizon_field_cells=0,field_interpolation='physical')
         cls.s,cls.d,cls.m,_=build_runtime(cls.p)
         cls.pts,cls.sp=empty_particles(cls.p,cls.s)
         cls.fields,cls.bg=runner.initialize_fields(cls.p,cls.s,cls.d,cls.m)
@@ -46,7 +46,6 @@ class TestEvolution(unittest.TestCase):
             with np.load(output/'final_state.npz',allow_pickle=False) as saved:
                 self.assertEqual(int(saved['step']),4)
                 self.assertEqual(float(saved['time']),4*float(d.dt))
-                self.assertEqual(str(saved['particle_coordinates']),'native')
                 np.testing.assert_array_equal(saved['active'],expected_pts.active)
                 np.testing.assert_array_equal(saved['x'],expected_pts.x)
                 np.testing.assert_array_equal(saved['u'],expected_pts.u)

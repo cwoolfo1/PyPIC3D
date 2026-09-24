@@ -39,8 +39,7 @@ def build_runtime(p):
         particle_pusher='hybrid_boris_geodesic', current_deposition='GR_esirkepov',
         current_filter='none', shape_factor=1, guard_cells=3,
         tile_shape=(p.nr,p.ntheta,1), boundary_conditions=(3,3,0),
-        particle_boundary_conditions=(2,1,0), particle_batch_size=8192,
-        particle_coordinates='cartesian'))
+        particle_boundary_conditions=(2,1,0), particle_batch_size=8192))
     center, vertex = build_yee_grid(SimpleNamespace(**config))
     tc,tv = build_tiled_yee_grids(static, SimpleNamespace(
         **config, grids=SimpleNamespace(center=center,vertex=vertex)))

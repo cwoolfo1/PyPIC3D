@@ -8,7 +8,7 @@ from jax.experimental import checkify
 from PyPIC3D.particles.particle_class import TiledParticles, SpeciesConfig
 from PyPIC3D.particles.particle_tile_communication import shard_tiled_particles
 from PyPIC3D.pusher.particle_push import seed_leapfrog_velocity
-from PyPIC3D.relativity.particle_metric import (sample_particle_metric, safe_inactive_positions)
+from PyPIC3D.relativity.interpolate_metric import interpolate_metric, safe_inactive_positions
 from magnetization import proper_volume
 
 
@@ -59,11 +59,9 @@ def birth_covariant_momentum(momentum, positions, active, metric, grid, static, 
     """Use exactly the pusher reconstruction; unused candidates are safely masked."""
     g = static.guard_cells
     evaluation = safe_inactive_positions(positions, active, grid, (True,True,False), g)
-    sampled, _ = sample_particle_metric(
-        metric, evaluation, grid, static.shape_factor, static.metric,
-        (True,True,False), (g,g,g), derivatives=False,
-        stage="injection birth transform", tile=tile,
-        regularize_spherical=static.particle_coordinates == 'cartesian')
+    sampled = interpolate_metric(
+        metric, evaluation, grid, static.metric, (True,True,False), (g,g,g),
+        derivatives=False, stage="injection birth transform", tile=tile)
     covariant = jax.vmap(orthonormal_to_covariant)(momentum, sampled.gamma)
     return jnp.where(active[...,None], covariant, 0.)
 

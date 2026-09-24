@@ -5,10 +5,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 from jax.experimental import checkify
-from PyPIC3D.relativity.particle_metric import (
-    sample_particle_metric,
-    validate_particle_metric_grids,
-)
+from PyPIC3D.relativity.interpolate_metric import interpolate_metric
 from PyPIC3D.pusher.hybrid_boris_geodesic import hybrid_boris_geodesic_push
 from PyPIC3D.pusher.particle_push import seed_leapfrog_velocity
 from PyPIC3D.particles.particle_class import SpeciesConfig, TiledParticles
@@ -25,11 +22,10 @@ def test_checked_sampler_reports_stencil_and_tensor_errors():
     grid, m = manufactured()
     get = jax.jit(
         checkify.checkify(
-            lambda q, metric: sample_particle_metric(
+            lambda q, metric: interpolate_metric(
                 metric,
                 q,
                 grid,
-                1,
                 "numerical",
                 (True, True, False),
                 (3, 3, 3),
@@ -78,20 +74,6 @@ def test_checked_pusher_and_seed_preserve_inactive_slots():
         lambda p: hybrid_boris_geodesic_push(p, sp, D, B, m, s, far)
     )(p._replace(u=p.u.at[..., 0, 0].set(10.0)))
     assert errors.get() is not None
-
-
-def test_numerical_grid_validation():
-    s, d, m, _, _ = make_runtime("spherical", 16, 32)
-    grids = d.grids.tiled_center_grid
-    validate_particle_metric_grids(m, grids, (True, True, False), 3)
-    with pytest.raises(ValueError, match="uniform"):
-        validate_particle_metric_grids(
-            m, (grids[0].at[..., 5].add(0.01), *grids[1:]), (True, True, False), 3
-        )
-    with pytest.raises(ValueError, match="shapes"):
-        validate_particle_metric_grids(
-            m, (grids[0][..., :-1], *grids[1:]), (True, True, False), 3
-        )
 
 
 def test_configuration_defaults_and_metadata():

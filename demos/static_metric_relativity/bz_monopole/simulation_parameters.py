@@ -11,6 +11,7 @@ import jax
 import jax.numpy as jnp
 from jax.sharding import NamedSharding, PartitionSpec as P
 
+from PyPIC3D.relativity.interpolate_metric import RECONSTRUCTION
 from PyPIC3D.relativity.kerr_schild import initialize_kerr_schild_spherical_metric
 from PyPIC3D.utilities.grids import build_yee_grid, build_tiled_yee_grids
 from PyPIC3D.utilities.parameters import build_static_parameters, build_dynamic_parameters
@@ -41,7 +42,6 @@ class SimulationParameters:
     guard_cells: int = 3
     output_directory: str = "data"
     backend: str = "gpu"
-    particle_coordinates: str = 'native' #"cartesian"
     field_interpolation: str = "entity"
     particle_batch_size: int = 8192
     current_filter_passes: int = 4
@@ -99,11 +99,10 @@ def shard_array(array, static):
 
 
 def build_runtime(parameters=SimulationParameters(), *, timestep_policy="cfl", particle_batch_size=65536,
-                  horizon_field_cells=0, field_interpolation='physical',
-                  particle_coordinates='native'):
+                  horizon_field_cells=0, field_interpolation='physical'):
     """Build a runtime with explicitly selected numerical methods.
 
-    This low-level builder retains native/physical defaults for component
+    This low-level builder retains physical-interpolation defaults for component
     tests and callers; the runner supplies the settings from SimulationParameters.
     """
     p = parameters
@@ -121,8 +120,7 @@ def build_runtime(parameters=SimulationParameters(), *, timestep_policy="cfl", p
         # Two-GPU timing favors larger active batches;
         # 256-particle batches spend more time in loop/kernel overhead.
         particle_boundary_conditions=(2, 4, 0), particle_batch_size=particle_batch_size,
-        horizon_field_cells=horizon_field_cells, polar_field_interpolation=field_interpolation,
-        particle_coordinates=particle_coordinates))
+        horizon_field_cells=horizon_field_cells, polar_field_interpolation=field_interpolation))
     center, vertex = build_yee_grid(SimpleNamespace(**config))
     theta=jnp.arange(-1,p.ntheta+1,dtype=jnp.float64)*p.dtheta
     center=(center[0],theta,center[2])
@@ -152,13 +150,11 @@ def build_runtime(parameters=SimulationParameters(), *, timestep_policy="cfl", p
     lengths = jnp.sqrt(jnp.diagonal(m.gamma, axis1=-2, axis2=-1))[interior]
     report = dict(parameters=asdict(p), dt=float(dynamic.dt), cfl_dt=cfl_dt,
                   field_interpolation=field_interpolation,
-                  particle_coordinates=particle_coordinates,
                   horizon_field_cells=horizon_field_cells,
                   particle_batch_size=static.particle_batch_size,
                   timestep_policy=timestep_policy,
                   maximum_timestep=maximum_dt,
-                  metric_reconstruction=("orthonormal_spherical_hermite_v1" if particle_coordinates == 'cartesian'
-                                         else "cardinal_cubic_hermite_consistent_v1"),
+                  metric_reconstruction=RECONSTRUCTION,
                   n0_total=p.n0, B0=p.B0, rho0=p.larmor_radius,
                   species_weight=p.weight, slots_per_species_per_tile=p.slots_per_species,
                   particle_storage_bytes=p.devices*2*p.slots_per_species*(6*8+1),

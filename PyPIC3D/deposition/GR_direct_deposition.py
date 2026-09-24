@@ -13,8 +13,8 @@ from PyPIC3D.boundary_conditions.grid_and_stencil import (
     prepare_particle_axis_stencil,
 )
 from PyPIC3D.deposition.shapes import get_first_order_weights, get_second_order_weights
-from PyPIC3D.relativity.core import Metric, contravariant_three_velocity
-from PyPIC3D.relativity.particle_metric import sample_particle_metric, safe_inactive_positions
+from PyPIC3D.relativity.core import contravariant_three_velocity
+from PyPIC3D.relativity.interpolate_metric import interpolate_metric, safe_inactive_positions
 from PyPIC3D.utilities.filters import tiled_bilinear_filter_vector, tiled_digital_filter_vector
 
 
@@ -24,31 +24,6 @@ def _collapse_tiled_axis_stencil(points, weights, local_n, reduced_axis, g):
         collapsed_weights = jnp.sum(weights, axis=0, keepdims=True)
         return collapsed_points, collapsed_weights
     return collapse_axis_stencil(points, weights, local_n, ghost_cells=True)
-
-
-def _sample_current_metric(metric, x, y, z, grid, shape_factor,
-                           metric_name="flat_cartesian", active_axes=None,
-                           inactive_axis_indices=None, regularize_spherical=False):
-    if active_axes is None:
-        from PyPIC3D.boundary_conditions.grid_and_stencil import axis_has_active_cells
-        active_axes = tuple(axis_has_active_cells(len(a), ghost_cells=True) for a in grid)
-    return sample_particle_metric(
-        metric, jnp.stack((x,y,z), axis=-1), grid, shape_factor,
-        metric_name, active_axes, inactive_axis_indices, derivatives=False,
-        regularize_spherical=regularize_spherical)[0]
-
-
-def _metric_tile(metric, tx, ty, tz):
-    return Metric(
-        lapse=metric.lapse[tx, ty, tz],
-        shift=metric.shift[tx, ty, tz],
-        gamma=metric.gamma[tx, ty, tz],
-        gamma_inv=metric.gamma_inv[tx, ty, tz],
-        sqrt_gamma=metric.sqrt_gamma[tx, ty, tz],
-        christoffel=metric.christoffel[tx, ty, tz],
-        grad_lapse=metric.grad_lapse[tx, ty, tz],
-        grad_shift=metric.grad_shift[tx, ty, tz],
-    )
 
 
 @partial(jax.jit, static_argnames="static_parameters")
@@ -118,17 +93,16 @@ def GR_direct_deposition(
 
         active_axes = (not reduced_x, not reduced_y, not reduced_z)
         evaluation_position = safe_inactive_positions(
-            jnp.stack((x,y,z), axis=-1), active.astype(bool), center_grid, active_axes, g)
+            jnp.stack((x, y, z), axis=-1), active.astype(bool), center_grid, active_axes, g)
         u_cov = jnp.where(active[:, None].astype(bool), u_cov, 0.)
-        metric_at_particles = _sample_current_metric(
-            _metric_tile(metric.center, tx, ty, tz),
-            evaluation_position[:,0],
-            evaluation_position[:,1],
-            evaluation_position[:,2],
+        metric_at_particles = interpolate_metric(
+            jax.tree.map(lambda array: array[tx, ty, tz], metric.center),
+            evaluation_position,
             center_grid,
-            shape_factor,
-            static_parameters.metric, active_axes, (g,g,g),
-            regularize_spherical=static_parameters.particle_coordinates == 'cartesian',
+            static_parameters.metric,
+            active_axes,
+            (g, g, g),
+            derivatives=False,
         )
         v_con = contravariant_three_velocity(u_cov, metric_at_particles.gamma_inv)
         source_velocity = metric_at_particles.lapse[:, jnp.newaxis] * v_con - metric_at_particles.shift

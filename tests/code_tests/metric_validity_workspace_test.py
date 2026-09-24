@@ -2,7 +2,7 @@
 import jax
 import jax.numpy as jnp
 import numpy as np
-from PyPIC3D.relativity.particle_metric import positive_definite_3x3
+from PyPIC3D.relativity.interpolate_metric import positive_definite_3x3
 jax.config.update('jax_enable_x64',True)
 
 

@@ -43,17 +43,17 @@ class TestPolar(unittest.TestCase):
             initialize_flat_spherical_metric(s,d)
 
     def test_constant_field_gather_at_polar_halos(self):
-        from PyPIC3D.pusher.hybrid_boris_geodesic import _sample_vector
-        from PyPIC3D.relativity.core import metric_for_location
+        from PyPIC3D.pusher.hybrid_boris_geodesic import gather_vector
         for order in (1,2):
             p,s,d,m=polar_runtime(order=order,flat=True)
             z=jnp.zeros_like(m.center.sqrt_gamma)
             B=refresh_vector((z+1,z,z+.3),s,B_FIELD_LOCATIONS,'B')
-            grids=tuple(tuple(axis[0,0,0] for axis in metric_for_location(
-                d.grids.tiled_center_grid,d.grids.tiled_vertex_grid,loc)) for loc in B_FIELD_LOCATIONS)
+            center_grid=tuple(axis[0,0,0] for axis in d.grids.tiled_center_grid)
+            vertex_grid=tuple(axis[0,0,0] for axis in d.grids.tiled_vertex_grid)
             theta=jnp.array([-.1*p.dtheta,.1*p.dtheta,np.pi-.1*p.dtheta,np.pi+.1*p.dtheta])
-            value=_sample_vector(tuple(a[0,0,0] for a in B),jnp.full(4,2.),theta,
-                                 jnp.zeros(4),grids,order,(True,True,False),(3,3,3))
+            position=jnp.stack((jnp.full(4,2.),theta,jnp.zeros(4)),axis=-1)
+            value=gather_vector(tuple(a[0,0,0] for a in B),B_FIELD_LOCATIONS,position,
+                                center_grid,vertex_grid,order,(True,True,False),(3,3,3))
             np.testing.assert_allclose(value,np.broadcast_to([1.,0.,.3],(4,3)),rtol=1e-12,atol=1e-12)
 
     def test_stationary_cloud_overlapping_poles(self):

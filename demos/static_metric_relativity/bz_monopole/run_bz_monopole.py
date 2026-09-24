@@ -396,7 +396,7 @@ def output_metadata(p, static, dynamic):
 
     NaN for maximum_timestep means there is no explicit cap on the CFL step.
     Stored particle positions are spherical and momenta are covariant and
-    leapfrog-staggered; particle_coordinates names the integration chart.
+    leapfrog-staggered.
     Field arrays retain their tiled Yee layout and guards.
     """
     data = {name: np.asarray(np.nan if value is None else value)
@@ -404,7 +404,6 @@ def output_metadata(p, static, dynamic):
     data.update(dt=np.asarray(dynamic.dt), B0=np.asarray(p.B0),
                 omega_h=np.asarray(p.omega_h), horizon=np.asarray(p.horizon),
                 n0_total=np.asarray(p.n0),
-                particle_coordinates=np.asarray(static.particle_coordinates),
                 field_interpolation=np.asarray(static.polar_field_interpolation),
                 particle_batch_size=np.asarray(static.particle_batch_size),
                 horizon_field_cells=np.asarray(static.horizon_field_cells),
@@ -516,7 +515,7 @@ def run(parameters=None):
         raise ValueError('Source filter and absorption stencil must fit inside the horizon; increase nr')
     static, dynamic, metric, _ = build_runtime(
         p, particle_batch_size=p.particle_batch_size, horizon_field_cells=p.horizon_field_cells,
-        field_interpolation=p.field_interpolation, particle_coordinates=p.particle_coordinates)
+        field_interpolation=p.field_interpolation)
     particles, species = empty_particles(p, static)
     fields, background = initialize_fields(p, static, dynamic, metric)
     return evolve(particles, species, fields, jax.random.PRNGKey(p.seed), p,

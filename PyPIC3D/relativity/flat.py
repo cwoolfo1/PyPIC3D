@@ -1,20 +1,6 @@
 import jax.numpy as jnp
 
-from PyPIC3D.relativity.core import (
-    B_FIELD_LOCATIONS,
-    D_FIELD_LOCATIONS,
-    YeeMetric,
-    analytic_metric_on_grid,
-)
-
-
-def _location_grid(location, dynamic_parameters):
-    center_grid = dynamic_parameters.grids.tiled_center_grid
-    vertex_grid = dynamic_parameters.grids.tiled_vertex_grid
-    return tuple(
-        center_grid[axis] if location[axis] == "C" else vertex_grid[axis]
-        for axis in range(3)
-    )
+from PyPIC3D.relativity.core import build_yee_metric
 
 
 def _metric_terms_from_diagonal(gamma_diag, sqrt_gamma):
@@ -68,46 +54,13 @@ def _flat_spherical_metric_at_position(position):
     return _metric_terms_from_diagonal(gamma_diag, sqrt_gamma)
 
 
-def _build_yee_metric(dynamic_parameters, metric_at_position):
-    D = tuple(
-        analytic_metric_on_grid(
-            _location_grid(location, dynamic_parameters),
-            metric_at_position,
-        )[0]
-        for location in D_FIELD_LOCATIONS
-    )
-    B = tuple(
-        analytic_metric_on_grid(
-            _location_grid(location, dynamic_parameters),
-            metric_at_position,
-        )[0]
-        for location in B_FIELD_LOCATIONS
-    )
-    center, center_grad_gamma_inv = analytic_metric_on_grid(
-        dynamic_parameters.grids.tiled_center_grid,
-        metric_at_position,
-    )
-    vertex, _ = analytic_metric_on_grid(
-        dynamic_parameters.grids.tiled_vertex_grid,
-        metric_at_position,
-    )
-
-    return YeeMetric(
-        D=D,
-        B=B,
-        center=center,
-        vertex=vertex,
-        center_grad_gamma_inv=center_grad_gamma_inv,
-    )
-
-
 def initialize_flat_cartesian_metric(static_parameters, dynamic_parameters):
     """
     Build the flat Cartesian 3+1 metric on the tiled Yee grid.
     """
 
     del static_parameters
-    return _build_yee_metric(dynamic_parameters, _flat_cartesian_metric_at_position)
+    return build_yee_metric(dynamic_parameters, _flat_cartesian_metric_at_position)
 
 
 def initialize_flat_cylindrical_metric(static_parameters, dynamic_parameters):
@@ -116,7 +69,7 @@ def initialize_flat_cylindrical_metric(static_parameters, dynamic_parameters):
     """
 
     del static_parameters
-    return _build_yee_metric(
+    return build_yee_metric(
         dynamic_parameters,
         _flat_cylindrical_metric_at_position,
     )
@@ -131,6 +84,6 @@ def initialize_flat_spherical_metric(static_parameters, dynamic_parameters):
         if static_parameters.metric != 'flat_spherical':
             raise ValueError('BC_POLAR flat-spherical initializer must match static parameters')
         from PyPIC3D.boundary_conditions.polar import safe_grid_provider, build_geometry
-        result=_build_yee_metric(dynamic_parameters,safe_grid_provider(_flat_spherical_metric_at_position))
+        result=build_yee_metric(dynamic_parameters,safe_grid_provider(_flat_spherical_metric_at_position))
         return result._replace(geometry=build_geometry(static_parameters,dynamic_parameters,result))
-    return _build_yee_metric(dynamic_parameters, _flat_spherical_metric_at_position)
+    return build_yee_metric(dynamic_parameters, _flat_spherical_metric_at_position)

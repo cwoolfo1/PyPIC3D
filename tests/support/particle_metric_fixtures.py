@@ -7,11 +7,10 @@ import jax.numpy as jnp
 from PyPIC3D.utilities.parameters import build_static_parameters, build_dynamic_parameters
 from PyPIC3D.utilities.grids import build_yee_grid, build_tiled_yee_grids
 from PyPIC3D.relativity.core import B_FIELD_LOCATIONS
+from PyPIC3D.relativity.interpolate_metric import interpolate_metric
 from PyPIC3D.relativity.flat import initialize_flat_cartesian_metric, initialize_flat_spherical_metric
 from PyPIC3D.boundary_conditions.polar import refresh_vector
-from PyPIC3D.pusher.hybrid_boris_geodesic import (
-    _magnetic_boris_rotation, _sample_center_metric_at_position,
-    _sample_center_grad_gamma_inv_at_position, _sample_vector, _metric_component_grid)
+from PyPIC3D.pusher.hybrid_boris_geodesic import magnetic_boris_rotation, gather_vector
 
 jax.config.update('jax_enable_x64', True)
 PERIOD = 2*np.pi*np.sqrt(1.16)
@@ -46,18 +45,19 @@ def make_runtime(chart, nr=64, ntheta=128):
     return s,d,m,(z,)*3,B
 
 
+def tile_grids(d):
+    return (tuple(a[0,0,0] for a in d.grids.tiled_center_grid),
+            tuple(a[0,0,0] for a in d.grids.tiled_vertex_grid))
+
+
 def sample_metric(q,m,s,d):
-    return _sample_center_metric_at_position(q,m,s,d,0,0,0,(True,True,False),(3,3,3))
-
-
-def sample_gradient(q,m,s,d):
-    return _sample_center_grad_gamma_inv_at_position(q,m,s,d,0,0,0,(True,True,False),(3,3,3))
+    center=jax.tree.map(lambda a:a[0,0,0],m.center)
+    return interpolate_metric(center,q,tile_grids(d)[0],s.metric,(True,True,False),(3,3,3))
 
 
 def gather_B(q,B,s,d):
-    grids=tuple(_metric_component_grid(loc,d,0,0,0) for loc in B_FIELD_LOCATIONS)
-    return _sample_vector(tuple(b[0,0,0] for b in B),q[...,0],q[...,1],q[...,2],grids,
-                          s.shape_factor,(True,True,False),(3,3,3))
+    return gather_vector(tuple(b[0,0,0] for b in B),B_FIELD_LOCATIONS,q,*tile_grids(d),
+                         s.shape_factor,(True,True,False),(3,3,3))
 
 
 def norm(u,m):
@@ -72,14 +72,14 @@ def sampled_rotation_checks(ntheta=128):
                         ('south_half',np.pi-float(d.dy)/2),('south_close',np.pi-float(d.dy)*.05)]:
             q=jnp.array([[2.37,t,.1]]);a=sample_metric(q,m,s,d)
             b=gather_B(q,B,s,d);u=jnp.einsum('...ij,j->...i',jnp.linalg.cholesky(a.gamma),jnp.array([.4,.3,.2]))
-            derivative=sample_gradient(q,m,s,d)[0]
+            derivative=a.grad_gamma_inv[0]
             differentiated=jnp.moveaxis(jax.jacfwd(lambda x:sample_metric(x[None,:],m,s,d).gamma_inv[0])(q[0]),-1,0)
             derivative_error=float(jnp.linalg.norm(derivative-differentiated)/jnp.maximum(jnp.linalg.norm(differentiated),1e-30))
             for control,met in [('production_sample',a),('inverse_consistent_rotation_only',a._replace(gamma_inv=jnp.linalg.inv(a.gamma)))]:
                 for charge in (-1.,1.):
                     for dt in (.01,.5,5.,50.):
-                        v=_magnetic_boris_rotation(u,b,met,jnp.array([charge]),dt)
-                        back=_magnetic_boris_rotation(v,b,met,jnp.array([charge]),-dt)
+                        v=magnetic_boris_rotation(u,b,met,jnp.array([charge]),dt)
+                        back=magnetic_boris_rotation(v,b,met,jnp.array([charge]),-dt)
                         scale=jnp.sqrt(norm(u,met)*jnp.einsum('...i,...ij,...j->...',b,met.gamma,b))
                         rows.append(dict(shape=order,location=label,control=control,charge=charge,dt=dt,
                             inverse_defect=float(jnp.linalg.norm(met.gamma@met.gamma_inv-jnp.eye(3))),

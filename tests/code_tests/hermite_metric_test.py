@@ -4,9 +4,8 @@ import unittest
 import jax
 import jax.numpy as jnp
 import numpy as np
-from PyPIC3D.relativity.hermite_metric import interpolate_hermite
+from PyPIC3D.relativity.interpolate_metric import interpolate_hermite, interpolate_metric
 from tests.code_tests.particle_metric_consistency_test import manufactured
-from PyPIC3D.relativity.particle_metric import sample_particle_metric
 
 jax.config.update("jax_enable_x64", True)
 
@@ -60,25 +59,10 @@ class TestHermite(unittest.TestCase):
                 abs(float(derivative(x[i] - 1e-10) - derivative(x[i] + 1e-10))), 1e-8
             )
 
-    def test_metric_independent_of_particle_shape(self):
-        grid, m = manufactured()
-        q = jnp.array([[0.247, 0.381, 3.0]])
-        args = (m, q, grid)
-        a = sample_particle_metric(
-            *args, 1, "numerical", (True, True, False), (3, 3, 3)
-        )
-        b = sample_particle_metric(
-            *args, 2, "numerical", (True, True, False), (3, 3, 3)
-        )
-        for v, w in zip(jax.tree.leaves(a), jax.tree.leaves(b)):
-            np.testing.assert_array_equal(v, w)
-
     def test_invalid_stencil_is_reported(self):
         grid, m = manufactured()
         q = jnp.array([[-1.0, 0.3, 3.0]])
-        a, _ = sample_particle_metric(
-            m, q, grid, 1, "numerical", (True, True, False), (3, 3, 3)
-        )
+        a = interpolate_metric(m, q, grid, "numerical", (True, True, False), (3, 3, 3))
         self.assertTrue(np.isnan(np.asarray(a.gamma)).all())
 
 

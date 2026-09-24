@@ -2,21 +2,7 @@ from functools import partial
 
 import jax.numpy as jnp
 
-from PyPIC3D.relativity.core import (
-    B_FIELD_LOCATIONS,
-    D_FIELD_LOCATIONS,
-    YeeMetric,
-    analytic_metric_on_grid,
-)
-
-
-def _location_grid(location, dynamic_parameters):
-    center_grid = dynamic_parameters.grids.tiled_center_grid
-    vertex_grid = dynamic_parameters.grids.tiled_vertex_grid
-    return tuple(
-        center_grid[axis] if location[axis] == "C" else vertex_grid[axis]
-        for axis in range(3)
-    )
+from PyPIC3D.relativity.core import build_yee_metric
 
 
 def _kerr_schild_cartesian_metric_at_position(position, mass=1.0, spin=0.0):
@@ -91,7 +77,7 @@ def _kerr_schild_spherical_metric_at_position(position, mass=1.0, spin=0.0):
     return lapse, shift, gamma, gamma_inv, sqrt_gamma
 
 
-def _build_yee_metric(static_parameters, dynamic_parameters, metric_at_position, mass=1.0, spin=0.0):
+def _build_kerr_schild_metric(static_parameters, dynamic_parameters, metric_at_position, mass=1.0, spin=0.0):
     polar_mode = static_parameters.boundary_conditions[1] == 4
     if polar_mode and (static_parameters.metric != 'kerr_schild_spherical'
                        or metric_at_position is not _kerr_schild_spherical_metric_at_position
@@ -111,36 +97,7 @@ def _build_yee_metric(static_parameters, dynamic_parameters, metric_at_position,
             return xi**-0.5,jnp.array([(xi-1)/xi,0.,0.]),jnp.diag(jnp.array([xi,sig,0.]))
         metric_at_position.polar_values=polar_values
         metric_at_position=safe_grid_provider(metric_at_position)
-    D = tuple(
-        analytic_metric_on_grid(
-            _location_grid(location, dynamic_parameters),
-            metric_at_position,
-        )[0]
-        for location in D_FIELD_LOCATIONS
-    )
-    B = tuple(
-        analytic_metric_on_grid(
-            _location_grid(location, dynamic_parameters),
-            metric_at_position,
-        )[0]
-        for location in B_FIELD_LOCATIONS
-    )
-    center, center_grad_gamma_inv = analytic_metric_on_grid(
-        dynamic_parameters.grids.tiled_center_grid,
-        metric_at_position,
-    )
-    vertex, _ = analytic_metric_on_grid(
-        dynamic_parameters.grids.tiled_vertex_grid,
-        metric_at_position,
-    )
-
-    result = YeeMetric(
-        D=D,
-        B=B,
-        center=center,
-        vertex=vertex,
-        center_grad_gamma_inv=center_grad_gamma_inv,
-    )
+    result = build_yee_metric(dynamic_parameters, metric_at_position)
     if polar_mode:
         from PyPIC3D.boundary_conditions.polar import build_geometry
         result=result._replace(geometry=build_geometry(static_parameters,dynamic_parameters,result))
@@ -152,7 +109,7 @@ def initialize_kerr_schild_cartesian_metric(static_parameters, dynamic_parameter
     Build the ingoing Cartesian Kerr-Schild 3+1 metric on the tiled Yee grid.
     """
 
-    return _build_yee_metric(
+    return _build_kerr_schild_metric(
         static_parameters,
         dynamic_parameters,
         _kerr_schild_cartesian_metric_at_position,
@@ -166,7 +123,7 @@ def initialize_kerr_schild_spherical_metric(static_parameters, dynamic_parameter
     Build the spherical Kerr-Schild 3+1 metric on the tiled Yee grid.
     """
 
-    return _build_yee_metric(
+    return _build_kerr_schild_metric(
         static_parameters,
         dynamic_parameters,
         _kerr_schild_spherical_metric_at_position,

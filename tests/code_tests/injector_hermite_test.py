@@ -5,7 +5,7 @@ import jax.numpy as jnp
 import numpy as np
 from jax.experimental import checkify
 from demos.static_metric_relativity.bz_monopole.plasma_injector import birth_covariant_momentum
-from PyPIC3D.relativity.particle_metric import sample_particle_metric
+from PyPIC3D.relativity.interpolate_metric import interpolate_metric
 from tests.code_tests.polar_test import polar_runtime as polar_setup
 
 class TestBirthMetric(unittest.TestCase):
@@ -20,10 +20,10 @@ class TestBirthMetric(unittest.TestCase):
             metric=jax.tree.map(lambda a:a[tile,0,0],m.center)
             f=lambda met:birth_covariant_momentum(momentum,positions,active,met,grid,s,jnp.array([tile,0,0]))
             error,cov=jax.jit(checkify.checkify(f))(metric);error.throw()
-            sampled,_=sample_particle_metric(metric,positions[:2],grid,1,s.metric,(True,True,False),(3,3,3),derivatives=False)
+            sampled=interpolate_metric(metric,positions[:2],grid,s.metric,(True,True,False),(3,3,3),derivatives=False)
             norm=jnp.einsum('ni,nij,nj->n',cov[:2],sampled.gamma_inv,cov[:2])
             np.testing.assert_allclose(norm,(momentum[:2]**2).sum(-1),rtol=1e-12,atol=1e-12)
-            poisoned=metric._replace(gamma_inv=jnp.full_like(metric.gamma_inv,jnp.nan),grad_lapse=jnp.full_like(metric.grad_lapse,jnp.nan),grad_shift=jnp.full_like(metric.grad_shift,jnp.nan))
+            poisoned=metric._replace(gamma_inv=jnp.full_like(metric.gamma_inv,jnp.nan),sqrt_gamma=jnp.full_like(metric.sqrt_gamma,jnp.nan))
             np.testing.assert_array_equal(f(poisoned),cov)
             np.testing.assert_array_equal(f(metric),birth_covariant_momentum(momentum,positions,active,metric,grid,s._replace(shape_factor=2)))
             np.testing.assert_array_equal(cov[2],jnp.zeros(3));results.append(cov)

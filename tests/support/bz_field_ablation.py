@@ -60,8 +60,7 @@ def vacuum_case(output, method='entity', horizon_cells=5, end_time=50., nr=64, n
                              field_interpolation=method if method in ('entity', 'physical') else 'physical')
     print(f'Building {method}, inner={horizon_cells}, {nr}x{ntheta}', flush=True)
     static, dynamic, metric, _ = build_runtime(
-        p, horizon_field_cells=horizon_cells, field_interpolation=p.field_interpolation,
-        particle_coordinates=p.particle_coordinates)
+        p, horizon_field_cells=horizon_cells, field_interpolation=p.field_interpolation)
     particles, species = empty_particles(p, static)
     dt = float(dynamic.dt)
     with averaging(method):

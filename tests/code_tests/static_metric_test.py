@@ -16,17 +16,18 @@ from PyPIC3D.particles.particle_class import SpeciesConfig, TiledParticles
 from PyPIC3D.particles.particle_tile_communication import shard_tiled_particles
 import PyPIC3D.pusher.hybrid_boris_geodesic as hybrid_pusher
 from PyPIC3D.pusher.hybrid_boris_geodesic import (
-    GR_position_update,
-    _magnetic_boris_rotation,
-    geodesic_velocity,
+    coordinate_velocity,
+    geodesic_acceleration,
     hybrid_boris_geodesic_push,
+    magnetic_boris_rotation,
 )
 from PyPIC3D.relativity.core import (
     B_FIELD_LOCATIONS,
     D_FIELD_LOCATIONS,
     Metric,
-    metric_for_location,
+    location_grid,
 )
+from PyPIC3D.relativity.interpolate_metric import ParticleMetric, interpolate_metric
 from PyPIC3D.relativity.flat import (
     initialize_flat_cartesian_metric,
     initialize_flat_cylindrical_metric,
@@ -99,7 +100,7 @@ def _metric_locations_with_grids(metric, dynamic_parameters):
     return tuple(
         (
             metric_at_location,
-            metric_for_location(center_grid, vertex_grid, location),
+            location_grid(center_grid, vertex_grid, location),
         )
         for metric_at_location, location in metric_locations
     )
@@ -114,14 +115,12 @@ def test_flat_cartesian_metric_matches_center_grid_shape():
 
     assert metric.center.lapse.shape == shape
     assert metric.center.gamma_inv.shape == shape + (3, 3)
-    assert metric.center_grad_gamma_inv.shape == shape + (3, 3, 3)
     assert jnp.allclose(metric.center.lapse, 1.0)
     assert jnp.allclose(metric.center.gamma_inv[..., 0, 0], 1.0)
-    assert jnp.all(jnp.isfinite(metric.center_grad_gamma_inv))
     assert jnp.allclose(metric.center.sqrt_gamma, 1.0)
 
 
-def test_kerr_schild_metric_initializers_build_finite_derivatives():
+def test_kerr_schild_metric_initializers_build_finite_metrics():
     static_parameters, dynamic_parameters = kernel_parameters(
         guard_cells=3,
         Nx=4,
@@ -152,19 +151,14 @@ def test_kerr_schild_metric_initializers_build_finite_derivatives():
         spin=0.2,
     )
 
-    assert jnp.all(jnp.isfinite(cartesian.center.christoffel))
-    assert jnp.all(jnp.isfinite(cartesian.center.grad_lapse))
-    assert jnp.all(jnp.isfinite(cartesian.center.grad_shift))
-    assert cartesian.center_grad_gamma_inv.shape == cartesian.center.lapse.shape + (3, 3, 3)
-    assert jnp.all(jnp.isfinite(cartesian.center_grad_gamma_inv))
-    assert jnp.all(jnp.isfinite(spherical.center.christoffel))
-    assert jnp.all(jnp.isfinite(spherical.center.grad_lapse))
-    assert jnp.all(jnp.isfinite(spherical.center.grad_shift))
-    assert spherical.center_grad_gamma_inv.shape == spherical.center.lapse.shape + (3, 3, 3)
-    assert jnp.all(jnp.isfinite(spherical.center_grad_gamma_inv))
+    for metric in (cartesian, spherical):
+        for array in metric.center:
+            assert jnp.all(jnp.isfinite(array))
+        assert jnp.all(metric.center.lapse < 1.0)
+        assert jnp.allclose(metric.center.gamma @ metric.center.gamma_inv, jnp.eye(3), atol=1e-12)
 
 
-def test_flat_cylindrical_metric_fills_nonzero_christoffels():
+def test_flat_cylindrical_particle_metric_derivative_matches_analytic():
     static_parameters, dynamic_parameters = kernel_parameters(
         guard_cells=3,
         Nx=8,
@@ -184,18 +178,18 @@ def test_flat_cylindrical_metric_fills_nonzero_christoffels():
     metric = initialize_flat_cylindrical_metric(static_parameters, dynamic_parameters)
 
     g = int(static_parameters.guard_cells)
-    active = (slice(None), slice(None), slice(None), slice(g, -g), slice(g, -g), slice(g, -g))
-    r = dynamic_parameters.grids.tiled_center_grid[0][:, :, :, g:-g]
-    r = r[:, :, :, :, jnp.newaxis, jnp.newaxis]
+    grid = tuple(axis[0, 0, 0] for axis in dynamic_parameters.grids.tiled_center_grid)
+    r = jnp.linspace(3.2, 9.3, 7)
+    position = jnp.stack((r, jnp.full_like(r, 0.7), jnp.full_like(r, 0.7)), axis=-1)
+    sampled = interpolate_metric(
+        jax.tree.map(lambda array: array[0, 0, 0], metric.center),
+        position, grid, "flat_cylindrical", (True, True, False), (g, g, g),
+    )
 
-    gamma_r_phiphi = metric.center.christoffel[active + (0, 1, 1)]
-    gamma_phi_rphi = metric.center.christoffel[active + (1, 0, 1)]
-    expected_r_phiphi = -jnp.broadcast_to(r, gamma_r_phiphi.shape)
-    expected_phi_rphi = 1.0 / jnp.broadcast_to(r, gamma_phi_rphi.shape)
-
-    mask = jnp.abs(expected_r_phiphi) > float(dynamic_parameters.dx)
-    assert jnp.allclose(gamma_r_phiphi[mask], expected_r_phiphi[mask], rtol=0.0, atol=0.25)
-    assert jnp.allclose(gamma_phi_rphi[mask], expected_phi_rphi[mask], rtol=0.0, atol=0.25)
+    # gamma^{phi phi} = 1/r^2, so d_r gamma^{phi phi} = -2/r^3.
+    assert jnp.allclose(sampled.gamma_inv[:, 1, 1], 1.0 / r**2, rtol=1e-3)
+    assert jnp.allclose(sampled.grad_gamma_inv[:, 0, 1, 1], -2.0 / r**3, rtol=2e-2)
+    assert jnp.allclose(sampled.grad_gamma_inv[:, 0, 0, 0], 0.0, atol=1e-12)
 
 
 def test_static_metric_constitutive_fields_include_lapse_and_shift_terms():
@@ -248,16 +242,13 @@ def test_magnetic_boris_rotation_raises_covariant_momentum_in_cross_product():
         gamma=gamma,
         gamma_inv=gamma_inv,
         sqrt_gamma=jnp.sqrt(jnp.linalg.det(gamma)),
-        christoffel=jnp.zeros((3, 3, 3)),
-        grad_lapse=jnp.zeros(3),
-        grad_shift=jnp.zeros((3, 3)),
     )
     u_minus = jnp.asarray((0.3, -0.4, 0.2))
     B_con = jnp.asarray((0.1, 0.5, -0.2))
     q_over_m = 1.7
     dt = 0.31
 
-    u_plus = _magnetic_boris_rotation(u_minus, B_con, metric, q_over_m, dt)
+    u_plus = magnetic_boris_rotation(u_minus, B_con, metric, q_over_m, dt)
 
     Gamma_minus = jnp.sqrt(1.0 + jnp.einsum("i,ij,j->", u_minus, gamma_inv, u_minus))
     u0_bar = Gamma_minus / metric.lapse
@@ -273,7 +264,7 @@ def test_magnetic_boris_rotation_raises_covariant_momentum_in_cross_product():
     _assert_allclose(u_plus, expected, rtol=0.0, atol=1.0e-12)
 
 
-def test_GR_position_update_uses_lapse_scaled_contravariant_velocity_minus_shift():
+def test_coordinate_velocity_uses_lapse_scaled_contravariant_velocity_minus_shift():
     gamma = jnp.asarray(
         (
             (1.0, 0.2, 0.0),
@@ -288,39 +279,30 @@ def test_GR_position_update_uses_lapse_scaled_contravariant_velocity_minus_shift
         gamma=gamma,
         gamma_inv=gamma_inv,
         sqrt_gamma=jnp.sqrt(jnp.linalg.det(gamma)),
-        christoffel=jnp.zeros((3, 3, 3)),
-        grad_lapse=jnp.zeros(3),
-        grad_shift=jnp.zeros((3, 3)),
     )
     u_cov = jnp.asarray((0.4, -0.2, 0.1))
 
-    dx_dt = GR_position_update(jnp.asarray((0.0, 0.0, 0.0)), u_cov, metric)
+    dx_dt = coordinate_velocity(u_cov, metric)
 
     Gamma = jnp.sqrt(1.0 + jnp.einsum("i,ij,j->", u_cov, gamma_inv, u_cov))
     expected = metric.lapse * (gamma_inv @ u_cov) / Gamma - metric.shift
     _assert_allclose(dx_dt, expected, rtol=0.0, atol=1.0e-12)
 
 
-def test_geodesic_velocity_returns_zero_for_flat_constant_metric():
-    metric = Metric(
+def test_geodesic_acceleration_returns_zero_for_flat_constant_metric():
+    metric = ParticleMetric(
         lapse=jnp.asarray(1.0),
         shift=jnp.asarray((0.0, 0.0, 0.0)),
         gamma=jnp.eye(3),
         gamma_inv=jnp.eye(3),
         sqrt_gamma=jnp.asarray(1.0),
-        christoffel=jnp.zeros((3, 3, 3)),
         grad_lapse=jnp.zeros(3),
         grad_shift=jnp.zeros((3, 3)),
+        grad_gamma_inv=jnp.zeros((3, 3, 3)),
     )
     u_cov = jnp.asarray((0.4, -0.2, 0.1))
-    grad_gamma_inv = jnp.zeros((3, 3, 3))
 
-    du_dt = geodesic_velocity(
-        jnp.asarray((0.0, 0.0, 0.0)),
-        u_cov,
-        metric,
-        grad_gamma_inv,
-    )
+    du_dt = geodesic_acceleration(u_cov, metric)
 
     assert du_dt.shape == u_cov.shape
     _assert_allclose(du_dt, jnp.zeros(3), rtol=0.0, atol=1.0e-12)
@@ -405,23 +387,16 @@ def test_hybrid_boris_geodesic_push_uses_current_position_for_both_electric_half
         dynamic_parameters,
     )
 
-    D_grid = hybrid_pusher._metric_component_grid(
-        hybrid_pusher.D_FIELD_LOCATIONS[0],
-        dynamic_parameters,
-        0,
-        0,
-        0,
-    )
-    D_at_x_n = hybrid_pusher._sample_scalar(
-        D[0][0, 0, 0],
-        x_n[:1],
-        x_n[1:2],
-        x_n[2:3],
-        D_grid,
+    D_at_x_n = hybrid_pusher.gather_vector(
+        tuple(component[0, 0, 0] for component in D),
+        D_FIELD_LOCATIONS,
+        x_n[None, :],
+        tuple(axis[0, 0, 0] for axis in dynamic_parameters.grids.tiled_center_grid),
+        tuple(axis[0, 0, 0] for axis in dynamic_parameters.grids.tiled_vertex_grid),
         static_parameters.shape_factor,
         (True, True, True),
         (static_parameters.guard_cells,) * 3,
-    )[0]
+    )[0, 0]
     expected_u = u_n_minushalf + dynamic_parameters.dt * jnp.asarray((D_at_x_n, 0.0, 0.0))
     expected_dx_dt = expected_u / jnp.sqrt(1.0 + jnp.dot(expected_u, expected_u))
 
@@ -800,7 +775,7 @@ def test_GR_direct_deposition_is_adjoint_to_staggered_field_gather():
         center_grid = dynamic_parameters.grids.tiled_center_grid
         vertex_grid = dynamic_parameters.grids.tiled_vertex_grid
         D_grids = tuple(
-            metric_for_location(center_grid, vertex_grid, location)
+            location_grid(center_grid, vertex_grid, location)
             for location in D_FIELD_LOCATIONS
         )
         D = []
@@ -846,17 +821,13 @@ def test_GR_direct_deposition_is_adjoint_to_staggered_field_gather():
 
         gathered_D = []
         for tx in range(2):
-            tile_grids = tuple(
-                tuple(axis[tx, 0, 0] for axis in component_grid)
-                for component_grid in D_grids
-            )
             gathered_D.append(
-                hybrid_pusher._sample_vector(
+                hybrid_pusher.gather_vector(
                     tuple(D[i][tx, 0, 0] for i in range(3)),
-                    particles.x[tx, 0, 0, ..., 0],
-                    particles.x[tx, 0, 0, ..., 1],
-                    particles.x[tx, 0, 0, ..., 2],
-                    tile_grids,
+                    D_FIELD_LOCATIONS,
+                    particles.x[tx, 0, 0],
+                    tuple(axis[tx, 0, 0] for axis in center_grid),
+                    tuple(axis[tx, 0, 0] for axis in vertex_grid),
                     shape_factor,
                     (True, True, True),
                     (g, g, g),

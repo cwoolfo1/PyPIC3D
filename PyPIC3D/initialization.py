@@ -603,9 +603,6 @@ def initialize_simulation(toml_file):
         if static_metric
         else None
     )
-    if static_metric and static_parameters.particle_coordinates == 'cartesian':
-        from PyPIC3D.relativity.cartesian_particle_metric import validate_regularized_axes
-        validate_regularized_axes(metric, dynamic_parameters.grids.tiled_center_grid)
 
     particles, species_config, particle_species_names, particle_metadata = load_particles_from_toml(
         config,

@@ -83,10 +83,11 @@ def axes(position):
 
 
 def safe_grid_provider(provider):
-    """Finite unused inverse/derivative storage at singular grid nodes.
+    """Finite grid metric at singular axis nodes.
 
-    Covariant metric and determinant retain their analytic axis values. No
-    particle is evaluated with this wrapper: particle singular stages fail.
+    The covariant metric keeps its analytic axis limit; the unused inverse and
+    determinant are zeroed there. Particles never sample an axis node: the
+    particle metric validity check rejects them.
     """
     def metric(position):
         axis=axes(position)

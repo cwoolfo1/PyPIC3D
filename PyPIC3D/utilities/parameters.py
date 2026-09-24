@@ -45,7 +45,6 @@ class StaticParameters(NamedTuple):
     field_mesh: object
     horizon_field_cells: int = 0
     polar_field_interpolation: str = 'physical'
-    particle_coordinates: str = 'native'
 
 
 class DynamicParameters(NamedTuple):
@@ -112,15 +111,6 @@ def build_static_parameters(static_config):
     static_config = dict(static_config)
     if 'geodesic_iterations' in static_config:
         raise ValueError('geodesic_iterations was removed; the hybrid pusher is explicit-only. Remove this key.')
-    particle_coordinates = static_config.get('particle_coordinates', 'native')
-    if particle_coordinates not in ('native', 'cartesian'):
-        raise ValueError('particle_coordinates must be native or cartesian')
-    if particle_coordinates == 'cartesian' and (
-            static_config.get('metric') not in ('flat_spherical', 'kerr_schild_spherical')
-            or int(static_config.get('Nz', 1)) != 1
-            or static_config.get('solver') != 'static_metric'
-            or static_config.get('particle_pusher') != 'hybrid_boris_geodesic'):
-        raise ValueError('Cartesian particle chart requires an axisymmetric spherical hybrid pusher')
     interpolation = static_config.get('polar_field_interpolation', 'physical')
     if interpolation not in ('physical', 'entity'):
         raise ValueError('Unknown polar field interpolation')
@@ -195,7 +185,6 @@ def build_static_parameters(static_config):
         field_mesh=_field_mesh(static_config, tile_shape),
         horizon_field_cells=int(horizon_cells),
         polar_field_interpolation=interpolation,
-        particle_coordinates=particle_coordinates,
     )
 
 
@@ -253,10 +242,7 @@ def static_parameters_for_output(static_parameters):
     skip = {"field_mesh"}
     static_items = static_parameters._asdict()
     if static_parameters.solver == "static_metric":
-        if static_parameters.particle_coordinates == 'cartesian':
-            from PyPIC3D.relativity.cartesian_particle_metric import RECONSTRUCTION
-        else:
-            from PyPIC3D.relativity.particle_metric import RECONSTRUCTION
+        from PyPIC3D.relativity.interpolate_metric import RECONSTRUCTION
         static_items["particle_metric_reconstruction"] = RECONSTRUCTION
     return {
         key: _output_value(value)

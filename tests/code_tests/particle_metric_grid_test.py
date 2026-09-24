@@ -3,8 +3,7 @@ import unittest
 import jax.numpy as jnp
 import numpy as np
 from tests.code_tests.polar_test import polar_runtime as polar_setup, particle
-from PyPIC3D.pusher.hybrid_boris_geodesic import (
-    _sample_center_metric_at_position, _sample_center_grad_gamma_inv_at_position)
+from tests.support.particle_metric_fixtures import sample_metric
 from PyPIC3D.deposition.GR_direct_deposition import GR_direct_deposition
 from PyPIC3D.boundary_conditions.polar import current_factors
 
@@ -19,20 +18,17 @@ class TestParticleMetricGrid(unittest.TestCase):
             gamma_inv=jnp.broadcast_to(jnp.linalg.inv(gamma),shape+(3,3)),
             lapse=jnp.full(shape,.7),shift=jnp.broadcast_to(jnp.array([.1,0.,0.]),shape+(3,)),
             sqrt_gamma=jnp.full(shape,jnp.sqrt(24.)))
-        gradient=jnp.broadcast_to(jnp.arange(27).reshape(3,3,3)*.01,shape+(3,3,3))
-        return p,s,d,m._replace(center=center,center_grad_gamma_inv=gradient)
+        return p,s,d,m._replace(center=center)
 
     def test_metric_and_derivatives_follow_grid(self):
         p,s,d,m=self.supplied_metric()
         position=jnp.array([[2.,.1*p.dtheta,0.],[2.1,jnp.pi-.1*p.dtheta,0.]])
-        args=(position,m,s,d,0,0,0,(True,True,False),(3,3,3))
-        sampled=_sample_center_metric_at_position(*args)
-        derivative=_sample_center_grad_gamma_inv_at_position(*args)
+        sampled=sample_metric(position,m,s,d)
         np.testing.assert_allclose(sampled.gamma,np.broadcast_to(np.diag([2.,3.,4.]),(2,3,3)),atol=1e-12)
         np.testing.assert_allclose(sampled.lapse,.7,atol=1e-12)
-        # Derivatives come from the supplied primitive metric, not the legacy
-        # independently stored inverse-derivative array.
-        np.testing.assert_allclose(derivative,0.,atol=1e-12)
+        # Derivatives are those of the interpolated supplied metric.
+        np.testing.assert_allclose(sampled.grad_gamma_inv,0.,atol=1e-12)
+        np.testing.assert_allclose(sampled.grad_lapse,0.,atol=1e-12)
 
     def test_direct_current_follows_supplied_metric(self):
         p,s,d,m=self.supplied_metric()
