@@ -72,20 +72,18 @@ def _polar_weighted_auxiliary(own, other, own_metrics, other_metrics,
     return tuple(result)
 
 
-def compute_covariant_E(D_tiles, B_tiles, metric, interpolation='physical'):
+def compute_covariant_E(D_tiles, B_tiles, metric):
     """
     Compute covariant E_i on the D component locations using FPIC Eq. (10).
+
+    Polar spherical grids use the Entity II weighted averages; other charts
+    interpolate the densitized fields sqrt(gamma) D and sqrt(gamma) B.
     """
 
-    if interpolation == 'entity':
-        if metric.geometry is None:
-            raise ValueError('Entity interpolation requires polar spherical geometry')
+    if metric.geometry is not None:
         return _polar_weighted_auxiliary(D_tiles, B_tiles, metric.D, metric.B,
                                          D_FIELD_LOCATIONS, B_FIELD_LOCATIONS, 1.)
-    def interpolate(field, source_metric, target_metric, source_location, target_location):
-        if metric.geometry is not None:
-            return _location_interpolate(field,source_location,target_location)
-        return _metric_weighted_interpolate(field,source_metric,target_metric,source_location,target_location)
+    interpolate = _metric_weighted_interpolate
     E_cov = []
     for i, target_location in enumerate(D_FIELD_LOCATIONS):
         D_on_target = []
@@ -123,20 +121,17 @@ def compute_covariant_E(D_tiles, B_tiles, metric, interpolation='physical'):
     return tuple(E_cov)
 
 
-def compute_covariant_H(D_tiles, B_tiles, metric, interpolation='physical'):
+def compute_covariant_H(D_tiles, B_tiles, metric):
     """
     Compute covariant H_i on the B component locations using FPIC Eq. (9).
+
+    Uses the same polar/other-chart interpolation split as ``compute_covariant_E``.
     """
 
-    if interpolation == 'entity':
-        if metric.geometry is None:
-            raise ValueError('Entity interpolation requires polar spherical geometry')
+    if metric.geometry is not None:
         return _polar_weighted_auxiliary(B_tiles, D_tiles, metric.B, metric.D,
                                          B_FIELD_LOCATIONS, D_FIELD_LOCATIONS, -1.)
-    def interpolate(field, source_metric, target_metric, source_location, target_location):
-        if metric.geometry is not None:
-            return _location_interpolate(field,source_location,target_location)
-        return _metric_weighted_interpolate(field,source_metric,target_metric,source_location,target_location)
+    interpolate = _metric_weighted_interpolate
     H_cov = []
     for i, target_location in enumerate(B_FIELD_LOCATIONS):
         B_on_target = []

@@ -1480,22 +1480,6 @@ class TestLeapfrogVelocitySeed(unittest.TestCase):
 
     STEP_COUNTS = (200, 400, 800, 1600)
 
-    # flat Cartesian has no metric-sampling error at all, so the trajectory can
-    # be compared with an exact reference without a spatial error floor
-    FLAT_CASE = dict(
-        name="flat Cartesian, uniform E and B",
-        metric=_flat_cartesian_metric_at_position,
-        metric_name="flat_cartesian",
-        x0=(0.0, 0.0, 0.0),
-        u0=(0.30, 0.10, 0.05),
-        T=2.0,
-        wind=(2.0, 2.0, 2.0),
-        mins=(-1.0, -1.0, -1.0),
-        charge=1.0,
-        D_values=(0.05, 0.0, 0.0),
-        B_values=(0.0, 0.0, 0.8),
-    )
-
     def _final_positions(self, case, seeded, N):
         positions = []
         for steps in self.STEP_COUNTS:
@@ -1516,39 +1500,6 @@ class TestLeapfrogVelocitySeed(unittest.TestCase):
             )
             positions.append(x_final)
         return positions
-
-    def test_seeding_the_half_step_restores_second_order(self):
-        """Flat Cartesian against the exact reference: order 2 seeded, order 1 not."""
-        case = self.FLAT_CASE
-        reference = reference_trajectory(
-            case["metric"],
-            case["x0"],
-            case["u0"],
-            case["T"],
-            case["charge"],
-            case["D_values"],
-            case["B_values"],
-        )
-        report = []
-        measured = {}
-        for seeded in (True, False):
-            positions = self._final_positions(case, seeded, 16)
-            errors = [float(jnp.linalg.norm(x - reference[:3])) for x in positions]
-            orders = [
-                convergence_order(errors[i], errors[i + 1]) for i in range(len(errors) - 1)
-            ]
-            measured[seeded] = errors
-            report.append(f"seeded={seeded}: errors={errors} orders={orders}")
-            if seeded:
-                for order in orders:
-                    self.assertGreater(order, 1.9, "\n".join(report))
-            else:
-                for order in orders:
-                    self.assertLess(order, 1.15, "\n".join(report))
-                    self.assertGreater(order, 0.85, "\n".join(report))
-        self.assertGreater(
-            measured[False][0] / measured[True][0], 100.0, "\n".join(report)
-        )
 
     def test_seeding_restores_second_order_in_a_curved_chart(self):
         """

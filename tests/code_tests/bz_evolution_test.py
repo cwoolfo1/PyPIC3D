@@ -1,8 +1,11 @@
-"""Fresh BZ evolution saves checked arrays without restart machinery."""
+"""Fresh BZ evolution, constraint checks, and injection/output scheduling."""
+from contextlib import ExitStack
 from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 from unittest.mock import patch
+import sys
 import unittest
 import jax
 import jax.numpy as jnp
@@ -17,7 +20,7 @@ class TestEvolution(unittest.TestCase):
         cls.p=SimulationParameters(nr=16,ntheta=16,devices=2,r_max=4.,sponge_start=3.,
                                   skin_depth=.0025,pairs_per_cell=4,maximum_timestep=None,
                                   end_time=5.,output_interval=1.,backend='cpu',current_filter_passes=0,
-                                  horizon_field_cells=0,field_interpolation='physical')
+                                  horizon_field_cells=0)
         cls.s,cls.d,cls.m,_=build_runtime(cls.p)
         cls.pts,cls.sp=empty_particles(cls.p,cls.s)
         cls.fields,cls.bg=runner.initialize_fields(cls.p,cls.s,cls.d,cls.m)
@@ -75,94 +78,57 @@ class TestEvolution(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError,'[Dd]ivergence'):
             runner.check_constraints(dict(gauss=.01,magnetic_divergence=0.),False)
         runner.check_constraints(dict(gauss=.01,magnetic_divergence=0.),True)
-        runner.check_constraints(dict(gauss=0.,magnetic_divergence=0.,
-                                      boundary_gauss=1.,boundary_magnetic_divergence=1.,
-                                      full_gauss=1.,full_magnetic_divergence=1.),False)
         with self.assertRaises(FloatingPointError):
             runner.check_constraints(dict(gauss=np.nan,magnetic_divergence=0.),True)
 
-    def test_regions_exclude_physical_boundaries_but_keep_tile_seams(self):
-        from dataclasses import replace
+    def test_exterior_mask_excludes_boundaries_but_keeps_tile_seams(self):
         p=replace(self.p,sponge_start=3.8)
-        geometry=self.m.geometry
-        zero=jnp.zeros_like(self.fields[3])
-        dm=runner.constraint_masks(geometry,self.s,self.d,p)
-        bm=runner.constraint_masks(geometry,self.s,self.d,p,magnetic=True)
         g=self.s.guard_cells
-        for masks in (dm,bm):
-            owned,inside,boundary=map(np.asarray,masks)
+        zero=jnp.zeros_like(self.fields[3])
+        dm=runner.exterior_mask(self.m.geometry,self.s,self.d,p)
+        bm=runner.exterior_mask(self.m.geometry,self.s,self.d,p,magnetic=True)
+        for magnetic,mask in ((False,dm),(True,bm)):
+            inside=np.asarray(mask)
             self.assertTrue(inside[0,0,0,g+self.s.tile_shape[0]-1,g+5,g])
             self.assertTrue(inside[1,0,0,g,g+5,g])
             self.assertFalse(inside[0,0,0,g,g+5,g])
             self.assertFalse(inside[0,0,0,g+5,g,g])
             self.assertFalse(inside[1,0,0,g+self.s.tile_shape[0]-1,g+5,g])
-            np.testing.assert_array_equal(inside|boundary,owned)
-        def measure(dd,bb):
-            with patch('PyPIC3D.boundary_conditions.polar.divergence',side_effect=[dd,bb]), \
-                 patch.object(runner,'compute_rho',return_value=zero):
-                return {k:float(v) for k,v in runner.constraint_residuals(
-                    self.pts,self.sp,self.fields,self.s,self.d,p).items()}
-        boundary_d=jnp.where(dm[2],1e12,0.)
-        boundary_b=jnp.where(bm[2],1e12,0.)
-        r=measure(boundary_d,boundary_b)
-        runner.check_constraints(r,False)
-        self.assertGreater(r['boundary_gauss'],0)
-        self.assertGreater(r['boundary_magnetic_divergence'],0)
-        # A seam error must fail and cannot be diluted by a huge boundary error.
-        seam=(1,0,0,g,g+5,g)
-        r=measure(boundary_d.at[seam].set(1e-5),boundary_b)
-        self.assertAlmostEqual(r['gauss'],1e-5,places=12)
-        with self.assertRaisesRegex(RuntimeError,'Exterior'):runner.check_constraints(r,False)
-        r=measure(boundary_d,boundary_b.at[seam].set(1.))
-        self.assertGreater(r['magnetic_divergence'],1e-10)
-
-    def test_horizon_and_outer_errors_cannot_hide_exterior_errors(self):
-        zero=jnp.zeros_like(self.fields[3])
-        regions=[runner._constraint_regions(self.m.geometry,self.s,self.d,self.p,magnetic=m)
-                 for m in (False,True)]
-        for magnetic, masks in zip((False,True),regions):
             grid=self.d.grids.tiled_vertex_grid if magnetic else self.d.grids.tiled_center_grid
             radius=np.broadcast_to(np.asarray(grid[0])[..., :,None,None],zero.shape)
-            owned=np.asarray(masks['full_'])
-            self.assertTrue(np.all(np.asarray(masks['horizon_'])[owned & (radius<self.p.horizon)]))
-            self.assertFalse(np.any(np.asarray(masks[''])[radius<self.p.horizon]))
-            # The first owned radial plane outside the horizon has accepted equatorial cells.
-            first=radius[owned & (radius>=self.p.horizon)].min()
-            self.assertTrue(np.any(np.asarray(masks['']) & (radius==first)))
-            self.assertFalse(np.any(np.asarray(masks['']) & np.asarray(masks['outer_boundary_'])))
-        excluded=[m['horizon_']|m['outer_boundary_'] for m in regions]
-        dd,bb=[jnp.where(m,1e12,0.) for m in excluded]
-        # Enormous excluded-region B must not increase the exterior normalization.
+            self.assertFalse(np.any(inside[radius<self.p.horizon]))
+        # the first owned radial plane outside the horizon has accepted cells
+        owned=np.asarray(self.m.geometry.charge_owned)
+        radius=np.broadcast_to(np.asarray(self.d.grids.tiled_center_grid[0])[..., :,None,None],zero.shape)
+        first=radius[owned & (radius>=self.p.horizon)].min()
+        self.assertTrue(np.any(np.asarray(dm) & (radius==first)))
+        # Enormous errors and fields outside the exterior neither fail the check
+        # nor dilute an exterior error through the normalization.
         fields=list(self.fields)
-        fields[1]=tuple(jnp.where(excluded[1],1e18,0.) for _ in range(3))
-        def measure(d,b):
-            with patch('PyPIC3D.boundary_conditions.polar.divergence',side_effect=[d,b]), \
+        fields[1]=tuple(jnp.where(bm,0.,1e18) for _ in range(3))
+        outside_d=jnp.where(dm,0.,1e12)
+        outside_b=jnp.where(bm,0.,1e12)
+        def measure(dd,bb):
+            with patch.object(runner,'divergence',side_effect=[dd,bb]), \
                  patch.object(runner,'compute_rho',return_value=zero):
-                return runner.constraint_residuals(self.pts,self.sp,fields,self.s,self.d,self.p)
-        values=measure(dd,bb)
-        runner.check_constraints(values)
-        for prefix in ('horizon_','outer_boundary_'):
-            self.assertGreater(float(values[prefix+'gauss']),0.)
-            self.assertGreater(float(values[prefix+'magnetic_divergence']),0.)
-        for i,name in enumerate(('gauss','magnetic_divergence')):
-            cell=tuple(np.argwhere(np.asarray(regions[i]['']))[0])
-            errors=[dd,bb];errors[i]=errors[i].at[cell].set(1e-5)
-            values=measure(*errors)
-            self.assertAlmostEqual(float(values[name]),1e-5,places=12)
-            with self.assertRaisesRegex(RuntimeError,name):runner.check_constraints(values)
+                return {k:float(v) for k,v in runner.constraint_residuals(
+                    self.pts,self.sp,fields,self.s,self.d,p).items()}
+        runner.check_constraints(measure(outside_d,outside_b),False)
+        seam=(1,0,0,g,g+5,g)
+        r=measure(outside_d.at[seam].set(1e-5),outside_b)
+        self.assertAlmostEqual(r['gauss'],1e-5,places=12)
+        with self.assertRaisesRegex(RuntimeError,'Exterior.*gauss'):runner.check_constraints(r,False)
+        r=measure(outside_d,outside_b.at[seam].set(1e-5))
+        self.assertAlmostEqual(r['magnetic_divergence'],1e-5,places=12)
+        with self.assertRaisesRegex(RuntimeError,'magnetic_divergence'):runner.check_constraints(r,False)
 
-    def test_empty_exterior_and_snapshot_regions(self):
-        from dataclasses import replace
+    def test_empty_exterior_and_snapshot_residuals(self):
         p=replace(self.p,sponge_start=1.9)
         values=runner.constraint_residuals(self.pts,self.sp,self.fields,self.s,self.d,p)
         with self.assertRaises(FloatingPointError):runner.check_constraints(values,True)
         snap=runner.diagnostics(self.pts,self.sp,self.fields,self.p,self.s,self.d)
-        for prefix in ('','horizon_','outer_boundary_','boundary_','full_'):
-            for name in ('gauss','divB'):
-                self.assertIn(prefix+name+'_relative',snap)
-                self.assertGreater(int(snap[prefix+name+'_cells']),0)
-                self.assertTrue(bool(snap[prefix+name+'_valid']))
-        self.assertEqual(int(snap['constraint_policy_version']),2)
+        for name in ('gauss_relative','divB_relative'):
+            self.assertTrue(np.isfinite(snap[name]))
 
 
 class TestConstraintPolicy(unittest.TestCase):
@@ -183,9 +149,8 @@ class TestConstraintPolicy(unittest.TestCase):
         for value in (0,-1,1.5,True):
             with self.assertRaises(ValueError):runner.validate_constraint_settings(1e-10,1e-10,value)
 
-    def test_reporting_only_nonfinite_and_empty_regions(self):
-        values=dict(gauss=0.,magnetic_divergence=0.,horizon_gauss=np.inf,
-                    horizon_magnetic_divergence=np.nan,horizon_magnetic_divergence_cells=0)
+    def test_nonfinite_or_empty_exterior_always_fails(self):
+        values=dict(gauss=0.,magnetic_divergence=0.)
         runner.check_constraints(values)
         for name in ('gauss','magnetic_divergence'):
             for invalid in (np.nan,np.inf):
@@ -196,8 +161,6 @@ class TestConstraintPolicy(unittest.TestCase):
 class TestConstraintSchedule(unittest.TestCase):
     """Exercise fresh-run scheduling and failure paths without particle kernels."""
     def run_driver(self,directory,*,end_time=.2045,interval=.1,fail_at=None,interrupt_at=None,waive=False):
-        from contextlib import ExitStack
-        from types import SimpleNamespace
         p=SimulationParameters(end_time=end_time,output_interval=interval,
                                allow_divergence_errors=waive)
         pts=SimpleNamespace(active=np.zeros((1,1,1,2,1),bool))
@@ -210,7 +173,7 @@ class TestConstraintSchedule(unittest.TestCase):
         def measure(particles,species,fields,*args,**kwargs):
             self.checked.append(fields)
             return dict(gauss=1e-5 if fail_at is not None and fields>=fail_at else 0.,
-                        magnetic_divergence=0.,horizon_gauss=np.inf,outer_boundary_gauss=1.)
+                        magnetic_divergence=0.)
         def save(path,particles,species,fields,step,*args):
             np.savez(path,step=step,marker=fields)
         with ExitStack() as stack:
@@ -271,5 +234,42 @@ class TestConstraintSchedule(unittest.TestCase):
                 build.assert_not_called()
             self.assertEqual(original.read_text(),'keep')
 
+
+class TestInjectionSchedule(unittest.TestCase):
+    def draw_events(self, dt):
+        p = SimpleNamespace(injection_interval=.1, devices=1)
+        fields = (None, None, None, None, None, None, None, None, False)
+        boundary = SimpleNamespace(invalid_push=False)
+        errors = SimpleNamespace(throw=lambda: None)
+        draws = []
+        def inject(pts, species, mag, D, B, metric, static, dynamic, params, key, event):
+            key, event_key = jax.random.split(key)
+            draws.append(np.asarray(jax.random.uniform(jax.random.fold_in(event_key, event), (8,))))
+            return pts, key, SimpleNamespace(errors=(), requested=np.zeros(1),
+                                            inserted=np.zeros(1), rejected=np.zeros(1))
+        with ExitStack() as stack:
+            for name, replacement in (
+                ('inject_pairs', inject), ('measure_magnetization', lambda *a: None),
+                ('finite_state', lambda *a: True), ('check_sharding', lambda *a: None),
+                ('time_loop_static_metric', lambda pts, *a, **kw: (errors, (pts, fields, boundary)))):
+                stack.enter_context(patch.object(runner, name, replacement))
+            stack.enter_context(patch.object(runner.jax, 'jit', lambda f: f))
+            step = runner.make_step(p, None, None, SimpleNamespace(dt=dt), None,
+                                    sponge=False)
+            key = jax.random.PRNGKey(17)
+            for index in range(round(.3/dt)):
+                _, _, key, _ = step(None, fields, key, index)
+        return np.array(draws)
+
+    def test_matched_physical_events_share_random_candidates(self):
+        np.testing.assert_array_equal(self.draw_events(.002), self.draw_events(.001))
+
+
+class TestRunnerArguments(unittest.TestCase):
+    def test_runner_rejects_command_line_arguments(self):
+        for arguments in (['--restart','old.npz'],['--end-time','1'],['--mode','run'],['--output','data']):
+            with patch.object(sys,'argv',['bz',*arguments]), \
+                 self.assertRaisesRegex(SystemExit,'takes no arguments'):
+                runner.main()
 
 if __name__=='__main__':unittest.main()

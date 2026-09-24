@@ -3,6 +3,7 @@ from typing import NamedTuple
 import jax
 import jax.numpy as jnp
 
+from PyPIC3D.boundary_conditions.polar import divide
 from PyPIC3D.deposition.rho import compute_rho
 from PyPIC3D.relativity.core import B_FIELD_LOCATIONS
 from PyPIC3D.solvers.gr_static.static_metric import _location_interpolate
@@ -15,45 +16,27 @@ class Magnetization(NamedTuple):
     valid: jax.Array
 
 
-def proper_volume(metric, dynamic):
-    """Positive physical measure, independent of the oriented Maxwell Jacobian."""
-    if metric.geometry is not None:
-        return metric.geometry.volume
-    return jnp.abs(metric.center.sqrt_gamma) * dynamic.dx * dynamic.dy * dynamic.dz
-
-
 def deposit_number_density(particles, species, template, metric, static, dynamic):
     """Reuse production shape deposition/halo folding with unit species charge."""
     result = []
     for s in range(species.charge.shape[0]):
         config = species._replace(charge=jnp.arange(species.charge.shape[0]) == s)
         conformal = compute_rho(particles, config, template, static, dynamic)
-        if metric.geometry is not None:
-            from PyPIC3D.boundary_conditions.polar import divide
-            result.append(divide(conformal*dynamic.dx*dynamic.dy*dynamic.dz,metric.geometry.volume))
-        else:
-            result.append(conformal / jnp.abs(metric.center.sqrt_gamma))
+        result.append(divide(conformal*dynamic.dx*dynamic.dy*dynamic.dz, metric.geometry.volume))
     return jnp.stack(result)
 
 
-def collocate_magnetic_field(B, metric):
-    """Collocate physical components in the polar chart, including finite caps.
+def collocate_magnetic_field(B):
+    """Collocate physical polar-chart components at cell centers, including finite caps.
 
-    The legacy point-metric path retains densitized interpolation. Never contract
-    components sampled at different Yee positions.
+    Never contract components sampled at different Yee positions.
     """
-    if metric.geometry is not None:
-        return jnp.stack([_location_interpolate(B[i],loc,("C",)*3)
-                          for i,loc in enumerate(B_FIELD_LOCATIONS)],axis=-1)
-    return jnp.stack([
-        _location_interpolate(metric.B[i].sqrt_gamma*B[i], location, ("C",)*3)
-        / metric.center.sqrt_gamma
-        for i, location in enumerate(B_FIELD_LOCATIONS)
-    ], axis=-1)
+    return jnp.stack([_location_interpolate(B[i], loc, ("C",)*3)
+                      for i, loc in enumerate(B_FIELD_LOCATIONS)], axis=-1)
 
 
 def magnetization_from_density(B, number_density, masses, metric):
-    field = collocate_magnetic_field(B, metric)
+    field = collocate_magnetic_field(B)
     b2 = jnp.einsum("...i,...ij,...j->...", field, metric.center.gamma, field)
     mass_density = jnp.einsum("s,s...->...", masses, number_density)
     valid = (jnp.all(jnp.isfinite(number_density) & (number_density >= 0), axis=0)

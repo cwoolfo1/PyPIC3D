@@ -8,6 +8,7 @@ from PyPIC3D.boundary_conditions.grid_and_stencil import (
     BC_ABSORBING,
     BC_CONDUCTING,
     BC_PERIODIC,
+    BC_POLAR,
     wrap_periodic_position,
 )
 from PyPIC3D.boundary_conditions.ghost_cells import MESH_AXES
@@ -392,7 +393,7 @@ def _apply_local_particle_boundaries(local_x, local_u, local_active, static_para
         particle_bc[2],
     )
 
-    if particle_bc[1] == 4:
+    if particle_bc[1] == BC_POLAR:
         theta=jnp.mod(local_x[...,1],2*jnp.pi)
         reflected=theta>jnp.pi
         x2=jnp.where(reflected,2*jnp.pi-theta,theta)

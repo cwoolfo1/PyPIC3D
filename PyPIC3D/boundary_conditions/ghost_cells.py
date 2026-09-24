@@ -4,7 +4,7 @@ import jax
 import jax.numpy as jnp
 from jax.sharding import PartitionSpec as P
 
-from PyPIC3D.boundary_conditions.grid_and_stencil import BC_CONDUCTING, BC_CONSTANT, BC_PERIODIC
+from PyPIC3D.boundary_conditions.grid_and_stencil import BC_CONDUCTING, BC_CONSTANT, BC_PERIODIC, BC_POLAR
 
 
 MESH_AXES = ("tile_x", "tile_y", "tile_z")
@@ -22,64 +22,21 @@ def particle_vector_reflecting_parity(component):
     The returned tuple is ordered by wall normal as ``(x, y, z)``.
     """
 
-    component = int(component)
-    if component not in (0, 1, 2):
-        raise ValueError("component must be 0, 1, or 2.")
-    return tuple(-1 if axis == component else 1 for axis in range(3))
+    return tuple(-1 if axis == int(component) else 1 for axis in range(3))
 
 
-def _reflecting_parity_tuple(reflecting_parity):
-    try:
-        values = tuple(reflecting_parity)
-    except TypeError as exc:
-        raise ValueError(
-            "reflecting_parity must contain three values, each either -1 or 1."
-        ) from exc
-    if len(values) != 3 or any(value not in (-1, 1) for value in values):
-        raise ValueError("reflecting_parity must contain three values, each either -1 or 1.")
-    return tuple(int(value) for value in values)
+def _particle_reflecting_parity(bc_type, reflecting_parity, vector):
+    """Default particle-deposit parity: even scalars, odd normal vector components."""
 
-
-def _reflecting_parity_matrix(reflecting_parity):
-    try:
-        parity = tuple(_reflecting_parity_tuple(component) for component in reflecting_parity)
-    except (TypeError, ValueError) as exc:
-        raise ValueError(
-            "vector reflecting_parity must contain one three-value parity tuple per component."
-        ) from exc
-    if not parity:
-        raise ValueError(
-            "vector reflecting_parity must contain one three-value parity tuple per component."
-        )
-    return parity
-
-
-def _resolve_scalar_reflecting_parity(bc_type, reflecting_parity):
-    bc_type = int(bc_type)
-    if bc_type == BC_TYPE_FIELD:
+    if int(bc_type) == BC_TYPE_FIELD:
         if reflecting_parity is not None:
             raise ValueError("reflecting_parity is only valid for particle boundary conditions.")
         return None
-    if bc_type == BC_TYPE_PARTICLE:
-        if reflecting_parity is None:
-            reflecting_parity = _PARTICLE_SCALAR_REFLECTING_PARITY
-        return _reflecting_parity_tuple(reflecting_parity)
-    raise ValueError("bc_type must be 0 for field boundaries or 1 for particle boundaries.")
-
-
-def _resolve_vector_reflecting_parity(bc_type, reflecting_parity):
-    bc_type = int(bc_type)
-    if bc_type == BC_TYPE_FIELD:
-        if reflecting_parity is not None:
-            raise ValueError("reflecting_parity is only valid for particle boundary conditions.")
-        return None
-    if bc_type == BC_TYPE_PARTICLE:
-        if reflecting_parity is None:
-            reflecting_parity = tuple(
-                particle_vector_reflecting_parity(component) for component in range(3)
-            )
-        return _reflecting_parity_matrix(reflecting_parity)
-    raise ValueError("bc_type must be 0 for field boundaries or 1 for particle boundaries.")
+    if reflecting_parity is not None:
+        return reflecting_parity
+    if vector:
+        return tuple(particle_vector_reflecting_parity(component) for component in range(3))
+    return _PARTICLE_SCALAR_REFLECTING_PARITY
 
 
 def _as_python_int(value):
@@ -336,7 +293,7 @@ def _local_refresh_scalar_tile(
         send_negative,
         axis_parities,
     ):
-        if boundary_condition == 4:
+        if boundary_condition == BC_POLAR:
             continue  # polar theta is handled with explicit C/V ownership
         if reduced_axis:
             tile = _local_refresh_reduced_axis(
@@ -500,7 +457,7 @@ def _local_fold_scalar_tile(
         send_negative,
         axis_parities,
     ):
-        if boundary_condition == 4:
+        if boundary_condition == BC_POLAR:
             continue  # polar theta is handled with explicit C/V ownership
         if reduced_axis:
             tile = _local_fold_reduced_axis(
@@ -616,7 +573,7 @@ def make_distributed_ghost_updater(
     tile_shape = tuple(int(width) for width in tile_shape)
     boundary_conditions = tuple(int(bc) for bc in boundary_conditions)
     if reflecting_parity is not None:
-        reflecting_parity = _reflecting_parity_tuple(reflecting_parity)
+        reflecting_parity = tuple(int(value) for value in reflecting_parity)
     mesh_shape = tuple(int(width) for width in mesh.devices.shape)
     reduced_axes = _reduced_axes_from_tile_shape(tile_shape, mesh_shape)
     send_positive, send_negative = _axis_permutations(mesh_shape, boundary_conditions)
@@ -670,7 +627,8 @@ def make_distributed_vector_ghost_updater(
     tile_shape = tuple(int(width) for width in tile_shape)
     boundary_conditions = tuple(int(bc) for bc in boundary_conditions)
     if reflecting_parity is not None:
-        reflecting_parity = _reflecting_parity_matrix(reflecting_parity)
+        reflecting_parity = tuple(tuple(int(value) for value in component)
+                                  for component in reflecting_parity)
     mesh_shape = tuple(int(width) for width in mesh.devices.shape)
     reduced_axes = _reduced_axes_from_tile_shape(tile_shape, mesh_shape)
     send_positive, send_negative = _axis_permutations(mesh_shape, boundary_conditions)
@@ -717,10 +675,6 @@ def make_distributed_vector_ghost_updater(
     def update(field_tiles):
         _validate_vector_tile_topology(field_tiles, mesh)
         stacked_tiles = _stack_tiled_vector_field(field_tiles)
-        if reflecting_parity is not None and len(reflecting_parity) != int(stacked_tiles.shape[0]):
-            raise ValueError(
-                "vector reflecting_parity must contain one parity tuple per component."
-            )
         refreshed = mapped_update(stacked_tiles)
         return _restore_tiled_vector_layout(refreshed, field_tiles)
 
@@ -747,7 +701,7 @@ def make_distributed_ghost_folder(
     tile_shape = tuple(int(width) for width in tile_shape)
     boundary_conditions = tuple(int(bc) for bc in boundary_conditions)
     if reflecting_parity is not None:
-        reflecting_parity = _reflecting_parity_tuple(reflecting_parity)
+        reflecting_parity = tuple(int(value) for value in reflecting_parity)
     mesh_shape = tuple(int(width) for width in mesh.devices.shape)
     reduced_axes = _reduced_axes_from_tile_shape(tile_shape, mesh_shape)
     send_positive, send_negative = _axis_permutations(mesh_shape, boundary_conditions)
@@ -801,7 +755,8 @@ def make_distributed_vector_ghost_folder(
     tile_shape = tuple(int(width) for width in tile_shape)
     boundary_conditions = tuple(int(bc) for bc in boundary_conditions)
     if reflecting_parity is not None:
-        reflecting_parity = _reflecting_parity_matrix(reflecting_parity)
+        reflecting_parity = tuple(tuple(int(value) for value in component)
+                                  for component in reflecting_parity)
     mesh_shape = tuple(int(width) for width in mesh.devices.shape)
     reduced_axes = _reduced_axes_from_tile_shape(tile_shape, mesh_shape)
     send_positive, send_negative = _axis_permutations(mesh_shape, boundary_conditions)
@@ -848,10 +803,6 @@ def make_distributed_vector_ghost_folder(
     def fold(field_tiles):
         _validate_vector_tile_topology(field_tiles, mesh)
         stacked_tiles = _stack_tiled_vector_field(field_tiles)
-        if reflecting_parity is not None and len(reflecting_parity) != int(stacked_tiles.shape[0]):
-            raise ValueError(
-                "vector reflecting_parity must contain one parity tuple per component."
-            )
         folded = mapped_fold(stacked_tiles)
         return _restore_tiled_vector_layout(folded, field_tiles)
 
@@ -936,10 +887,7 @@ def update_tiled_ghost_cells(
 
     tile_shape = tuple(int(width) for width in static_parameters.tile_shape)
     mesh = static_parameters.field_mesh
-    reflecting_parity = _resolve_scalar_reflecting_parity(
-        bc_type,
-        reflecting_parity,
-    )
+    reflecting_parity = _particle_reflecting_parity(bc_type, reflecting_parity, vector=False)
     updater = make_distributed_ghost_updater(
         mesh,
         tile_shape,
@@ -948,7 +896,7 @@ def update_tiled_ghost_cells(
         reflecting_parity=reflecting_parity,
     )
     result = updater(field_tiles)
-    if static_parameters.particle_boundary_conditions[1] == 4 and bc_type == BC_TYPE_PARTICLE:
+    if bc_type == BC_TYPE_PARTICLE and static_parameters.particle_boundary_conditions[1] == BC_POLAR:
         from .polar import refresh
         return refresh(result, num_guard_cells, tile_shape[1])
     return result
@@ -973,10 +921,7 @@ def update_tiled_vector_ghost_cells(
 
     tile_shape = tuple(int(width) for width in static_parameters.tile_shape)
     mesh = static_parameters.field_mesh
-    reflecting_parity = _resolve_vector_reflecting_parity(
-        bc_type,
-        reflecting_parity,
-    )
+    reflecting_parity = _particle_reflecting_parity(bc_type, reflecting_parity, vector=True)
     updater = make_distributed_vector_ghost_updater(
         mesh,
         tile_shape,
@@ -985,7 +930,7 @@ def update_tiled_vector_ghost_cells(
         reflecting_parity=reflecting_parity,
     )
     result = updater(field_tiles)
-    if static_parameters.particle_boundary_conditions[1] == 4 and bc_type == BC_TYPE_PARTICLE:
+    if bc_type == BC_TYPE_PARTICLE and static_parameters.particle_boundary_conditions[1] == BC_POLAR:
         from .polar import refresh
         arrays = tuple(refresh(result[i], num_guard_cells, tile_shape[1], i == 1, -1 if i == 1 else 1) for i in range(3))
         return jnp.stack(arrays) if hasattr(result, 'ndim') and result.ndim == 7 else arrays
@@ -1061,10 +1006,7 @@ def fold_tiled_ghost_cells(
 
     tile_shape = tuple(int(width) for width in static_parameters.tile_shape)
     mesh = static_parameters.field_mesh
-    reflecting_parity = _resolve_scalar_reflecting_parity(
-        bc_type,
-        reflecting_parity,
-    )
+    reflecting_parity = _particle_reflecting_parity(bc_type, reflecting_parity, vector=False)
     folder = make_distributed_ghost_folder(
         mesh,
         tile_shape,
@@ -1073,7 +1015,7 @@ def fold_tiled_ghost_cells(
         reflecting_parity=reflecting_parity,
     )
     result = folder(field_tiles)
-    if static_parameters.particle_boundary_conditions[1] == 4 and bc_type == BC_TYPE_PARTICLE:
+    if bc_type == BC_TYPE_PARTICLE and static_parameters.particle_boundary_conditions[1] == BC_POLAR:
         from .polar import fold
         return fold(result, num_guard_cells, tile_shape[1])
     return result
@@ -1092,10 +1034,7 @@ def fold_tiled_vector_ghost_cells(
 
     tile_shape = tuple(int(width) for width in static_parameters.tile_shape)
     mesh = static_parameters.field_mesh
-    reflecting_parity = _resolve_vector_reflecting_parity(
-        bc_type,
-        reflecting_parity,
-    )
+    reflecting_parity = _particle_reflecting_parity(bc_type, reflecting_parity, vector=True)
     folder = make_distributed_vector_ghost_folder(
         mesh,
         tile_shape,
@@ -1104,7 +1043,7 @@ def fold_tiled_vector_ghost_cells(
         reflecting_parity=reflecting_parity,
     )
     result = folder(field_tiles)
-    if static_parameters.particle_boundary_conditions[1] == 4 and bc_type == BC_TYPE_PARTICLE:
+    if bc_type == BC_TYPE_PARTICLE and static_parameters.particle_boundary_conditions[1] == BC_POLAR:
         from .polar import fold
         arrays = tuple(fold(result[i], num_guard_cells, tile_shape[1], i == 1, -1 if i == 1 else 1) for i in range(3))
         return jnp.stack(arrays) if hasattr(result, 'ndim') and result.ndim == 7 else arrays

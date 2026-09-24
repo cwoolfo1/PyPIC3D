@@ -12,6 +12,7 @@ from PyPIC3D.boundary_conditions.grid_and_stencil import (
     collapse_axis_stencil,
     prepare_particle_axis_stencil,
 )
+from PyPIC3D.boundary_conditions.polar import physical_current
 from PyPIC3D.deposition.shapes import get_first_order_weights, get_second_order_weights
 from PyPIC3D.relativity.core import contravariant_three_velocity
 from PyPIC3D.relativity.interpolate_metric import interpolate_metric, safe_inactive_positions
@@ -265,11 +266,6 @@ def GR_direct_deposition(
         tz,
     )
 
-    if metric.geometry is not None:
-        from PyPIC3D.boundary_conditions.polar import fold,refresh
-        # The lower radial face belongs to the charge budget, even though its
-        # storage lies in a halo. Preserve it before generic absorbing folding.
-        lower_flux=refresh(fold(Jx,g,tile_ny),g,tile_ny)[0,:,:,g-1,:,:]
     conformal_J = fold_tiled_vector_ghost_cells(
         (Jx, Jy, Jz),
         static_parameters,
@@ -310,10 +306,7 @@ def GR_direct_deposition(
     )
 
     if metric.geometry is not None:
-        from PyPIC3D.boundary_conditions.polar import current_factors, divide
-        conformal_J=(conformal_J[0].at[0,:,:,g-1,:,:].set(lower_flux),)+tuple(conformal_J[1:])
-        factors=current_factors(metric.geometry,dynamic_parameters)
-        return tuple(divide(conformal_J[i],factors[i]) for i in range(3))
+        return physical_current(Jx, conformal_J, metric.geometry, dynamic_parameters, g, tile_ny)
     return tuple(
         conformal_J[i] / metric.D[i].sqrt_gamma
         for i in range(3)

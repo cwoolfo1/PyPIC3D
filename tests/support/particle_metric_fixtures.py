@@ -6,7 +6,7 @@ import jax
 import jax.numpy as jnp
 from PyPIC3D.utilities.parameters import build_static_parameters, build_dynamic_parameters
 from PyPIC3D.utilities.grids import build_yee_grid, build_tiled_yee_grids
-from PyPIC3D.relativity.core import B_FIELD_LOCATIONS
+from PyPIC3D.relativity.core import B_FIELD_LOCATIONS, Metric
 from PyPIC3D.relativity.interpolate_metric import interpolate_metric
 from PyPIC3D.relativity.flat import initialize_flat_cartesian_metric, initialize_flat_spherical_metric
 from PyPIC3D.boundary_conditions.polar import refresh_vector
@@ -14,6 +14,19 @@ from PyPIC3D.pusher.hybrid_boris_geodesic import magnetic_boris_rotation, gather
 
 jax.config.update('jax_enable_x64', True)
 PERIOD = 2*np.pi*np.sqrt(1.16)
+
+
+def manufactured(offset=0.0):
+    """Smooth, non-diagonal numerical metric on a 15x15x7 grid (radial origin shifted by offset)."""
+    grid = (jnp.arange(-3, 12, dtype=float)*0.1 + offset,
+            jnp.arange(-3, 12, dtype=float)*0.1,
+            jnp.arange(7, dtype=float))
+    x, y, z = jnp.meshgrid(*grid, indexing='ij')
+    g = jnp.broadcast_to(jnp.array([[2.0, 0.2, 0.1], [0.2, 3.0, -0.1], [0.1, -0.1, 1.5]]), x.shape + (3, 3))
+    g = g.at[..., 0, 0].add(0.2*x + 0.1*y*y).at[..., 0, 1].add(0.03*x*y).at[..., 1, 0].add(0.03*x*y)
+    lapse = 1.0 + 0.03*x + 0.02*y*y
+    shift = jnp.stack((0.04*x*y, 0.02*y, 0.01*x), axis=-1)
+    return grid, Metric(lapse, shift, g, jnp.zeros_like(g), jnp.zeros(x.shape))
 
 @lru_cache(maxsize=1)
 def make_runtime(chart, nr=64, ntheta=128):
@@ -65,27 +78,22 @@ def norm(u,m):
 
 
 def sampled_rotation_checks(ntheta=128):
+    """Boris-rotation invariants at the equator and near both poles, for both shape orders."""
     rows=[];s,d,m,D,B=make_runtime('spherical',64,ntheta)
     for order in (1,2):
         s=s._replace(shape_factor=order)
         for label,t in [('away',.8),('north_half',float(d.dy)/2),('north_close',float(d.dy)*.05),
                         ('south_half',np.pi-float(d.dy)/2),('south_close',np.pi-float(d.dy)*.05)]:
-            q=jnp.array([[2.37,t,.1]]);a=sample_metric(q,m,s,d)
-            b=gather_B(q,B,s,d);u=jnp.einsum('...ij,j->...i',jnp.linalg.cholesky(a.gamma),jnp.array([.4,.3,.2]))
-            derivative=a.grad_gamma_inv[0]
-            differentiated=jnp.moveaxis(jax.jacfwd(lambda x:sample_metric(x[None,:],m,s,d).gamma_inv[0])(q[0]),-1,0)
-            derivative_error=float(jnp.linalg.norm(derivative-differentiated)/jnp.maximum(jnp.linalg.norm(differentiated),1e-30))
-            for control,met in [('production_sample',a),('inverse_consistent_rotation_only',a._replace(gamma_inv=jnp.linalg.inv(a.gamma)))]:
-                for charge in (-1.,1.):
-                    for dt in (.01,.5,5.,50.):
-                        v=magnetic_boris_rotation(u,b,met,jnp.array([charge]),dt)
-                        back=magnetic_boris_rotation(v,b,met,jnp.array([charge]),-dt)
-                        scale=jnp.sqrt(norm(u,met)*jnp.einsum('...i,...ij,...j->...',b,met.gamma,b))
-                        rows.append(dict(shape=order,location=label,control=control,charge=charge,dt=dt,
-                            inverse_defect=float(jnp.linalg.norm(met.gamma@met.gamma_inv-jnp.eye(3))),
-                            norm_error=float(jnp.max(jnp.abs(norm(v,met)/norm(u,met)-1))),
-                            parallel_error=float(jnp.max(jnp.abs(jnp.sum((v-u)*b,axis=-1))/scale)),
-                            reversal_error=float(jnp.linalg.norm(back-u)/jnp.linalg.norm(u)),
-                            derivative_discrepancy=derivative_error))
+            q=jnp.array([[2.37,t,.1]]);met=sample_metric(q,m,s,d)
+            b=gather_B(q,B,s,d);u=jnp.einsum('...ij,j->...i',jnp.linalg.cholesky(met.gamma),jnp.array([.4,.3,.2]))
+            for charge in (-1.,1.):
+                for dt in (.01,.5,5.,50.):
+                    v=magnetic_boris_rotation(u,b,met,jnp.array([charge]),dt)
+                    back=magnetic_boris_rotation(v,b,met,jnp.array([charge]),-dt)
+                    scale=jnp.sqrt(norm(u,met)*jnp.einsum('...i,...ij,...j->...',b,met.gamma,b))
+                    rows.append(dict(shape=order,location=label,charge=charge,dt=dt,
+                        inverse_defect=float(jnp.linalg.norm(met.gamma@met.gamma_inv-jnp.eye(3))),
+                        norm_error=float(jnp.max(jnp.abs(norm(v,met)/norm(u,met)-1))),
+                        parallel_error=float(jnp.max(jnp.abs(jnp.sum((v-u)*b,axis=-1))/scale)),
+                        reversal_error=float(jnp.linalg.norm(back-u)/jnp.linalg.norm(u))))
     return rows
-

@@ -641,9 +641,8 @@ class TestGRESirkepovConfiguration(unittest.TestCase):
         config.update(overrides)
         return config
 
-    def test_encoder_accepts_the_new_spellings(self):
-        for spelling in ("GR_esirkepov", "gr_esirkepov", "GR_Esirkepov"):
-            self.assertEqual(_encode_current_calculation(spelling), "GR_esirkepov")
+    def test_encoder_accepts_gr_esirkepov(self):
+        self.assertEqual(_encode_current_calculation("GR_esirkepov"), "GR_esirkepov")
 
     def test_encoder_still_maps_the_existing_schemes(self):
         self.assertEqual(_encode_current_calculation("GR_direct_deposition"), "GR_direct")

@@ -1,5 +1,6 @@
 import jax.numpy as jnp
 
+from PyPIC3D.boundary_conditions.grid_and_stencil import BC_POLAR
 from PyPIC3D.relativity.core import build_yee_metric
 
 
@@ -80,7 +81,7 @@ def initialize_flat_spherical_metric(static_parameters, dynamic_parameters):
     Build the flat spherical metric, ds^2 = dr^2 + r^2 dtheta^2 + r^2 sin^2(theta)dphi^2.
     """
 
-    if static_parameters.boundary_conditions[1] == 4:
+    if static_parameters.boundary_conditions[1] == BC_POLAR:
         if static_parameters.metric != 'flat_spherical':
             raise ValueError('BC_POLAR flat-spherical initializer must match static parameters')
         from PyPIC3D.boundary_conditions.polar import safe_grid_provider, build_geometry

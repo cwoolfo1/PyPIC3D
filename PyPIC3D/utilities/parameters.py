@@ -3,6 +3,7 @@ from numbers import Integral
 from typing import NamedTuple
 
 from PyPIC3D.boundary_conditions.ghost_cells import make_field_mesh
+from PyPIC3D.boundary_conditions.grid_and_stencil import BC_POLAR
 
 
 class GridParameters(NamedTuple):
@@ -44,7 +45,6 @@ class StaticParameters(NamedTuple):
     particle_boundary_conditions: tuple
     field_mesh: object
     horizon_field_cells: int = 0
-    polar_field_interpolation: str = 'physical'
 
 
 class DynamicParameters(NamedTuple):
@@ -109,21 +109,12 @@ def build_static_parameters(static_config):
     """
 
     static_config = dict(static_config)
-    if 'geodesic_iterations' in static_config:
-        raise ValueError('geodesic_iterations was removed; the hybrid pusher is explicit-only. Remove this key.')
-    interpolation = static_config.get('polar_field_interpolation', 'physical')
-    if interpolation not in ('physical', 'entity'):
-        raise ValueError('Unknown polar field interpolation')
-    if interpolation == 'entity' and (static_config.get('solver') != 'static_metric'
-            or static_config.get('metric') not in ('kerr_schild_spherical', 'flat_spherical')
-            or _axis_tuple(static_config['boundary_conditions'])[1] != 4):
-        raise ValueError('Entity field interpolation requires the polar spherical solver')
     horizon_cells = static_config.get('horizon_field_cells', 0)
     if isinstance(horizon_cells, bool) or not isinstance(horizon_cells, Integral) or horizon_cells < 0:
         raise ValueError('horizon_field_cells must be a nonnegative integer')
     if horizon_cells and (static_config.get('solver') != 'static_metric'
                           or static_config.get('metric') != 'kerr_schild_spherical'
-                          or _axis_tuple(static_config['boundary_conditions'])[1] != 4):
+                          or _axis_tuple(static_config['boundary_conditions'])[1] != BC_POLAR):
         raise ValueError('Horizon field layers require the polar spherical Kerr-Schild solver')
     hybrid = (static_config.get("solver") == "static_metric" or
               static_config.get("particle_pusher") == "hybrid_boris_geodesic")
@@ -141,7 +132,7 @@ def build_static_parameters(static_config):
     bc = _axis_tuple(static_config['boundary_conditions'])
     pbc = _axis_tuple(static_config.get('particle_boundary_conditions', (0,0,0)))
     if 4 in bc or 4 in pbc:
-        if (bc[1] != 4 or pbc[1] != 4 or 4 in (bc[0],bc[2],pbc[0],pbc[2])
+        if (bc[1] != BC_POLAR or pbc[1] != BC_POLAR or BC_POLAR in (bc[0],bc[2],pbc[0],pbc[2])
             or static_config.get('metric') not in ('flat_spherical','kerr_schild_spherical')
             or static_config.get('solver') != 'static_metric'
             or int(static_config['Nz']) != 1 or tile_shape[1] != int(static_config['Ny'])
@@ -184,7 +175,6 @@ def build_static_parameters(static_config):
         ),
         field_mesh=_field_mesh(static_config, tile_shape),
         horizon_field_cells=int(horizon_cells),
-        polar_field_interpolation=interpolation,
     )
 
 

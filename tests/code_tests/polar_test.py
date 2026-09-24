@@ -1,37 +1,17 @@
 """Independent polar geometry, finite-volume field and unmodified-shape tests."""
 import unittest
-from dataclasses import replace
-from functools import lru_cache
 import jax
 import jax.numpy as jnp
 import numpy as np
-from demos.static_metric_relativity.bz_monopole.simulation_parameters import SimulationParameters,build_runtime
-from PyPIC3D.boundary_conditions.polar import divergence,refresh_vector,fold,refresh,divide
-from PyPIC3D.relativity.core import D_FIELD_LOCATIONS,B_FIELD_LOCATIONS
+from PyPIC3D.boundary_conditions.polar import current_factors,divergence,refresh_vector,divide
+from PyPIC3D.relativity.core import B_FIELD_LOCATIONS
 from PyPIC3D.relativity.flat import initialize_flat_spherical_metric
 from PyPIC3D.deposition.rho import compute_rho
 from PyPIC3D.deposition.GR_Esirkepov import GR_Esirkepov_current
-from PyPIC3D.particles.particle_class import TiledParticles,SpeciesConfig
-from PyPIC3D.solvers.gr_static.static_metric import update_D_relativity,update_B_relativity,compute_covariant_E,compute_covariant_H
+from PyPIC3D.solvers.gr_static.static_metric import update_D_relativity,compute_covariant_E,compute_covariant_H
 from demos.static_metric_relativity.bz_monopole.run_bz_monopole import monopole_field
+from tests.support.polar_fixtures import polar_runtime,particle
 jax.config.update('jax_enable_x64',True)
-
-@lru_cache(None)
-def polar_runtime(devices=1,order=1,flat=False,nt=16):
-    p=SimulationParameters(nr=16,ntheta=nt,devices=devices,r_max=4.,sponge_start=3.,
-                           skin_depth=.0025,pairs_per_cell=4,maximum_timestep=None,end_time=5.,output_interval=1.)
-    s,d,m,_=build_runtime(p);s=s._replace(shape_factor=order)
-    if flat:
-        s=s._replace(metric='flat_spherical',metric_mass=0.,metric_spin=0.)
-        m=initialize_flat_spherical_metric(s,d)
-    return p,s,d,m
-
-def particle(s,d,theta,r=2.1,charge=1.):
-    x=jnp.broadcast_to(jnp.array([r,theta,0.]),s.field_mesh.devices.shape+(1,1,3))
-    active=jnp.zeros(x.shape[:-1],bool)
-    tx=min(int((r-float(d.grids.center[0][1]))/float(d.dx))//s.tile_shape[0],x.shape[0]-1)
-    active=active.at[tx,0,0,0,0].set(True)
-    return TiledParticles(x,jnp.zeros_like(x),active),SpeciesConfig(jnp.array([charge]),jnp.ones(1),jnp.ones(1),jnp.ones((1,3),bool))
 
 class TestPolar(unittest.TestCase):
     def test_polar_metric_parameters_must_match_geometry(self):
@@ -184,6 +164,25 @@ class TestDirectAndCharts(unittest.TestCase):
             self.assertAlmostEqual(float(new.x[0,0,0,0,0,2]),np.pi)
             current=GR_direct_deposition(new,sp,(z,)*3,m,s,d)
             self.assertTrue(all(bool(jnp.all(jnp.isfinite(a))) for a in current))
+
+    def test_direct_current_follows_supplied_metric(self):
+        from PyPIC3D.deposition.GR_direct_deposition import GR_direct_deposition
+        p,s,d,m=polar_runtime()
+        shape=m.center.sqrt_gamma.shape
+        gamma=jnp.diag(jnp.array([2.,3.,4.]))
+        m=m._replace(center=m.center._replace(
+            gamma=jnp.broadcast_to(gamma,shape+(3,3)),
+            gamma_inv=jnp.broadcast_to(jnp.linalg.inv(gamma),shape+(3,3)),
+            lapse=jnp.full(shape,.7),shift=jnp.broadcast_to(jnp.array([.1,0.,0.]),shape+(3,)),
+            sqrt_gamma=jnp.full(shape,jnp.sqrt(24.))))
+        old,sp=particle(s,d,.6)
+        old=old._replace(u=old.u.at[...,0].set(1.))
+        z=jnp.zeros_like(m.center.sqrt_gamma)
+        current=GR_direct_deposition(old,sp,(z,)*3,m,s,d)
+        conformal=current[0]*current_factors(m.geometry,d)[0]
+        total=jnp.where(m.geometry.D_owned[0],conformal,0).sum()*d.dx*d.dy*d.dz
+        expected=.7*.5/jnp.sqrt(1.5)-.1
+        self.assertAlmostEqual(float(total),float(expected),places=12)
 
 if __name__ == '__main__':
     unittest.main()

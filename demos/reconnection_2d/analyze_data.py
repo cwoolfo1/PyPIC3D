@@ -1,7 +1,6 @@
 # Generate a movie of the magnetic field lines in the reconnection_2d demo.
 
 import argparse
-import os
 from pathlib import Path
 import matplotlib
 matplotlib.use("Agg")

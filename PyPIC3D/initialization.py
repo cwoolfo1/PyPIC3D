@@ -112,31 +112,23 @@ def _tile_shape_from_static_config(static_config):
     )
 
 
-GR_DIRECT_NAMES = ("GR_direct_deposition", "gr_direct_deposition", "GR_direct")
-GR_ESIRKEPOV_NAMES = ("GR_esirkepov", "gr_esirkepov", "GR_Esirkepov")
-# accepted spellings for the two fixed-metric current deposition schemes
-
-
 def _encode_current_calculation(current_calculation):
-    if current_calculation not in ("j_from_rhov", "esirkepov") + GR_DIRECT_NAMES + GR_ESIRKEPOV_NAMES:
+    if current_calculation not in ("j_from_rhov", "esirkepov", "GR_direct_deposition", "GR_esirkepov"):
         raise ValueError(
             "Unsupported current_calculation. Use 'j_from_rhov', 'esirkepov', "
             "'GR_direct_deposition', or 'GR_esirkepov'."
         )
     if current_calculation == "esirkepov":
         return "esirkepov"
-    if current_calculation in GR_DIRECT_NAMES:
+    if current_calculation == "GR_direct_deposition":
         return "GR_direct"
-    if current_calculation in GR_ESIRKEPOV_NAMES:
+    if current_calculation == "GR_esirkepov":
         return "GR_esirkepov"
     return "direct"
 
 
 def _validate_current_filter_contract(static_config):
-    charge_conserving = (
-        static_config["current_calculation"] == "esirkepov"
-        or static_config["current_calculation"] in GR_ESIRKEPOV_NAMES
-    )
+    charge_conserving = static_config["current_calculation"] in ("esirkepov", "GR_esirkepov")
     if charge_conserving and static_config["filter_j"] != "none":
         raise ValueError(
             "Esirkepov current filtering is not supported; use filter_j='none'. "
@@ -151,7 +143,7 @@ def _validate_tiled_yee_configuration(static_config, dynamic_config):
     """
 
     if static_config["solver"] == "static_metric":
-        if static_config["current_calculation"] not in GR_DIRECT_NAMES + GR_ESIRKEPOV_NAMES:
+        if static_config["current_calculation"] not in ("GR_direct_deposition", "GR_esirkepov"):
             raise ValueError(
                 "static_metric requires current_calculation='GR_direct_deposition' "
                 "or current_calculation='GR_esirkepov'"
@@ -492,8 +484,6 @@ def initialize_simulation(toml_file):
     guard_cells = int(static_config["guard_cells"])
     if guard_cells < 1:
         raise ValueError("Tiled fields require at least one guard cell.")
-    if static_metric and guard_cells < 3:
-        raise ValueError("Hybrid Hermite particle metrics require guard_cells >= 3")
     static_config["guard_cells"] = guard_cells
     _validate_current_filter_contract(static_config)
 

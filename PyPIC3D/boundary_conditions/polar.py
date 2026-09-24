@@ -9,8 +9,6 @@ import numpy as np
 import jax.numpy as jnp
 from PyPIC3D.relativity.core import D_FIELD_LOCATIONS, B_FIELD_LOCATIONS
 
-BC_POLAR = 4
-
 
 class PolarGeometry(NamedTuple):
     volume: object
@@ -19,14 +17,6 @@ class PolarGeometry(NamedTuple):
     charge_owned: object
     D_owned: tuple
     B_owned: tuple
-    center_regular: object
-    D_regular: tuple
-    B_regular: tuple
-    theta_width: object
-
-
-def enabled(static):
-    return static.boundary_conditions[1] == BC_POLAR
 
 
 def plane(array, index):
@@ -132,9 +122,6 @@ def build_geometry(static,dynamic,metric):
         ti=jnp.arange(shape[4])[None,None,None,None,:,None]
         zi=jnp.arange(shape[5])[None,None,None,None,None,:]
         return expand((ri>=g)&(ri<g+nr)&(ti>=g)&(ti<g+nt+(loc[1]=='C'))&(zi==g))
-    def regular(loc):
-        t=tc+(dt/2 if loc[1]=='V' else 0)
-        return expand((jnp.abs(jnp.sin(t))>1e-14))
     def area(loc,i):
         r=rc+(dr/2 if loc[0]=='V' else 0)
         t=tc+(dt/2 if loc[1]=='V' else 0)
@@ -142,10 +129,7 @@ def build_geometry(static,dynamic,metric):
     volume=expand(integrate(rc,tc,True,True)*dp)
     return PolarGeometry(volume,tuple(area(l,i) for i,l in enumerate(D_FIELD_LOCATIONS)),
                          tuple(area(l,i) for i,l in enumerate(B_FIELD_LOCATIONS)),own(('C',)*3),
-                         tuple(own(l) for l in D_FIELD_LOCATIONS),tuple(own(l) for l in B_FIELD_LOCATIONS),
-                         regular(('C',)*3),tuple(regular(l) for l in D_FIELD_LOCATIONS),
-                         tuple(regular(l) for l in B_FIELD_LOCATIONS),
-                         expand(jnp.clip(tc+dt/2,0,jnp.pi)-jnp.clip(tc-dt/2,0,jnp.pi)))
+                         tuple(own(l) for l in D_FIELD_LOCATIONS),tuple(own(l) for l in B_FIELD_LOCATIONS))
 
 
 def current_factors(geometry,dynamic):
@@ -156,6 +140,18 @@ def current_factors(geometry,dynamic):
 
 def divide(numerator,denominator):
     return jnp.where(denominator!=0,numerator/jnp.where(denominator!=0,denominator,1),0.)
+
+
+def physical_current(raw_Jr, conformal_J, geometry, dynamic, g, nt):
+    """Folded conformal flux -> physical current, keeping the lower radial-face flux.
+
+    The lower radial face belongs to the charge budget even though its storage
+    lies in a halo, so it is taken from the raw deposit before absorbing folding.
+    """
+    lower_flux = refresh(fold(raw_Jr, g, nt), g, nt)[0, :, :, g-1, :, :]
+    Jr = conformal_J[0].at[0, :, :, g-1, :, :].set(lower_flux)
+    factors = current_factors(geometry, dynamic)
+    return tuple(divide(J, factor) for J, factor in zip((Jr, *conformal_J[1:]), factors))
 
 
 def curl_integrals(vector,static,dynamic,forward):

@@ -1,5 +1,7 @@
 import unittest
 
+import pytest
+
 import jax
 import jax.numpy as jnp
 
@@ -1037,7 +1039,8 @@ def test_update_D_relativity_consumes_physical_current_without_metric_rescaling(
     )
 
 
-def test_static_metric_time_loop_retiles_midpoint_and_fullstep_particles():
+@pytest.mark.parametrize("checked", [False, True])
+def test_static_metric_time_loop_retiles_midpoint_and_fullstep_particles(checked):
     static_parameters, dynamic_parameters = kernel_parameters(
         guard_cells=3,
         Nx=8,
@@ -1076,13 +1079,21 @@ def test_static_metric_time_loop_retiles_midpoint_and_fullstep_particles():
     phi = jnp.zeros_like(J[0])
     fields = (D, B, J, rho, phi, (D, B), metric, (D, B), jnp.asarray(False))
 
-    particles, fields = time_loop_static_metric(
-        particles,
-        species,
-        fields,
-        static_parameters,
-        dynamic_parameters,
-    )
+    if checked:
+        errors, (particles, fields) = jax.jit(
+            lambda p, f: time_loop_static_metric(
+                p, species, f, static_parameters, dynamic_parameters, return_errors=True
+            )
+        )(particles, fields)
+        errors.throw()
+    else:
+        particles, fields = time_loop_static_metric(
+            particles,
+            species,
+            fields,
+            static_parameters,
+            dynamic_parameters,
+        )
 
     assert int(jnp.sum(particles.active[0, 0, 0])) == 0
     assert int(jnp.sum(particles.active[1, 0, 0])) == 1

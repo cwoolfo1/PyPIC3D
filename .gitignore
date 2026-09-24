@@ -34,3 +34,6 @@ demos/ot_vortex/*/
 *.jsonl
 *.log
 *.gif
+
+# nohup output from long demo runs
+nohup.out

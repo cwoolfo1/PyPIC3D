@@ -55,8 +55,7 @@ def time_loop_static_metric(
     B_n_minusone = tuple( 0.5 * (B_n_minushalf[i] + B_n_minusthreehalves[i]) for i in range(3) )
     # compute the centered fields for the current time step
 
-    interpolation = static_parameters.polar_field_interpolation
-    E_n_minusonehalf = compute_covariant_E(D_n_minushalf, B_n_minushalf, metric, interpolation)
+    E_n_minusonehalf = compute_covariant_E(D_n_minushalf, B_n_minushalf, metric)
     # compute the covariant electric field from the centered displacement and magnetic fields
 
     B_n = update_B_relativity(E_n_minusonehalf, B_n_minusone, metric, static_parameters, dynamic_parameters, dynamic_parameters.dt)
@@ -136,9 +135,9 @@ def time_loop_static_metric(
     # apply boundaries and restore full-step tile ownership for the next push while preserving all overflow events
 
 
-    E_n = compute_covariant_E(D_n, B_n, metric, interpolation)
+    E_n = compute_covariant_E(D_n, B_n, metric)
     # compute the covariant electric field from the updated displacement and magnetic fields
-    H_n = compute_covariant_H(D_n, B_n, metric, interpolation)
+    H_n = compute_covariant_H(D_n, B_n, metric)
     # compute the covariant magnetic field from the updated displacement and magnetic fields
 
     B_n_plushalf = update_B_relativity(E_n, B_n_minushalf, metric, static_parameters, dynamic_parameters, dynamic_parameters.dt)
@@ -150,7 +149,7 @@ def time_loop_static_metric(
     D_n_plushalf = update_D_relativity(D_n_minushalf, H_n, J_n, metric, static_parameters, dynamic_parameters, dynamic_parameters.dt)
     # update the contravariant displacement field using the updated magnetic field and current
 
-    H_n_plushalf = compute_covariant_H(D_n_plushalf, B_n_plushalf, metric, interpolation)
+    H_n_plushalf = compute_covariant_H(D_n_plushalf, B_n_plushalf, metric)
     # compute the covariant magnetic field from the updated displacement and magnetic fields
 
     D_n_plusone = update_D_relativity(D_n, H_n_plushalf, J_n_plushalf, metric, static_parameters, dynamic_parameters, dynamic_parameters.dt)

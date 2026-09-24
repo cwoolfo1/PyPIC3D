@@ -9,7 +9,6 @@ from PyPIC3D.particles.particle_class import TiledParticles, SpeciesConfig
 from PyPIC3D.particles.particle_tile_communication import shard_tiled_particles
 from PyPIC3D.pusher.particle_push import seed_leapfrog_velocity
 from PyPIC3D.relativity.interpolate_metric import interpolate_metric, safe_inactive_positions
-from magnetization import proper_volume
 
 
 class InjectionReport(NamedTuple):
@@ -55,13 +54,13 @@ def orthonormal_to_covariant(momentum, gamma):
     return jnp.linalg.cholesky(gamma) @ momentum
 
 
-def birth_covariant_momentum(momentum, positions, active, metric, grid, static, tile=None):
+def birth_covariant_momentum(momentum, positions, active, metric, grid, static):
     """Use exactly the pusher reconstruction; unused candidates are safely masked."""
     g = static.guard_cells
     evaluation = safe_inactive_positions(positions, active, grid, (True,True,False), g)
     sampled = interpolate_metric(
         metric, evaluation, grid, static.metric, (True,True,False), (g,g,g),
-        derivatives=False, stage="injection birth transform", tile=tile)
+        derivatives=False)
     covariant = jax.vmap(orthonormal_to_covariant)(momentum, sampled.gamma)
     return jnp.where(active[...,None], covariant, 0.)
 
@@ -98,7 +97,7 @@ def inject_pairs(particles, species, magnetization, D, B, metric, static, dynami
     slots = particles.active.shape[-1]
     candidate_capacity = min(slots, nr*nt*(p.pairs_per_cell+2))
     interior = (slice(None),)*3 + (slice(g,-g),slice(g,-g+1),slice(g,-g))
-    volume = proper_volume(metric, dynamic)[interior]
+    volume = metric.geometry.volume[interior]
     rgrid, tgrid, _ = dynamic.grids.tiled_center_grid
     sigma = magnetization.sigma[interior]
     valid = magnetization.valid[interior]
@@ -143,7 +142,7 @@ def inject_pairs(particles, species, magnetization, D, B, metric, static, dynami
         # Birth transformation and backward initialization use the same metric.
         birth_errors, covariant = checkify.checkify(lambda: birth_covariant_momentum(
             momenta, positions, ranks < inserted, primitive_metric,
-            (rline,tline,pline), static, jnp.array([tile_id,0,0])))()
+            (rline,tline,pline), static))()
         newborn = jnp.zeros_like(active)
         for s in range(2):
             indices = jnp.nonzero(~active[s], size=slots, fill_value=slots)[0][:candidate_capacity]

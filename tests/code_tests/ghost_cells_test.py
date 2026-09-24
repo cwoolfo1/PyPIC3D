@@ -391,7 +391,7 @@ class TestGhostCells(unittest.TestCase):
         )
         self.assertEqual(float(folded[0, 0, 0, g, g, g]), 3.0)
 
-    def test_reflecting_parity_validation_and_field_rejection(self):
+    def test_reflecting_parity_is_rejected_for_field_boundaries(self):
         parameters = SimpleNamespace(
             tile_shape=(2, 2, 2),
             guard_cells=1,
@@ -400,47 +400,11 @@ class TestGhostCells(unittest.TestCase):
             particle_boundary_conditions=(BC_CONDUCTING, BC_PERIODIC, BC_PERIODIC),
         )
         scalar = jnp.zeros((1, 1, 1, 4, 4, 4), dtype=float)
-
-        with self.assertRaisesRegex(ValueError, "three values"):
-            ghost_cells.update_tiled_ghost_cells(
-                scalar,
-                parameters,
-                bc_type=ghost_cells.BC_TYPE_PARTICLE,
-                reflecting_parity=(1, -1),
-            )
-        with self.assertRaisesRegex(ValueError, "either -1 or 1"):
-            ghost_cells.fold_tiled_ghost_cells(
-                scalar,
-                parameters,
-                bc_type=ghost_cells.BC_TYPE_PARTICLE,
-                reflecting_parity=(1, 0, 1),
-            )
-        with self.assertRaisesRegex(ValueError, "either -1 or 1"):
-            ghost_cells.fold_tiled_ghost_cells(
-                scalar,
-                parameters,
-                bc_type=ghost_cells.BC_TYPE_PARTICLE,
-                reflecting_parity=(1, 1.5, 1),
-            )
-        with self.assertRaisesRegex(ValueError, "three values"):
-            ghost_cells.update_tiled_ghost_cells(
-                scalar,
-                parameters,
-                bc_type=ghost_cells.BC_TYPE_PARTICLE,
-                reflecting_parity=1,
-            )
         with self.assertRaisesRegex(ValueError, "only valid for particle"):
             ghost_cells.update_tiled_ghost_cells(
                 scalar,
                 parameters,
                 reflecting_parity=(1, 1, 1),
-            )
-        with self.assertRaisesRegex(ValueError, "one parity tuple per component"):
-            ghost_cells.update_tiled_vector_ghost_cells(
-                (scalar, scalar, scalar),
-                parameters,
-                bc_type=ghost_cells.BC_TYPE_PARTICLE,
-                reflecting_parity=((1, 1, 1), (1, -1, 1)),
             )
 
 

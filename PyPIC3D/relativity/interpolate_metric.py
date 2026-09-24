@@ -111,8 +111,6 @@ def interpolate_metric(
     inactive_axis_indices,
     *,
     derivatives=True,
-    stage="particle metric",
-    tile=None,
 ):
     """
     Interpolate one tile of grid ``Metric`` data to particle positions.
@@ -170,7 +168,7 @@ def interpolate_metric(
             grad_gamma_inv=-jnp.einsum("...ij,...jlk,...lm->...kim", gamma_inv, grad_gamma, gamma_inv),
         )
 
-    check_particle_samples(particle_metric_valid(sampled, position, metric_name), position, stage, tile)
+    check_particle_samples(particle_metric_valid(sampled, position, metric_name), position, "particle metric")
     return sampled
 
 
@@ -234,18 +232,12 @@ def check_particle_samples(valid, position, stage, tile=None):
 
     if valid.size == 0:
         return
-    first = jnp.argmax((~valid).reshape(-1))
-    if tile is None and valid.ndim == 5:
-        index = jnp.unravel_index(first, valid.shape)
-        tile = jnp.stack(index[:3])
-        slot = index[3] * valid.shape[4] + index[4]
-    else:
-        tile = jnp.asarray((-1, -1, -1)) if tile is None else jnp.asarray(tile)
-        slot = first
+    slot = jnp.argmax((~valid).reshape(-1))
+    tile = jnp.asarray((-1, -1, -1)) if tile is None else jnp.asarray(tile)
     checkify.debug_check(
         jnp.all(valid),
         stage + ": invalid particle sample; tile={tile}, flattened species/slot={slot}, position={position}",
         tile=tile,
         slot=slot,
-        position=position.reshape(-1, 3)[first],
+        position=position.reshape(-1, 3)[slot],
     )

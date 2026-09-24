@@ -119,8 +119,6 @@ def hybrid_boris_geodesic_push(
     """
 
     g = int(static_parameters.guard_cells)
-    if g < 3:
-        raise ValueError("Hybrid Hermite particle metrics require guard_cells >= 3")
     dt = dynamic_parameters.dt
     shape_factor = static_parameters.shape_factor
     metric_name = static_parameters.metric

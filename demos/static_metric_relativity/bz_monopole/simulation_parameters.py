@@ -1,9 +1,8 @@
 """Run configuration in Gaussian geometrized units: G=M=c=m=|q|=1.
 
-Run independently with ``python -m demos.bz_monopole.simulation_parameters``.
 The density normalization n0 is the TOTAL electron plus positron density.
 """
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 import math
 from types import SimpleNamespace
 
@@ -11,7 +10,6 @@ import jax
 import jax.numpy as jnp
 from jax.sharding import NamedSharding, PartitionSpec as P
 
-from PyPIC3D.relativity.interpolate_metric import RECONSTRUCTION
 from PyPIC3D.relativity.kerr_schild import initialize_kerr_schild_spherical_metric
 from PyPIC3D.utilities.grids import build_yee_grid, build_tiled_yee_grids
 from PyPIC3D.utilities.parameters import build_static_parameters, build_dynamic_parameters
@@ -42,11 +40,9 @@ class SimulationParameters:
     guard_cells: int = 3
     output_directory: str = "data"
     backend: str = "gpu"
-    field_interpolation: str = "entity"
     particle_batch_size: int = 8192
     current_filter_passes: int = 4
     horizon_field_cells: int = 5
-    vacuum: bool = False
     gauss_tolerance: float = 1e-10
     magnetic_divergence_tolerance: float = 1e-10
     constraint_check_interval: int = 100
@@ -98,12 +94,10 @@ def shard_array(array, static):
     return jax.device_put(array, NamedSharding(static.field_mesh, P("tile_x", "tile_y", "tile_z")))
 
 
-def build_runtime(parameters=SimulationParameters(), *, timestep_policy="cfl", particle_batch_size=65536,
-                  horizon_field_cells=0, field_interpolation='physical'):
-    """Build a runtime with explicitly selected numerical methods.
+def build_runtime(parameters=SimulationParameters()):
+    """Build static/dynamic parameters and the sharded metric; dt is the capped CFL step.
 
-    This low-level builder retains physical-interpolation defaults for component
-    tests and callers; the runner supplies the settings from SimulationParameters.
+    Returns ``(static, dynamic, metric, cfl_dt)``.
     """
     p = parameters
     jax.config.update("jax_enable_x64", True)
@@ -119,8 +113,8 @@ def build_runtime(parameters=SimulationParameters(), *, timestep_policy="cfl", p
         tile_shape=(p.nr//p.devices, p.ntheta, 1), boundary_conditions=(3, 4, 0),
         # Two-GPU timing favors larger active batches;
         # 256-particle batches spend more time in loop/kernel overhead.
-        particle_boundary_conditions=(2, 4, 0), particle_batch_size=particle_batch_size,
-        horizon_field_cells=horizon_field_cells, polar_field_interpolation=field_interpolation))
+        particle_boundary_conditions=(2, 4, 0), particle_batch_size=p.particle_batch_size,
+        horizon_field_cells=p.horizon_field_cells))
     center, vertex = build_yee_grid(SimpleNamespace(**config))
     theta=jnp.arange(-1,p.ntheta+1,dtype=jnp.float64)*p.dtheta
     center=(center[0],theta,center[2])
@@ -145,28 +139,5 @@ def build_runtime(parameters=SimulationParameters(), *, timestep_policy="cfl", p
     cfl_dt = p.courant / float(jnp.max((speed[..., 0]/p.dr + speed[..., 1]/p.dtheta)[interior]))
     limits=[cfl_dt]
     if p.maximum_timestep is not None:limits.append(p.maximum_timestep)
-    maximum_dt = p.maximum_timestep
     dynamic = dynamic._replace(dt=jnp.asarray(min(limits)))
-    lengths = jnp.sqrt(jnp.diagonal(m.gamma, axis1=-2, axis2=-1))[interior]
-    report = dict(parameters=asdict(p), dt=float(dynamic.dt), cfl_dt=cfl_dt,
-                  field_interpolation=field_interpolation,
-                  horizon_field_cells=horizon_field_cells,
-                  particle_batch_size=static.particle_batch_size,
-                  timestep_policy=timestep_policy,
-                  maximum_timestep=maximum_dt,
-                  metric_reconstruction=RECONSTRUCTION,
-                  n0_total=p.n0, B0=p.B0, rho0=p.larmor_radius,
-                  species_weight=p.weight, slots_per_species_per_tile=p.slots_per_species,
-                  particle_storage_bytes=p.devices*2*p.slots_per_species*(6*8+1),
-                  metric_storage_bytes=sum(a.size*a.dtype.itemsize for a in jax.tree.leaves(metric)),
-                  radial_cell_size=[float(jnp.min(lengths[..., 0])*p.dr), float(jnp.max(lengths[..., 0])*p.dr)],
-                  theta_cell_size=[float(jnp.min(lengths[..., 1])*p.dtheta), float(jnp.max(lengths[..., 1])*p.dtheta)],
-                  d0_over_max_radial_cell=p.skin_depth/float(jnp.max(lengths[..., 0])*p.dr),
-                  d0_over_max_theta_cell=p.skin_depth/float(jnp.max(lengths[...,1])*p.dtheta),
-                  rho0_over_max_radial_cell=p.larmor_radius/float(jnp.max(lengths[...,0])*p.dr),
-                  rho0_over_max_theta_cell=p.larmor_radius/float(jnp.max(lengths[...,1])*p.dtheta),
-                  injection_template=f"total proper number density per event = n0/r^2, r<{p.sponge_start:g}",
-                  geometry_id="polar-cap-v1", owned_theta_charge_planes=p.ntheta+1,
-                  field_history_storage_bytes=int(metric.center.sqrt_gamma.size*8*18),
-                  omega_h=p.omega_h, devices=[str(d) for d in static.field_mesh.devices.flat])
-    return static, dynamic, metric, report
+    return static, dynamic, metric, cfl_dt

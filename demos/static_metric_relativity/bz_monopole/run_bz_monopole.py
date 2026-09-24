@@ -1,7 +1,7 @@
 """Run a fresh BZ monopole using settings in simulation_parameters.py.
 
-Run from the repository root with:
-    python -m demos.bz_monopole.run_bz_monopole
+Run from this directory with:
+    python run_bz_monopole.py
 
 The fixed-step explicit simulation runs from zero to SimulationParameters.end_time.
 Diagnostic snapshots and final particle/field arrays are saved as NumPy files.
@@ -18,7 +18,7 @@ import jax.numpy as jnp
 import numpy as np
 from tqdm import tqdm
 
-from PyPIC3D.boundary_conditions.ghost_cells import update_tiled_vector_ghost_cells
+from PyPIC3D.boundary_conditions.polar import divergence, divide, refresh_vector
 from PyPIC3D.deposition.rho import compute_rho
 from PyPIC3D.relativity.core import B_FIELD_LOCATIONS, D_FIELD_LOCATIONS
 from PyPIC3D.solvers.gr_static.static_metric import (
@@ -29,44 +29,32 @@ from simulation_parameters import SimulationParameters, build_runtime, shard_arr
 from magnetization import measure_magnetization, collocate_magnetic_field
 from plasma_injector import empty_particles, inject_pairs
 
-CONSTRAINT_REGION = ('Exterior r>=r_H: two-cell physical boundary buffers; '
-                     'exclude sponge plus two cells; retain tile seams')
-
 def monopole_field(p, metric, dynamic):
     """Discrete curl of A_phi on D_phi=(C,C,V), yielding B_r=(C,V,V)."""
     theta = dynamic.grids.tiled_center_grid[1][..., None, :, None]
     flux = (-p.B0*jnp.cos(theta+dynamic.dy)+p.B0*jnp.cos(theta))/dynamic.dy
-    if metric.geometry is not None:
-        from PyPIC3D.boundary_conditions.polar import divide
-        Br=divide(jnp.broadcast_to(flux,metric.B[0].sqrt_gamma.shape)*dynamic.dy*dynamic.dz,metric.geometry.B_area[0])
-    else:
-        Br = jnp.broadcast_to(flux, metric.B[0].sqrt_gamma.shape)/metric.B[0].sqrt_gamma
+    Br = divide(jnp.broadcast_to(flux, metric.B[0].sqrt_gamma.shape)*dynamic.dy*dynamic.dz,
+                metric.geometry.B_area[0])
     return (Br, jnp.zeros_like(Br), jnp.zeros_like(Br))
 
 
-def refresh_fields(vector, locations, metric, static):
-    """Extrapolate densitized fields radially, exchange periodic/internal halos."""
-    if metric.geometry is not None:
-        from PyPIC3D.boundary_conditions.polar import refresh_vector
-        return refresh_vector(vector,static,locations,'B' if locations==B_FIELD_LOCATIONS else 'D')
-    factors = metric.B if locations == B_FIELD_LOCATIONS else metric.D
-    weighted = tuple(vector[i]*factors[i].sqrt_gamma for i in range(3))
-    weighted = update_tiled_vector_ghost_cells(weighted, static, static.guard_cells)
-    return tuple(weighted[i]/factors[i].sqrt_gamma for i in range(3))
+def refresh_fields(vector, locations, static):
+    """Refresh polar D or B halos, including the frozen horizon layers."""
+    return refresh_vector(vector, static, locations, 'B' if locations == B_FIELD_LOCATIONS else 'D')
 
 
 def initialize_fields(p, static, dynamic, metric):
     B0 = tuple(shard_array(x, static) for x in monopole_field(p, metric, dynamic))
-    B0=refresh_fields(B0,B_FIELD_LOCATIONS,metric,static)
+    B0=refresh_fields(B0, B_FIELD_LOCATIONS, static)
     zero = jnp.zeros_like(B0[0])
     D0 = (zero,)*3
     def rhs(D, B):
-        E = compute_covariant_E(D, B, metric, static.polar_field_interpolation)
-        H = compute_covariant_H(D, B, metric, static.polar_field_interpolation)
+        E = compute_covariant_E(D, B, metric)
+        H = compute_covariant_H(D, B, metric)
         db = update_B_relativity(E, (zero,)*3, metric, static, dynamic, 1.)
         dd = update_D_relativity((zero,)*3, H, (zero,)*3, metric, static, dynamic, 1.)
-        return (refresh_fields(dd, D_FIELD_LOCATIONS, metric, static),
-                refresh_fields(db, B_FIELD_LOCATIONS, metric, static))
+        return (refresh_fields(dd, D_FIELD_LOCATIONS, static),
+                refresh_fields(db, B_FIELD_LOCATIONS, static))
     dD, dB = rhs(D0, B0)
     ddD, ddB = rhs(dD, dB)
     def at(initial, first, second, t):
@@ -86,7 +74,6 @@ def apply_sponge(fields, background, p, static, dynamic):
     Constraint diagnostics therefore exclude it and its adjacent stencil cells.
     """
     D, B = fields[:2]
-    metric = fields[6]
     def damp(vector, baseline, locations):
         result = []
         for i, loc in enumerate(locations):
@@ -95,13 +82,12 @@ def apply_sponge(fields, background, p, static, dynamic):
             ramp = jnp.clip((r-p.sponge_start)/(p.r_max-p.sponge_start), 0., 1.)**4
             factor = jnp.exp(-p.sponge_rate*dynamic.dt*ramp)
             result.append(baseline[i]+factor*(vector[i]-baseline[i]))
-        return refresh_fields(tuple(result), locations, metric, static)
+        return refresh_fields(tuple(result), locations, static)
     zero = tuple(jnp.zeros_like(x) for x in D)
     return (damp(D, zero, D_FIELD_LOCATIONS), damp(B, background, B_FIELD_LOCATIONS))+fields[2:]
 
 
 def make_step(p, species, static, dynamic, background, *, sponge=True,
-              inject_plasma=True,
               current_filter_passes=0):
     """Check deterministic kernels, leaving rejection sampling outside checkify.
 
@@ -129,7 +115,7 @@ def make_step(p, species, static, dynamic, background, *, sponge=True,
         return errors, (particles, fields, boundary), finite
     checked = jax.jit(evolve)
     def execute(particles, fields, key, index):
-        if inject_plasma and int(index) % injection_steps == 0:
+        if int(index) % injection_steps == 0:
             # Key by injection event, not timestep: matched physical injection
             # schedules must draw the same candidates during dt refinement.
             event = index // injection_steps
@@ -173,8 +159,12 @@ def check_sharding(particles, fields, static):
             raise RuntimeError('Particle or field state lost radial device sharding')
 
 
-def _constraint_regions(geometry, static, dynamic, p, *, magnetic=False):
-    """Owned diagnostic regions on the appropriate divergence-node grid."""
+def exterior_mask(geometry, static, dynamic, p, *, magnetic=False):
+    """Owned exterior cells checked for Gauss/div B; tile seams stay included.
+
+    Excludes the horizon interior, two cells at each physical boundary, and the
+    sponge plus two cells.
+    """
     g = static.guard_cells
     if magnetic:
         owned = jnp.zeros_like(geometry.charge_owned).at[
@@ -189,54 +179,32 @@ def _constraint_regions(geometry, static, dynamic, p, *, magnetic=False):
     interior &= r >= p.horizon
     interior &= (r < p.sponge_start-2*p.dr)
     interior &= (theta >= 2*p.dtheta) & (theta <= jnp.pi-2*p.dtheta)
-    return {'': interior, 'horizon_': owned & (r < p.horizon),
-            'outer_boundary_': owned & (r >= p.horizon)
-                & ((r >= p.sponge_start-2*p.dr) | (r > p.r_max-2*p.dr)),
-            'boundary_': owned & ~interior, 'full_': owned}
-
-
-def constraint_masks(geometry, static, dynamic, p, *, magnetic=False):
-    """Full, exterior acceptance, and excluded masks; tile seams stay owned."""
-    regions = _constraint_regions(geometry, static, dynamic, p, magnetic=magnetic)
-    return regions['full_'], regions[''], regions['boundary_']
+    return interior
 
 
 def constraint_residuals(particles, species, fields, static, dynamic, p, *, current_filter_passes=0):
-    """Integrated-flux residuals normalized independently within each region.
+    """Exterior integrated-flux Gauss and div B residuals, normalized by field scale.
 
-    gauss/magnetic_divergence are exterior acceptance values. Other regions
-    are measurements only. Counts distinguish empty masks from valid zeros.
+    Cell counts distinguish an empty exterior from a valid zero residual.
     """
-    from PyPIC3D.boundary_conditions.polar import divergence
     geometry = fields[6].geometry
     charge = compute_rho(particles, species, fields[3], static, dynamic)
     charge *= 4*jnp.pi*dynamic.dx*dynamic.dy*dynamic.dz
-    raw_charge = charge
     if current_filter_passes:
         from current_filter import smooth_integrated
         charge = smooth_integrated(charge, static, current_filter_passes)
     divD = divergence(fields[0], geometry, static)
     divB = divergence(fields[1], geometry, static, True)
-    d_masks = _constraint_regions(geometry, static, dynamic, p)
-    b_masks = _constraint_regions(geometry, static, dynamic, p, magnetic=True)
+    dm = exterior_mask(geometry, static, dynamic, p)
+    bm = exterior_mask(geometry, static, dynamic, p, magnetic=True)
     def maximum(value, mask):
         return jnp.max(jnp.where(mask, jnp.abs(value), 0.))
-    result = {}
-    for prefix in d_masks:
-        dm, bm = d_masks[prefix], b_masks[prefix]
-        dscale = jnp.maximum(1., jnp.maximum(maximum(divD,dm), maximum(charge,dm)))
-        bscale = jnp.maximum(1., jnp.max(jnp.array([
-            maximum(b*a,bm) for b,a in zip(fields[1],geometry.B_area)])))
-        result[prefix+'gauss'] = jnp.where(jnp.any(dm),maximum(divD-charge,dm)/dscale,jnp.nan)
-        result[prefix+'magnetic_divergence'] = jnp.where(jnp.any(bm),maximum(divB,bm)/bscale,jnp.nan)
-        result[prefix+'gauss_cells'] = jnp.sum(dm)
-        result[prefix+'magnetic_divergence_cells'] = jnp.sum(bm)
-        if current_filter_passes:
-            raw_scale = jnp.maximum(1., jnp.maximum(maximum(divD, dm), maximum(raw_charge, dm)))
-            result[prefix+'raw_charge_gauss'] = jnp.where(
-                jnp.any(dm), maximum(divD-raw_charge, dm)/raw_scale, jnp.nan)
-            result[prefix+'raw_charge_gauss_cells'] = jnp.sum(dm)
-    return result
+    dscale = jnp.maximum(1., jnp.maximum(maximum(divD, dm), maximum(charge, dm)))
+    bscale = jnp.maximum(1., jnp.max(jnp.array([
+        maximum(b*a, bm) for b, a in zip(fields[1], geometry.B_area)])))
+    return dict(gauss=jnp.where(jnp.any(dm), maximum(divD-charge, dm)/dscale, jnp.nan),
+                magnetic_divergence=jnp.where(jnp.any(bm), maximum(divB, bm)/bscale, jnp.nan),
+                gauss_cells=jnp.sum(dm), magnetic_divergence_cells=jnp.sum(bm))
 
 
 def validate_constraint_settings(gauss_tolerance, magnetic_divergence_tolerance,
@@ -267,16 +235,6 @@ def check_constraints(residuals, allow_divergence_errors=False, *,
         raise RuntimeError('Exterior divergence acceptance failed: '+', '.join(exceeded))
 
 
-def constraint_policy(p, gauss_tolerance, magnetic_divergence_tolerance,
-                      constraint_check_interval):
-    return dict(constraint_policy_version=2, constraint_region=CONSTRAINT_REGION,
-                constraint_horizon_radius=p.horizon,
-                constraint_outer_buffer_start=p.sponge_start-2*p.dr,
-                gauss_tolerance=gauss_tolerance,
-                magnetic_divergence_tolerance=magnetic_divergence_tolerance,
-                constraint_check_interval=constraint_check_interval)
-
-
 def assemble(array, g=3, theta_base=True):
     """Host-only output boundary; production stepping never assembles the mesh."""
     host = np.asarray(jax.device_get(array))
@@ -288,28 +246,20 @@ def diagnostics(particles, species, fields, p, static, dynamic, *, current_filte
     # Reconstruct B at the integer D/position time using the production field stage.
     Dhalf = tuple((D[i]+previous[0][i])/2 for i in range(3))
     Bminus = tuple((B[i]+previous[1][i])/2 for i in range(3))
-    B = update_B_relativity(compute_covariant_E(Dhalf, B, metric, static.polar_field_interpolation), Bminus,
+    B = update_B_relativity(compute_covariant_E(Dhalf, B, metric), Bminus,
                             metric, static, dynamic, dynamic.dt)
-    B = refresh_fields(B, B_FIELD_LOCATIONS, metric, static)
-    E = compute_covariant_E(D, B, metric, static.polar_field_interpolation)
-    H = compute_covariant_H(D, B, metric, static.polar_field_interpolation)
+    B = refresh_fields(B, B_FIELD_LOCATIONS, static)
+    E = compute_covariant_E(D, B, metric)
+    H = compute_covariant_H(D, B, metric)
     E = tuple(_location_interpolate(E[i], D_FIELD_LOCATIONS[i], ("C",)*3) for i in range(3))
     H = tuple(_location_interpolate(H[i], B_FIELD_LOCATIONS[i], ("C",)*3) for i in range(3))
-    bc = collocate_magnetic_field(B, metric)
+    bc = collocate_magnetic_field(B)
     dc = jnp.stack([_location_interpolate(D[i], D_FIELD_LOCATIONS[i], ("C",)*3)
                     for i in range(3)], axis=-1)
     d2 = jnp.einsum('...i,...ij,...j->...', dc, metric.center.gamma, dc)
     db = jnp.einsum('...i,...ij,...j->...', dc, metric.center.gamma, bc)
     mag = measure_magnetization(particles, species, B, metric, static, dynamic)
     b2_safe = jnp.maximum(mag.magnetic_squared, jnp.finfo(d2.dtype).tiny)
-    rho = compute_rho(particles, species, fields[3], static, dynamic)
-    divD = jnp.zeros_like(rho)
-    divB = jnp.zeros_like(rho)
-    for i, spacing in enumerate((dynamic.dx, dynamic.dy, dynamic.dz)):
-        wd = metric.D[i].sqrt_gamma*D[i]
-        wb = metric.B[i].sqrt_gamma*B[i]
-        divD += (wd-jnp.roll(wd, 1, axis=i+3))/spacing
-        divB += (jnp.roll(wb, -1, axis=i+3)-wb)/spacing
     determinant = metric.center.sqrt_gamma
     denominator = determinant*bc[..., 0]
     omega = jnp.where(jnp.abs(denominator)>1e-12, -E[1]/denominator, jnp.nan)
@@ -319,34 +269,23 @@ def diagnostics(particles, species, fields, p, static, dynamic, *, current_filte
     sector = (theta>=0)&(theta<=np.pi)
     flux = assemble((E[1]*H[2]-E[2]*H[1])/(4*jnp.pi))
     luminosity = 2*np.pi*np.trapezoid(flux[:,sector],theta[sector],axis=1)
-    if metric.geometry is not None:
-        from PyPIC3D.boundary_conditions.polar import divergence
-        divD=divergence(D,metric.geometry,static)
-        divB=divergence(B,metric.geometry,static,True)
-        rho=rho*dynamic.dx*dynamic.dy*dynamic.dz
+    divD = divergence(D, metric.geometry, static)
+    divB = divergence(B, metric.geometry, static, True)
+    rho = compute_rho(particles, species, fields[3], static, dynamic)*dynamic.dx*dynamic.dy*dynamic.dz
     if current_filter_passes:
         from current_filter import smooth_integrated
         rho = smooth_integrated(rho, static, current_filter_passes)
     constraints = assemble(divD-4*jnp.pi*rho)
-    residuals = {k:np.asarray(v) for k,v in constraint_residuals(
-        particles, species, fields, static, dynamic, p,
-        current_filter_passes=current_filter_passes).items()}
-    regional = {}
-    for prefix in ('', 'horizon_', 'outer_boundary_', 'boundary_', 'full_'):
-        for name, label in (('gauss', 'gauss'), ('magnetic_divergence', 'divB')):
-            key = prefix+name
-            regional[prefix+label+'_relative'] = residuals[key]
-            regional[prefix+label+'_cells'] = residuals[key+'_cells']
-            regional[prefix+label+'_valid'] = (np.isfinite(residuals[key])
-                                              & (residuals[key+'_cells'] > 0))
+    residuals = constraint_residuals(particles, species, fields, static, dynamic, p,
+                                     current_filter_passes=current_filter_passes)
     return dict(r=r, theta=theta, Hphi=assemble(H[2]), omega=assemble(omega),
                 Br=assemble(bc[..., 0]), Btheta=assemble(bc[..., 1]),
                 radial_flux=assemble(determinant*bc[..., 0]),
                 sigma=assemble(mag.sigma), density=assemble(jnp.sum(mag.number_density, axis=0)),
                 D2_over_B2=assemble(d2/b2_safe), DdotB_over_B2=assemble(db/b2_safe),
                 luminosity=luminosity, gauss=constraints, divB=assemble(divB,theta_base=False),
-                **regional, constraint_policy_version=np.asarray(2),
-                constraint_horizon_radius=np.asarray(p.horizon),
+                gauss_relative=np.asarray(residuals['gauss']),
+                divB_relative=np.asarray(residuals['magnetic_divergence']),
                 active_per_tile=np.asarray(jnp.sum(particles.active, axis=(-1, -2))).reshape(-1))
 
 
@@ -359,36 +298,6 @@ def plot_diagnostics(snapshot, p, output):
     figure, _ = make_figure(snapshot, Normalization.from_snapshot(snapshot), radii=radii)
     figure.savefig(output, dpi=150)
     plt.close(figure)
-
-
-def comparison_errors(snapshot, p):
-    """Measured BZ profiles, power, and screening; no run certification policy."""
-    from plot_entity_bz import radial_profile
-    theta = snapshot['theta']
-    angular = (theta >= np.pi/12) & (theta <= 11*np.pi/12)
-    radial = (snapshot['r'] >= 2.2) & (snapshot['r'] <= 7.5)
-    full = (snapshot['r'] >= p.horizon) & (snapshot['r'] < p.sponge_start-2*p.dr)
-    target = -p.spin*np.sin(theta[angular])**2/8
-    result = dict(time=float(snapshot['time']), polar_exclusion_degrees=15,
-                  profiles=[], unavailable_profile_radii=[])
-    for radius in (2., 3., 4., 5.):
-        if not snapshot['r'][0] <= radius <= snapshot['r'][-1]:
-            result['unavailable_profile_radii'].append(radius)
-            continue
-        h = radial_profile(snapshot['r'], snapshot['Hphi']/p.B0, radius)[angular]
-        omega = radial_profile(snapshot['r'], snapshot['omega'], radius)[angular]
-        result['profiles'].append(dict(radius=radius,
-            H_relative_l2=float(np.linalg.norm(h-target)/np.linalg.norm(target)) if p.spin else None,
-            omega_relative_rms=float(np.sqrt(np.mean((omega/p.omega_h/.5-1)**2))) if p.omega_h else None))
-    power = snapshot['luminosity'][radial]/(p.B0**2*p.omega_h**2/6) if p.omega_h else np.array([])
-    result.update(luminosity_mean=float(power.mean()) if power.size else None,
-                  luminosity_relative_rms=float(np.sqrt(np.mean((power-1)**2))) if power.size else None)
-    for label, mask in [('bulk', np.ix_(radial, angular)), ('full_exterior', np.ix_(full, np.ones(theta.shape, bool)))]:
-        if all(key in snapshot for key in ('D2_over_B2', 'DdotB_over_B2')):
-            d2, parallel = snapshot['D2_over_B2'][mask], snapshot['DdotB_over_B2'][mask]
-            result[label] = dict(D2_over_B2_maximum=float(d2.max()) if d2.size else None,
-                                 DdotB_over_B2_rms=float(np.sqrt(np.mean(parallel**2))) if parallel.size else None)
-    return result
 
 
 def output_metadata(p, static, dynamic):
@@ -404,12 +313,8 @@ def output_metadata(p, static, dynamic):
     data.update(dt=np.asarray(dynamic.dt), B0=np.asarray(p.B0),
                 omega_h=np.asarray(p.omega_h), horizon=np.asarray(p.horizon),
                 n0_total=np.asarray(p.n0),
-                field_interpolation=np.asarray(static.polar_field_interpolation),
                 particle_batch_size=np.asarray(static.particle_batch_size),
-                horizon_field_cells=np.asarray(static.horizon_field_cells),
-                **{name: np.asarray(value) for name, value in constraint_policy(
-                    p, p.gauss_tolerance, p.magnetic_divergence_tolerance,
-                    p.constraint_check_interval).items()})
+                horizon_field_cells=np.asarray(static.horizon_field_cells))
     return data
 
 
@@ -445,7 +350,7 @@ def evolve(particles, species, fields, key, p, static, dynamic, background, outp
     target = math.ceil(p.end_time/dt)
     metadata = output_metadata(p, static, dynamic)
     execute = make_step(p, species, static, dynamic, background,
-                        inject_plasma=not p.vacuum, current_filter_passes=p.current_filter_passes)
+                        current_filter_passes=p.current_filter_passes)
     measure = jax.jit(lambda pts, fs: constraint_residuals(
         pts, species, fs, static, dynamic, p, current_filter_passes=p.current_filter_passes))
     budget = np.zeros(11)
@@ -513,9 +418,7 @@ def run(parameters=None):
         raise RuntimeError(f'Requested {p.devices} devices, but only {len(jax.devices())} are visible')
     if p.current_filter_passes and p.r_min+(p.current_filter_passes+2)*p.dr >= p.horizon:
         raise ValueError('Source filter and absorption stencil must fit inside the horizon; increase nr')
-    static, dynamic, metric, _ = build_runtime(
-        p, particle_batch_size=p.particle_batch_size, horizon_field_cells=p.horizon_field_cells,
-        field_interpolation=p.field_interpolation)
+    static, dynamic, metric, _ = build_runtime(p)
     particles, species = empty_particles(p, static)
     fields, background = initialize_fields(p, static, dynamic, metric)
     return evolve(particles, species, fields, jax.random.PRNGKey(p.seed), p,

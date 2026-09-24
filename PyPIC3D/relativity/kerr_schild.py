@@ -2,6 +2,7 @@ from functools import partial
 
 import jax.numpy as jnp
 
+from PyPIC3D.boundary_conditions.grid_and_stencil import BC_POLAR
 from PyPIC3D.relativity.core import build_yee_metric
 
 
@@ -78,7 +79,7 @@ def _kerr_schild_spherical_metric_at_position(position, mass=1.0, spin=0.0):
 
 
 def _build_kerr_schild_metric(static_parameters, dynamic_parameters, metric_at_position, mass=1.0, spin=0.0):
-    polar_mode = static_parameters.boundary_conditions[1] == 4
+    polar_mode = static_parameters.boundary_conditions[1] == BC_POLAR
     if polar_mode and (static_parameters.metric != 'kerr_schild_spherical'
                        or metric_at_position is not _kerr_schild_spherical_metric_at_position
                        or mass != static_parameters.metric_mass
