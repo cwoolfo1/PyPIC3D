@@ -113,7 +113,8 @@ def inject_pairs(particles, species, magnetization, D, B, metric, static, dynami
         # Injection samples clipped charge-control volumes. Radial boundary
         # truncation is integrated with the same 8-point geometry quadrature.
         rlo=jnp.maximum(rr-p.dr/2,p.r_min); rhi=jnp.minimum(rr+p.dr/2,p.sponge_start)
-        tlo=jnp.maximum(tt-p.dtheta/2,0.); thi=jnp.minimum(tt+p.dtheta/2,jnp.pi)
+        tlo=jnp.maximum(tt-p.dtheta/2,p.polar_cap_angle)
+        thi=jnp.minimum(tt+p.dtheta/2,jnp.pi-p.polar_cap_angle)
         from numpy.polynomial.legendre import leggauss
         nodes,weights=leggauss(8)
         integral=jnp.zeros_like(rr)

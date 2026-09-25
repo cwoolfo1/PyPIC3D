@@ -8,10 +8,11 @@ from PyPIC3D.relativity.flat import initialize_flat_spherical_metric
 jax.config.update('jax_enable_x64',True)
 
 @lru_cache(None)
-def polar_runtime(devices=1,order=1,flat=False,nt=16):
+def polar_runtime(devices=1,order=1,flat=False,nt=16,cap=0.):
+    """Keep true axes by default; request caps explicitly for field evolution."""
     p=SimulationParameters(nr=16,ntheta=nt,devices=devices,r_max=4.,sponge_start=3.,
                            skin_depth=.0025,pairs_per_cell=4,maximum_timestep=None,end_time=5.,output_interval=1.,
-                           horizon_field_cells=0)
+                           horizon_field_cells=0,polar_cap_angle=cap)
     s,d,m,_=build_runtime(p);s=s._replace(shape_factor=order)
     if flat:
         s=s._replace(metric='flat_spherical',metric_mass=0.,metric_spin=0.)

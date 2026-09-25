@@ -91,7 +91,46 @@ runner takes no arguments.
 The run writes snapshots, ``diagnostics.npz`` and ``final_state.npz`` to
 ``data/`` and stops if the exterior Gauss or divergence-of-B residuals exceed
 their tolerances. ``plot_entity_bz.py`` redraws the Figure 6 panels from the
-saved snapshots.
+saved snapshots. Figures and animations honor the saved cap angle and leave
+excised regions blank; legacy full-sphere snapshots remain readable.
+
+The demo uses standard metric-weighted E/H interpolation and defaults to
+``polar_cap_angle=math.radians(10)``: a domain of 10 to 170 degrees with
+64 angular cells. The cut surfaces are conducting field walls with specular
+particle reflection; reflected particles retain their azimuth. The angle must
+exceed ``guard_cells*dtheta`` so metric halos also remain inside the regular
+chart. Coarser angular grids may require larger caps. Zero-cap BZ field
+initialization is rejected because the standard formula divides by the
+pointwise metric volume density, which vanishes at the axes.
+
+The interpolation is independent of metric names and polar curl geometry,
+and requires nonsingular metric samples throughout its stencils. It does
+not supply general limits at coordinate singularities. Particle metric
+reconstruction and finite-volume field updates retain their existing methods.
+Excision changes the physical boundary problem; cap-size and long-time
+convergence remain necessary before interpreting full-sphere jet power.
+
+The default configuration completed 200 M with standard interpolation and
+accepted exterior constraints. ``STANDARD_200M_REPORT.md`` beside the runner
+records the configuration, provenance, results, and limitations. Historical
+comparison scripts and raw artifacts are retained only in the ignored local
+``research_archive/bz_monopole/`` directory; they are not part of a fresh checkout
+or maintained demo entry points. There is no interpolation selector or
+constraint-waiver option.
+
+For a short CPU diagnostic, call the runner from the repository root with
+an unused output directory:
+
+.. code-block:: python
+
+   from demos.static_metric_relativity.bz_monopole.run_bz_monopole import run
+   from demos.static_metric_relativity.bz_monopole.simulation_parameters import SimulationParameters
+
+   run(SimulationParameters(backend="cpu", end_time=1., output_interval=.1,
+                            output_directory="/tmp/bz_standard_t1"))
+
+The production endpoint remains ``end_time=200``. Validation through t=1 M
+establishes startup behavior, not long-time stability.
 
 Notes
 -----

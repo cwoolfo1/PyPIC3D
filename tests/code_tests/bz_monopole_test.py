@@ -22,6 +22,7 @@ class TestParameters(unittest.TestCase):
         self.assertEqual((p.nr,p.ntheta,p.devices,p.guard_cells),(64,64,1,3))
         self.assertEqual(p.courant,.2)
         self.assertEqual(p.end_time,200.)
+        self.assertAlmostEqual(p.polar_cap_angle,np.deg2rad(10))
         self.assertEqual((p.skin_depth,p.pairs_per_cell,p.maximum_timestep),(.02,16,.004))
     def test_horizon_normalization(self):
         p,*_=polar_setup()
@@ -123,7 +124,7 @@ class TestInjection(unittest.TestCase):
 
 class TestRunner(unittest.TestCase):
     def test_initialize_sponge(self):
-        p,s,d,m=polar_setup();particles,sp=empty_particles(p,s);fields,b=initialize_fields(p,s,d,m)
+        p,s,d,m=polar_setup(cap=np.deg2rad(30));particles,sp=empty_particles(p,s);fields,b=initialize_fields(p,s,d,m)
         self.assertTrue(all(np.isfinite(np.asarray(a)).all() for a in jax.tree.leaves(fields)))
         stationary=(fields[0],b)+fields[2:]
         damped=apply_sponge(stationary,b,p,s,d)
@@ -160,7 +161,7 @@ class TestBirthMetric(unittest.TestCase):
         from dataclasses import replace
         from demos.static_metric_relativity.bz_monopole.simulation_parameters import SimulationParameters,build_runtime
         p=SimulationParameters(nr=16,ntheta=16,devices=1,r_max=4.,sponge_start=3.,
-                               maximum_timestep=None)
+                               maximum_timestep=None,polar_cap_angle=np.deg2rad(30))
         _,d,_,cfl_dt=build_runtime(p)
         self.assertEqual(float(d.dt),cfl_dt)
         _,changed,_,_=build_runtime(replace(p,skin_depth=p.skin_depth/10))

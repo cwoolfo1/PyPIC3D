@@ -25,9 +25,14 @@ from PyPIC3D.solvers.gr_static.static_metric import (
     compute_covariant_E, compute_covariant_H, update_B_relativity,
     update_D_relativity, _location_interpolate)
 from PyPIC3D.solvers.gr_static.time_loop import time_loop_static_metric
-from simulation_parameters import SimulationParameters, build_runtime, shard_array
-from magnetization import measure_magnetization, collocate_magnetic_field
-from plasma_injector import empty_particles, inject_pairs
+if __package__:
+    from .simulation_parameters import SimulationParameters, build_runtime, shard_array
+    from .magnetization import measure_magnetization, collocate_magnetic_field
+    from .plasma_injector import empty_particles, inject_pairs
+else:
+    from simulation_parameters import SimulationParameters, build_runtime, shard_array
+    from magnetization import measure_magnetization, collocate_magnetic_field
+    from plasma_injector import empty_particles, inject_pairs
 
 def monopole_field(p, metric, dynamic):
     """Discrete curl of A_phi on D_phi=(C,C,V), yielding B_r=(C,V,V)."""
@@ -44,6 +49,11 @@ def refresh_fields(vector, locations, static):
 
 
 def initialize_fields(p, static, dynamic, metric):
+    if p.polar_cap_angle <= 0 or static.polar_cap_angle <= 0:
+        raise ValueError(
+            'BZ field initialization requires excised polar caps: standard metric '
+            'interpolation is undefined at the zero-determinant axes. Set '
+            'polar_cap_angle > guard_cells*dtheta (default: 10 degrees at ntheta=64).')
     B0 = tuple(shard_array(x, static) for x in monopole_field(p, metric, dynamic))
     B0=refresh_fields(B0, B_FIELD_LOCATIONS, static)
     zero = jnp.zeros_like(B0[0])
@@ -103,7 +113,10 @@ def make_step(p, species, static, dynamic, background, *, sponge=True,
     def evolve(particles, fields):
         transform = None
         if current_filter_passes:
-            from current_filter import filter_current
+            if __package__:
+                from .current_filter import filter_current
+            else:
+                from current_filter import filter_current
             transform = lambda current: filter_current(current, fields[6].geometry,
                                                        static, current_filter_passes)
         errors, (particles, fields, boundary) = time_loop_static_metric(
@@ -178,7 +191,7 @@ def exterior_mask(geometry, static, dynamic, p, *, magnetic=False):
     interior = owned & (r >= p.r_min+2*p.dr) & (r <= p.r_max-2*p.dr)
     interior &= r >= p.horizon
     interior &= (r < p.sponge_start-2*p.dr)
-    interior &= (theta >= 2*p.dtheta) & (theta <= jnp.pi-2*p.dtheta)
+    interior &= (theta >= p.polar_cap_angle+2*p.dtheta) & (theta <= jnp.pi-p.polar_cap_angle-2*p.dtheta)
     return interior
 
 
@@ -191,7 +204,10 @@ def constraint_residuals(particles, species, fields, static, dynamic, p, *, curr
     charge = compute_rho(particles, species, fields[3], static, dynamic)
     charge *= 4*jnp.pi*dynamic.dx*dynamic.dy*dynamic.dz
     if current_filter_passes:
-        from current_filter import smooth_integrated
+        if __package__:
+            from .current_filter import smooth_integrated
+        else:
+            from current_filter import smooth_integrated
         charge = smooth_integrated(charge, static, current_filter_passes)
     divD = divergence(fields[0], geometry, static)
     divB = divergence(fields[1], geometry, static, True)
@@ -219,7 +235,7 @@ def validate_constraint_settings(gauss_tolerance, magnetic_divergence_tolerance,
         raise ValueError('constraint_check_interval must be a positive integer')
 
 
-def check_constraints(residuals, allow_divergence_errors=False, *,
+def check_constraints(residuals, *,
                       gauss_tolerance=1e-10, magnetic_divergence_tolerance=1e-10):
     """Only exterior residuals participate in constraint acceptance."""
     validate_constraint_settings(gauss_tolerance, magnetic_divergence_tolerance)
@@ -231,7 +247,7 @@ def check_constraints(residuals, allow_divergence_errors=False, *,
             raise FloatingPointError(f'Nonfinite exterior {name} or empty exterior diagnostic region')
         if value >= tolerance:
             exceeded.append(f'{name}={value:.17g} >= {tolerance:.17g}')
-    if exceeded and not allow_divergence_errors:
+    if exceeded:
         raise RuntimeError('Exterior divergence acceptance failed: '+', '.join(exceeded))
 
 
@@ -273,7 +289,10 @@ def diagnostics(particles, species, fields, p, static, dynamic, *, current_filte
     divB = divergence(B, metric.geometry, static, True)
     rho = compute_rho(particles, species, fields[3], static, dynamic)*dynamic.dx*dynamic.dy*dynamic.dz
     if current_filter_passes:
-        from current_filter import smooth_integrated
+        if __package__:
+            from .current_filter import smooth_integrated
+        else:
+            from current_filter import smooth_integrated
         rho = smooth_integrated(rho, static, current_filter_passes)
     constraints = assemble(divD-4*jnp.pi*rho)
     residuals = constraint_residuals(particles, species, fields, static, dynamic, p,
@@ -290,7 +309,10 @@ def diagnostics(particles, species, fields, p, static, dynamic, *, current_filte
 
 
 def plot_diagnostics(snapshot, p, output):
-    from plot_entity_bz import Normalization, make_figure
+    if __package__:
+        from .plot_entity_bz import Normalization, make_figure
+    else:
+        from plot_entity_bz import Normalization, make_figure
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
@@ -343,6 +365,8 @@ def prepare_output_directory(output):
 
 def evolve(particles, species, fields, key, p, static, dynamic, background, output):
     """Evolve a fresh initial state to p.end_time, saving checked snapshots."""
+    validate_constraint_settings(p.gauss_tolerance, p.magnetic_divergence_tolerance,
+                                 p.constraint_check_interval)
     output = prepare_output_directory(output)
     dt = float(dynamic.dt)
     if not math.isfinite(dt) or dt <= 0:
@@ -358,7 +382,7 @@ def evolve(particles, species, fields, key, p, static, dynamic, background, outp
 
     def check_state(pts, fs, step):
         try:
-            check_constraints(measure(pts, fs), p.allow_divergence_errors,
+            check_constraints(measure(pts, fs),
                               gauss_tolerance=p.gauss_tolerance,
                               magnetic_divergence_tolerance=p.magnetic_divergence_tolerance)
         except (RuntimeError, FloatingPointError) as error:
@@ -409,6 +433,8 @@ def evolve(particles, species, fields, key, p, static, dynamic, background, outp
 
 def run(parameters=None):
     p = parameters if parameters is not None else SimulationParameters()
+    validate_constraint_settings(p.gauss_tolerance, p.magnetic_divergence_tolerance,
+                                 p.constraint_check_interval)
     output = prepare_output_directory(p.output_directory)
     jax.config.update('jax_enable_x64', True)
     jax.config.update('jax_platforms', 'cpu' if p.backend == 'cpu' else 'cuda')

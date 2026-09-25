@@ -46,7 +46,7 @@ class SimulationParameters:
     gauss_tolerance: float = 1e-10
     magnetic_divergence_tolerance: float = 1e-10
     constraint_check_interval: int = 100
-    allow_divergence_errors: bool = False
+    polar_cap_angle: float = math.radians(10)  # reflecting conducting cap walls
 
 
     @property
@@ -55,7 +55,7 @@ class SimulationParameters:
 
     @property
     def dtheta(self):
-        return math.pi / self.ntheta
+        return (math.pi-2*self.polar_cap_angle) / self.ntheta
 
     @property
     def n0(self):
@@ -102,8 +102,8 @@ def build_runtime(parameters=SimulationParameters()):
     p = parameters
     jax.config.update("jax_enable_x64", True)
     config = dict(Nx=p.nr, Ny=p.ntheta, Nz=1, x_wind=p.r_max-p.r_min,
-                  y_wind=math.pi, z_wind=2*math.pi, x_min=p.r_min,
-                  y_min=0., z_min=0.0, dx=p.dr, dy=p.dtheta,
+                  y_wind=math.pi-2*p.polar_cap_angle, z_wind=2*math.pi, x_min=p.r_min,
+                  y_min=p.polar_cap_angle, z_min=0.0, dx=p.dr, dy=p.dtheta,
                   dz=2*math.pi, dt=1.0)
     static = build_static_parameters(dict(
         **config, name="bz_monopole", solver="static_metric",
@@ -114,9 +114,9 @@ def build_runtime(parameters=SimulationParameters()):
         # Two-GPU timing favors larger active batches;
         # 256-particle batches spend more time in loop/kernel overhead.
         particle_boundary_conditions=(2, 4, 0), particle_batch_size=p.particle_batch_size,
-        horizon_field_cells=p.horizon_field_cells))
+        horizon_field_cells=p.horizon_field_cells, polar_cap_angle=p.polar_cap_angle))
     center, vertex = build_yee_grid(SimpleNamespace(**config))
-    theta=jnp.arange(-1,p.ntheta+1,dtype=jnp.float64)*p.dtheta
+    theta=p.polar_cap_angle+jnp.arange(-1,p.ntheta+1,dtype=jnp.float64)*p.dtheta
     center=(center[0],theta,center[2])
     vertex=(vertex[0],theta+p.dtheta/2,vertex[2])
     tc, tv = build_tiled_yee_grids(static, SimpleNamespace(**config, grids=SimpleNamespace(center=center, vertex=vertex)))

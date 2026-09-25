@@ -394,11 +394,13 @@ def _apply_local_particle_boundaries(local_x, local_u, local_active, static_para
     )
 
     if particle_bc[1] == BC_POLAR:
-        theta=jnp.mod(local_x[...,1],2*jnp.pi)
-        reflected=theta>jnp.pi
-        x2=jnp.where(reflected,2*jnp.pi-theta,theta)
+        cap=static_parameters.polar_cap_angle
+        width=jnp.pi-2*cap
+        theta=jnp.mod(local_x[...,1]-cap,2*width)
+        reflected=theta>width
+        x2=cap+jnp.where(reflected,2*width-theta,theta)
         u2=jnp.where(reflected,-local_u[...,1],local_u[...,1])
-        x3=jnp.mod(local_x[...,2]+jnp.where(reflected,jnp.pi,0.),2*jnp.pi)
+        x3=jnp.mod(local_x[...,2]+jnp.where(reflected & (cap == 0),jnp.pi,0.),2*jnp.pi)
     bounded_x = bounded_x.at[..., 0].set(x1)
     bounded_x = bounded_x.at[..., 1].set(x2)
     bounded_x = bounded_x.at[..., 2].set(x3)

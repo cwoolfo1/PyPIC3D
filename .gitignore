@@ -29,11 +29,11 @@ demos/ot_vortex/*/
 *.mp4
 *.pmd
 *.png
-*.npz
-*.json
-*.jsonl
-*.log
-*.gif
 
 # nohup output from long demo runs
 nohup.out
+
+# Local research and generated BZ output
+/research_archive/
+/demos/static_metric_relativity/bz_monopole/standard_particles/
+/demos/static_metric_relativity/bz_monopole/cartesian_particles/

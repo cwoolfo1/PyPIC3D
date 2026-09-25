@@ -1,8 +1,11 @@
 import unittest
 import threading
 import time
+from types import SimpleNamespace
 from unittest.mock import patch
 
+import jax
+import numpy as np
 import jax.numpy as jnp
 
 from PyPIC3D.diagnostics import async_writer
@@ -49,8 +52,8 @@ class FakeRecord:
 
     def store_chunk(self, array, offset, extent):
         self.shape = tuple(extent)
-        self.data = jnp.asarray(array)
-        self.chunks.append((tuple(offset), tuple(extent), jnp.asarray(array)))
+        self.data = np.array(array, copy=True)
+        self.chunks.append((tuple(offset), tuple(extent), np.array(array, copy=True)))
 
 
 class FakeMesh:
@@ -176,6 +179,57 @@ def _species(name, charge, mass, weight, x1):
 
 
 class OpenPMDDiagnosticsTests(unittest.TestCase):
+
+    def test_output_arrays_are_host_owned_writable_and_contiguous(self):
+        original = np.arange(24, dtype=np.float64).reshape(4, 6)[:, ::2]
+        original.setflags(write=False)
+        for data in (original, jnp.asarray(original), np.empty((0, 3))):
+            for dtype in (np.float32, np.float64):
+                with self.subTest(input_type=type(data), dtype=dtype):
+                    actual = _ensure_openpmd_array(data, dtype=dtype)
+                    self.assertIsInstance(actual, np.ndarray)
+                    self.assertEqual(actual.dtype, np.dtype(dtype))
+                    self.assertTrue(actual.flags.c_contiguous)
+                    self.assertTrue(actual.flags.writeable)
+                    np.testing.assert_array_equal(actual, np.asarray(data, dtype=dtype))
+
+    def test_host_float64_conversion_does_not_depend_on_jax_precision(self):
+        original = np.array([1. + 2.**-40], dtype=np.float64)
+        with jax.enable_x64(False), \
+             patch.object(jnp, 'asarray', side_effect=AssertionError('host data sent to JAX')):
+            actual = _ensure_openpmd_array(original)
+        np.testing.assert_array_equal(actual, original)
+        self.assertEqual(actual.dtype, np.dtype('float64'))
+
+    def test_host_particle_snapshot_preserves_chunks_and_empty_species_without_jax_arrays(self):
+        static, dynamic = particle_parameters_from_values(
+            _parameter_values(), dynamic_values={'C': 10.})
+        x = np.zeros((2, 1, 1, 2, 2, 3), dtype=np.float64)
+        x[0, 0, 0, 0, 0, 0] = -1.5
+        x[1, 0, 0, 0, 1, 0] = .5 + 2.**-40
+        active = np.zeros(x.shape[:-1], dtype=bool)
+        active[0, 0, 0, 0, 0] = active[1, 0, 0, 0, 1] = True
+        index = (slice(None),)*6
+        snapshot = SimpleNamespace(
+            species_names=('live particles', 'empty species'),
+            species_charge=np.array([-1., 1.]), species_mass=np.array([2., 3.]),
+            species_weight=np.array([4., 5.]), x_shards=[(index, x)],
+            u_shards=[(index, np.zeros_like(x))], active_shards=[(index[:-1], active)])
+        iteration = FakeIteration()
+        with jax.enable_x64(False), \
+             patch.object(jnp, 'asarray', side_effect=AssertionError('host snapshot sent to JAX')), \
+             patch.object(jax, 'device_put', side_effect=AssertionError('unexpected device transfer')):
+            openPMD.write_tiled_particle_snapshot_to_iteration(iteration, snapshot, static, dynamic)
+        record = iteration.particles['live_particles']['position']['x']
+        self.assertEqual([(offset, extent) for offset, extent, _ in record.chunks],
+                         [((0,), (1,)), ((1,), (1,))])
+        actual = np.concatenate([data for _, _, data in record.chunks])
+        np.testing.assert_array_equal(actual, [-1.5, .5 + 2.**-40])
+        self.assertEqual(actual.dtype, np.dtype('float64'))
+        empty = iteration.particles['empty_species']['position']['x']
+        self.assertEqual(empty.dataset_shape, (0,))
+        self.assertEqual(empty.chunks, [])
+        self.assertEqual(record.unit_SI, 1.)
 
     def test_openpmd_field_array_preserves_thin_y_axis(self):
         field_component = jnp.ones((4, 1, 6))

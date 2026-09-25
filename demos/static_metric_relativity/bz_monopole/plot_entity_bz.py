@@ -76,6 +76,15 @@ class Normalization:
                    float(p['r_max']), float(p['sponge_start']))
 
 
+
+def theta_bounds(data):
+    """Read excision metadata, defaulting legacy full-sphere snapshots to zero."""
+    cap = np.asarray(data.get('polar_cap_angle', 0.), dtype=float)
+    if cap.ndim != 0 or not np.isfinite(cap) or not 0 <= cap < np.pi/2:
+        raise ValueError('polar_cap_angle must be a finite scalar in [0, pi/2).')
+    return float(cap), float(np.pi-cap)
+
+
 def load_snapshot(path):
     """Load only the plot diagnostics; never deserialize pickle objects."""
     with np.load(path, allow_pickle=False) as saved:
@@ -84,6 +93,7 @@ def load_snapshot(path):
             raise ValueError(f'{path}: missing {", ".join(sorted(missing))}. '
                              'Use a self-contained snapshot_*.npz or diagnostics.npz file.')
         data = {key: np.asarray(saved[key], dtype=float) for key in REQUIRED + SCALARS}
+        data['polar_cap_angle'] = np.asarray(saved['polar_cap_angle'] if 'polar_cap_angle' in saved else 0., dtype=float)
     for key in SCALARS:
         if data[key].ndim != 0 or not np.isfinite(data[key]):
             raise ValueError(f'{path}: {key} must be a finite scalar.')
@@ -100,11 +110,12 @@ def load_snapshot(path):
     if data['time'].ndim != 0 or not np.isfinite(data['time']):
         raise ValueError(f'{path}: time must be a finite scalar.')
     theta = data['theta']
-    sector = (theta >= -1e-12) & (theta <= np.pi+1e-12)
+    lower, upper = theta_bounds(data)
+    sector = (theta >= lower-1e-12) & (theta <= upper+1e-12)
     theta = theta[sector]
-    if len(theta) < 2 or not np.allclose(theta[[0, -1]], [0, np.pi], rtol=0, atol=1e-12):
-        raise ValueError(f'{path}: the theta grid must cover the full physical meridian [0, pi].')
-    data['theta'] = np.clip(theta, 0, np.pi)
+    if len(theta) < 2 or not np.allclose(theta[[0, -1]], [lower, upper], rtol=0, atol=1e-12):
+        raise ValueError(f'{path}: the theta grid must cover the declared domain [cap, pi-cap].')
+    data['theta'] = np.clip(theta, lower, upper)
     for key in ('Hphi', 'omega', 'radial_flux'):
         data[key] = data[key][:, sector]
     return data
@@ -154,7 +165,7 @@ def radial_profile(r, values, radius):
 
 
 def poloidal_flux(theta, radial_flux):
-    """Psi(r,theta)-Psi(r,0) from measured sqrt(gamma)*B^r (no 2*pi factor)."""
+    """Psi(r,theta)-Psi(r,theta_min) from measured sqrt(gamma)*B^r (no 2*pi factor)."""
     increments = .5*(radial_flux[:, 1:]+radial_flux[:, :-1])*np.diff(theta)
     return np.concatenate((np.zeros((len(radial_flux), 1)), np.cumsum(increments, axis=1)), axis=1)
 
@@ -194,7 +205,7 @@ def make_figure(data, norm, *, radii=(2., 3., 4., 5.), paper_limits=False):
         cmap = plt.get_cmap('inferno').copy()
         cmap.set_bad('#d9d9d9')
         re, te = np.meshgrid(cell_edges(r, norm.r_min, norm.r_max),
-                              cell_edges(theta, 0., np.pi), indexing='ij')
+                              cell_edges(theta, *theta_bounds(data)), indexing='ij')
         mesh = axes[0].pcolormesh(re*np.sin(te), re*np.cos(te),
                                  np.ma.array(signal, mask=~positive), shading='flat',
                                  cmap=cmap, norm=LogNorm(1e-4, upper), rasterized=True)

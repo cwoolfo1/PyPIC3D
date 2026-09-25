@@ -83,41 +83,22 @@ def time_loop_static_metric(
         particles, centered_particles = hybrid_boris_geodesic_push(*push_args)
     # advance full-step particles and keep the intermediate particles (x_n_plushalf, v_n_plushalf) for the centered current deposition
 
-    centered_particles, centered_overflow = refresh_tiled_particle_tiles(
-        centered_particles,
-        static_parameters,
-        dynamic_parameters,
-    )
-    # apply particle boundaries and move midpoint particles into the tiles that own the current-deposition positions
-
-    def esirkepov_current(_):
-        return GR_Esirkepov_current(
-            particles_n,
-            particles,
-            species_config,
-            J_n_minushalf,
-            metric,
-            static_parameters,
-            dynamic_parameters,
+    if static_parameters.current_deposition == "GR_esirkepov":
+        # Endpoint deposition must precede wrapping and full-step migration.
+        # Midpoint particles are only needed by direct deposition.
+        centered_overflow = False
+        J_n_plushalf = GR_Esirkepov_current(
+            particles_n, particles, species_config, J_n_minushalf,
+            metric, static_parameters, dynamic_parameters,
         )
-    # charge-conserving deposition from the time level n and n+1 endpoints
-
-    def direct_current(_):
-        return GR_direct_deposition(
-            centered_particles,
-            species_config,
-            J_n_minushalf,
-            metric,
-            static_parameters,
-            dynamic_parameters,
+    else:
+        centered_particles, centered_overflow = refresh_tiled_particle_tiles(
+            centered_particles, static_parameters, dynamic_parameters,
         )
-    # direct deposition from the centered particles
-
-    # The scheme is static configuration. Trace only the selected source kernel;
-    # their checkify error trees need not have identical batched shapes.
-    J_n_plushalf = (esirkepov_current(None)
-                   if static_parameters.current_deposition == "GR_esirkepov"
-                   else direct_current(None))
+        J_n_plushalf = GR_direct_deposition(
+            centered_particles, species_config, J_n_minushalf,
+            metric, static_parameters, dynamic_parameters,
+        )
     if current_transform is not None:
         J_n_plushalf = current_transform(J_n_plushalf)
 

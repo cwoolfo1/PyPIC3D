@@ -1,8 +1,11 @@
 """Axisymmetric polar boundaries in a single physical spherical chart.
 
-C nodes include both 0 and pi; V nodes are halfway between them. The upper
+C nodes include both angular boundaries; V nodes are halfway between them. The upper
 C boundary is an owned plane in the first high halo slot. Source folding is
 additive and acts on integrated charge/flux, never on already normalized J.
+With polar_cap_angle=0 the boundaries are axes. Positive cap angles instead
+use conducting field walls and specular particle reflection. Charge checks
+in the demo exclude wall cells, whose surface charge is not evolved explicitly.
 """
 from typing import NamedTuple
 import numpy as np
@@ -60,6 +63,18 @@ def refresh_vector(vector, static, locations, field_kind=None):
             if cells >= static.tile_shape[0]:
                 raise ValueError('Horizon boundary reference must lie in the first radial tile')
             a = a.at[0, :, :, :g+cells].set(a[0, :, :, g+cells:g+cells+1])
+        if static.polar_cap_angle:
+            # Perfectly conducting theta walls: tangential E and normal B
+            # vanish. In spherical KS beta is radial and gamma_theta,j=0 for
+            # j!=theta, so D_r=D_phi=B_theta=0 imposes these conditions.
+            # E/D have odd tangential and even normal reflection; H/B the
+            # opposite. Auxiliary fields are refreshed after contraction.
+            electric = locations == D_FIELD_LOCATIONS
+            parity = (1 if i == 1 else -1) if electric else (-1 if i == 1 else 1)
+            if loc[1] == 'C' and parity == -1:
+                a=a.at[plane(a,g)].set(0).at[plane(a,g+n)].set(0)
+            result.append(refresh(a,g,n,loc[1]=='V',parity))
+            continue
         if (field_kind == 'D' and i == 2) or (field_kind == 'B' and i == 1):
             a=a.at[plane(a,g)].set(0).at[plane(a,g+n)].set(0)
         result.append(refresh(a,g,n,loc[1]=='V',-1 if i==1 else 1))
@@ -101,6 +116,7 @@ def build_geometry(static,dynamic,metric):
     rc=dynamic.grids.tiled_center_grid[0][..., :,None,None]
     tc=dynamic.grids.tiled_center_grid[1][..., None,:,None]
     dr,dt,dp=dynamic.dx,dynamic.dy,dynamic.dz
+    lower=static.polar_cap_angle; upper=jnp.pi-lower
     mass=static.metric_mass if static.metric=='kerr_schild_spherical' else 0.
     a=static.metric_spin if static.metric=='kerr_schild_spherical' else 0.
     nodes,weights=np.polynomial.legendre.leggauss(8)
@@ -108,7 +124,7 @@ def build_geometry(static,dynamic,metric):
         sig=r*r+a*a*jnp.cos(t)**2
         return sig*jnp.sqrt(1+2*mass*r/sig)*jnp.sin(t)
     def integrate(r,t,radial,angular):
-        lo=jnp.clip(t-dt/2,0,jnp.pi); hi=jnp.clip(t+dt/2,0,jnp.pi)
+        lo=jnp.clip(t-dt/2,lower,upper); hi=jnp.clip(t+dt/2,lower,upper)
         result=jnp.zeros_like(r+t)
         for x,w in zip(nodes,weights) if radial else [(0.,2.)]:
             rr=r+dr*x/2 if radial else r

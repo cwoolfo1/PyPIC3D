@@ -10,9 +10,14 @@ from pathlib import Path
 import numpy as np
 from tqdm import tqdm
 
-from plot_entity_bz import (
-    Normalization, load_snapshot, make_figure, radial_profile, snapshot_catalog,
-)
+if __package__:
+    from .plot_entity_bz import (
+        Normalization, load_snapshot, make_figure, radial_profile, snapshot_catalog,
+    )
+else:
+    from plot_entity_bz import (
+        Normalization, load_snapshot, make_figure, radial_profile, snapshot_catalog,
+    )
 
 
 def padded_limits(values):

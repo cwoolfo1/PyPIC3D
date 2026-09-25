@@ -45,6 +45,7 @@ class StaticParameters(NamedTuple):
     particle_boundary_conditions: tuple
     field_mesh: object
     horizon_field_cells: int = 0
+    polar_cap_angle: float = 0.0
 
 
 class DynamicParameters(NamedTuple):
@@ -139,9 +140,15 @@ def build_static_parameters(static_config):
             or static_config.get('current_filter','none') != 'none'
             or int(static_config['guard_cells']) < 3):
             raise ValueError('BC_POLAR requires spherical static_metric, one theta tile, Nz=1, and no current filter')
-        if abs(float(static_config.get('y_min',0))) > 1e-14 or abs(float(static_config['y_wind'])-3.141592653589793)>1e-14:
-            raise ValueError('BC_POLAR requires theta in [0, pi]')
+        cap = float(static_config.get('polar_cap_angle', 0.0))
+        if not 0 <= cap < 3.141592653589793/2:
+            raise ValueError('polar_cap_angle must be in [0, pi/2)')
+        if abs(float(static_config.get('y_min',0))-cap) > 1e-14 or abs(float(static_config['y_wind'])-(3.141592653589793-2*cap))>1e-14:
+            raise ValueError('BC_POLAR requires theta in [cap, pi-cap] (default [0, pi])')
+        if cap and cap <= int(static_config['guard_cells'])*float(static_config['dy']):
+            raise ValueError('Excised caps must keep metric guard nodes away from the axes: cap > guard_cells*dy')
     return StaticParameters(
+        polar_cap_angle=float(static_config.get('polar_cap_angle', 0.0)),
         name=static_config.get("name", "Default Simulation"),
         output_dir=static_config.get("output_dir", "."),
         Nt=int(static_config.get("Nt", 0)),

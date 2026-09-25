@@ -40,57 +40,23 @@ def _shift_cross_component(beta, vector_components, component):
     return beta_x * vector_y - beta_y * vector_x
 
 
-def _polar_weighted_auxiliary(own, other, own_metrics, other_metrics,
-                              own_locations, other_locations, shift_sign):
-    """Entity II (42)-(44), including coefficients inside radial averages.
-
-    In spherical KS, sqrt(gamma)/sin(theta)=gamma_theta_theta*sqrt(gamma_rr).
-    All nonzero staggered cross terms differ only in radius (and the inactive
-    azimuth). Cancelling sin(theta) analytically keeps both axes regular.
-    """
-    def weight(m):
-        return m.gamma[..., 1, 1] * jnp.sqrt(m.gamma[..., 0, 0])
-    result = []
-    for i, target in enumerate(own_metrics):
-        target_location = own_locations[i]
-        def average(value, source, source_location):
-            return _location_interpolate(weight(source)*value, source_location,
-                                         target_location)/weight(target)
-        lowered = target.gamma[..., i, i]*own[i]
-        for j in range(3):
-            if i != j:
-                source = own_metrics[j]
-                lowered = lowered + average(source.gamma[..., i, j]*own[j],
-                                             source, own_locations[j])
-        cross = 0.
-        for j, beta_index, sign in (((i+2)%3, (i+1)%3, 1.),
-                                    ((i+1)%3, (i+2)%3, -1.)):
-            source = other_metrics[j]
-            cross = cross + sign*average(source.sqrt_gamma*source.shift[..., beta_index]*other[j],
-                                         source, other_locations[j])
-        result.append(target.lapse*lowered + shift_sign*cross)
-    return tuple(result)
-
-
 def compute_covariant_E(D_tiles, B_tiles, metric):
     """
     Compute covariant E_i on the D component locations using FPIC Eq. (10).
 
-    Polar spherical grids use the Entity II weighted averages; other charts
-    interpolate the densitized fields sqrt(gamma) D and sqrt(gamma) B.
+    Uses standard metric-density-weighted transfers on a regular coordinate
+    domain. All source and target metric samples, including halos, must have
+    finite positive sqrt_gamma. Polar finite-volume geometry does not select
+    a different constitutive operator.
     """
 
-    if metric.geometry is not None:
-        return _polar_weighted_auxiliary(D_tiles, B_tiles, metric.D, metric.B,
-                                         D_FIELD_LOCATIONS, B_FIELD_LOCATIONS, 1.)
-    interpolate = _metric_weighted_interpolate
     E_cov = []
     for i, target_location in enumerate(D_FIELD_LOCATIONS):
         D_on_target = []
         B_on_target = []
         for j, source_location in enumerate(D_FIELD_LOCATIONS):
             D_on_target.append(
-                interpolate(
+                _metric_weighted_interpolate(
                     D_tiles[j],
                     metric.D[j],
                     metric.D[i],
@@ -100,7 +66,7 @@ def compute_covariant_E(D_tiles, B_tiles, metric):
             )
         for j, source_location in enumerate(B_FIELD_LOCATIONS):
             B_on_target.append(
-                interpolate(
+                _metric_weighted_interpolate(
                     B_tiles[j],
                     metric.B[j],
                     metric.D[i],
@@ -125,20 +91,17 @@ def compute_covariant_H(D_tiles, B_tiles, metric):
     """
     Compute covariant H_i on the B component locations using FPIC Eq. (9).
 
-    Uses the same polar/other-chart interpolation split as ``compute_covariant_E``.
+    Uses the same standard transfers and regular-domain requirements as
+    ``compute_covariant_E``.
     """
 
-    if metric.geometry is not None:
-        return _polar_weighted_auxiliary(B_tiles, D_tiles, metric.B, metric.D,
-                                         B_FIELD_LOCATIONS, D_FIELD_LOCATIONS, -1.)
-    interpolate = _metric_weighted_interpolate
     H_cov = []
     for i, target_location in enumerate(B_FIELD_LOCATIONS):
         B_on_target = []
         D_on_target = []
         for j, source_location in enumerate(B_FIELD_LOCATIONS):
             B_on_target.append(
-                interpolate(
+                _metric_weighted_interpolate(
                     B_tiles[j],
                     metric.B[j],
                     metric.B[i],
@@ -148,7 +111,7 @@ def compute_covariant_H(D_tiles, B_tiles, metric):
             )
         for j, source_location in enumerate(D_FIELD_LOCATIONS):
             D_on_target.append(
-                interpolate(
+                _metric_weighted_interpolate(
                     D_tiles[j],
                     metric.D[j],
                     metric.B[i],

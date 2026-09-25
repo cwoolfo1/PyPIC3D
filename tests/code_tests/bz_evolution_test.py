@@ -20,24 +20,27 @@ class TestEvolution(unittest.TestCase):
         cls.p=SimulationParameters(nr=16,ntheta=16,devices=2,r_max=4.,sponge_start=3.,
                                   skin_depth=.0025,pairs_per_cell=4,maximum_timestep=None,
                                   end_time=5.,output_interval=1.,backend='cpu',current_filter_passes=0,
-                                  horizon_field_cells=0)
+                                  horizon_field_cells=0,polar_cap_angle=np.deg2rad(30))
         cls.s,cls.d,cls.m,_=build_runtime(cls.p)
         cls.pts,cls.sp=empty_particles(cls.p,cls.s)
         cls.fields,cls.bg=runner.initialize_fields(cls.p,cls.s,cls.d,cls.m)
         cls.key=jax.random.PRNGKey(5)
 
     def test_fresh_evolution_outputs_and_failure(self):
-        s,d=self.s,self.d
-        p=replace(self.p,end_time=3.5*float(d.dt),output_interval=2*float(d.dt),
-                  allow_divergence_errors=True,constraint_check_interval=1)
-        execute=runner.make_step(p,self.sp,s,d,self.bg)
-        expected_pts,expected_fields,expected_key=self.pts,self.fields,self.key
+        p=SimulationParameters(devices=2, backend='cpu', end_time=.016,
+                               output_interval=.008, constraint_check_interval=1)
+        s,d,m,_=build_runtime(p)
+        pts,sp=empty_particles(p,s)
+        fields,bg=runner.initialize_fields(p,s,d,m)
+        key=jax.random.PRNGKey(p.seed)
+        execute=runner.make_step(p,sp,s,d,bg,current_filter_passes=p.current_filter_passes)
+        expected_pts,expected_fields,expected_key=pts,fields,key
         for step in range(4):
             expected_pts,expected_fields,expected_key,_=execute(expected_pts,expected_fields,expected_key,step)
         with TemporaryDirectory() as directory:
             root=Path(directory)
             with patch.object(runner,'make_step',return_value=execute):
-                result=runner.evolve(self.pts,self.sp,self.fields,self.key,p,s,d,self.bg,root/'fresh')
+                result=runner.evolve(pts,sp,fields,key,p,s,d,bg,root/'fresh')
             for actual,expected in zip(jax.tree.leaves(result[:3]),
                                        jax.tree.leaves((expected_pts,expected_fields,expected_key))):
                 np.testing.assert_allclose(actual,expected,rtol=1e-12,atol=1e-12,equal_nan=True)
@@ -47,6 +50,7 @@ class TestEvolution(unittest.TestCase):
             self.assertFalse(list(output.glob('*.json*')))
             self.assertFalse(list(output.glob('*checkpoint*')))
             with np.load(output/'final_state.npz',allow_pickle=False) as saved:
+                self.assertNotIn('allow_divergence_errors', saved.files)
                 self.assertEqual(int(saved['step']),4)
                 self.assertEqual(float(saved['time']),4*float(d.dt))
                 np.testing.assert_array_equal(saved['active'],expected_pts.active)
@@ -55,7 +59,7 @@ class TestEvolution(unittest.TestCase):
                 for name,vector in (('D',expected_fields[0]),('B',expected_fields[1]),('J',expected_fields[2])):
                     for i,value in enumerate(vector):
                         np.testing.assert_array_equal(saved[f'{name}_{i}'],value)
-                for name,value in zip(('charge','mass','weight','update_x'),self.sp):
+                for name,value in zip(('charge','mass','weight','update_x'),sp):
                     np.testing.assert_array_equal(saved['species_'+name],value)
                 self.assertTrue(all(saved[key].dtype.kind!='O' for key in saved.files))
             from demos.static_metric_relativity.bz_monopole.plot_entity_bz import load_snapshot,Normalization
@@ -67,19 +71,12 @@ class TestEvolution(unittest.TestCase):
                 return execute(pts,fields,key,index)
             with patch.object(runner,'make_step',return_value=fail_second):
                 with self.assertRaisesRegex(RuntimeError,'injected test failure'):
-                    runner.evolve(self.pts,self.sp,self.fields,self.key,p,s,d,self.bg,root/'failed')
+                    runner.evolve(pts,sp,fields,key,p,s,d,bg,root/'failed')
             self.assertEqual([f.name for f in (root/'failed').iterdir()],['snapshot_000000000000.npz'])
-        first=execute(self.pts,self.fields,self.key,0)
+        first=execute(pts,fields,key,0)
         broken=first[0]._replace(x=first[0].x.at[0,0,0,0,0,1].set(0.))
         self.assertTrue(bool(broken.active[0,0,0,0,0]))
         with self.assertRaises(Exception):execute(broken,first[1],first[2],1)
-
-    def test_divergence_waiver_does_not_allow_nonfinite(self):
-        with self.assertRaisesRegex(RuntimeError,'[Dd]ivergence'):
-            runner.check_constraints(dict(gauss=.01,magnetic_divergence=0.),False)
-        runner.check_constraints(dict(gauss=.01,magnetic_divergence=0.),True)
-        with self.assertRaises(FloatingPointError):
-            runner.check_constraints(dict(gauss=np.nan,magnetic_divergence=0.),True)
 
     def test_exterior_mask_excludes_boundaries_but_keeps_tile_seams(self):
         p=replace(self.p,sponge_start=3.8)
@@ -113,19 +110,19 @@ class TestEvolution(unittest.TestCase):
                  patch.object(runner,'compute_rho',return_value=zero):
                 return {k:float(v) for k,v in runner.constraint_residuals(
                     self.pts,self.sp,fields,self.s,self.d,p).items()}
-        runner.check_constraints(measure(outside_d,outside_b),False)
+        runner.check_constraints(measure(outside_d,outside_b))
         seam=(1,0,0,g,g+5,g)
         r=measure(outside_d.at[seam].set(1e-5),outside_b)
         self.assertAlmostEqual(r['gauss'],1e-5,places=12)
-        with self.assertRaisesRegex(RuntimeError,'Exterior.*gauss'):runner.check_constraints(r,False)
+        with self.assertRaisesRegex(RuntimeError,'Exterior.*gauss'):runner.check_constraints(r)
         r=measure(outside_d,outside_b.at[seam].set(1e-5))
         self.assertAlmostEqual(r['magnetic_divergence'],1e-5,places=12)
-        with self.assertRaisesRegex(RuntimeError,'magnetic_divergence'):runner.check_constraints(r,False)
+        with self.assertRaisesRegex(RuntimeError,'magnetic_divergence'):runner.check_constraints(r)
 
     def test_empty_exterior_and_snapshot_residuals(self):
         p=replace(self.p,sponge_start=1.9)
         values=runner.constraint_residuals(self.pts,self.sp,self.fields,self.s,self.d,p)
-        with self.assertRaises(FloatingPointError):runner.check_constraints(values,True)
+        with self.assertRaises(FloatingPointError):runner.check_constraints(values)
         snap=runner.diagnostics(self.pts,self.sp,self.fields,self.p,self.s,self.d)
         for name in ('gauss_relative','divB_relative'):
             self.assertTrue(np.isfinite(snap[name]))
@@ -138,7 +135,6 @@ class TestConstraintPolicy(unittest.TestCase):
             values[name]=1e-10
             with self.assertRaisesRegex(RuntimeError,name):runner.check_constraints(values)
             runner.check_constraints(values,**{name+'_tolerance':1e-9})
-            runner.check_constraints(values,True)
 
     def test_invalid_settings(self):
         for value in (0.,-1.,float('inf'),float('nan')):
@@ -154,15 +150,32 @@ class TestConstraintPolicy(unittest.TestCase):
         runner.check_constraints(values)
         for name in ('gauss','magnetic_divergence'):
             for invalid in (np.nan,np.inf):
-                with self.assertRaises(FloatingPointError):runner.check_constraints(dict(values,**{name:invalid}),True)
-            with self.assertRaises(FloatingPointError):runner.check_constraints(dict(values,**{name+'_cells':0}),True)
+                with self.assertRaises(FloatingPointError):runner.check_constraints(dict(values,**{name:invalid}))
+            with self.assertRaises(FloatingPointError):runner.check_constraints(dict(values,**{name+'_cells':0}))
+
+    def test_entry_points_reject_invalid_settings_before_side_effects(self):
+        invalid = [('constraint_check_interval', v) for v in (0, -1, 1.5, True)]
+        invalid += [(name, v) for name in ('gauss_tolerance', 'magnetic_divergence_tolerance')
+                    for v in (0., -1., np.nan, np.inf)]
+        for name, value in invalid:
+            with self.subTest(name=name, value=value), TemporaryDirectory() as directory:
+                output = Path(directory)/'must_not_exist'
+                p = replace(SimulationParameters(output_directory=str(output)), **{name: value})
+                with patch.object(runner, 'build_runtime') as build, \
+                     patch.object(runner, 'make_step') as make:
+                    with self.assertRaises(ValueError):
+                        runner.run(p)
+                    with self.assertRaises(ValueError):
+                        runner.evolve(None, None, None, None, p, None, None, None, output)
+                    build.assert_not_called()
+                    make.assert_not_called()
+                self.assertFalse(output.exists())
 
 
 class TestConstraintSchedule(unittest.TestCase):
     """Exercise fresh-run scheduling and failure paths without particle kernels."""
-    def run_driver(self,directory,*,end_time=.2045,interval=.1,fail_at=None,interrupt_at=None,waive=False):
-        p=SimulationParameters(end_time=end_time,output_interval=interval,
-                               allow_divergence_errors=waive)
+    def run_driver(self,directory,*,end_time=.2045,interval=.1,fail_at=None,interrupt_at=None):
+        p=SimulationParameters(end_time=end_time,output_interval=interval)
         pts=SimpleNamespace(active=np.zeros((1,1,1,2,1),bool))
         boundary=SimpleNamespace(absorbed_count=np.zeros((2,2)),absorbed_charge=np.zeros((2,2)),
                                  removed_grid_charge=0.,radial_current_outflow=np.zeros(2))
@@ -206,7 +219,7 @@ class TestConstraintSchedule(unittest.TestCase):
             self.run_driver(Path(out),end_time=.002,interval=.0001)
             self.assertEqual(len(list(Path(out).glob('snapshot_*.npz'))),3)
 
-    def test_rejected_candidate_and_waiver(self):
+    def test_rejected_candidate(self):
         with TemporaryDirectory() as out:
             root=Path(out)
             with self.assertRaisesRegex(RuntimeError,'Step 200.*gauss'):
@@ -215,8 +228,6 @@ class TestConstraintSchedule(unittest.TestCase):
             self.bar.return_value.__exit__.assert_called_once()
             self.assertEqual({p.name for p in (root/'failed').iterdir()},
                              {'snapshot_000000000000.npz','snapshot_000000000100.npz'})
-            self.run_driver(root/'waived',fail_at=200,waive=True)
-            self.assertEqual(self.checked,[0,100,200,205])
 
     def test_interruption_leaves_only_completed_snapshots(self):
         with TemporaryDirectory() as out:
