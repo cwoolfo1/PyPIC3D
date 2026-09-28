@@ -1,4 +1,4 @@
-"""Cubic Hermite interpolation of the grid metric to particle positions.
+"""The shared particle-metric sampler for prescribed static metrics.
 
 The lapse, shift and covariant spatial metric are interpolated with a C1
 tensor-product cardinal cubic Hermite (Catmull-Rom) polynomial, whose nodal
@@ -7,6 +7,12 @@ metric and determinant are computed from the interpolated gamma, and every
 derivative is the exact derivative of that same interpolant, so the geodesic
 force is consistent with the metric used for the Lorentz force and the
 position update.
+
+This reconstruction is independent of the particle shape used to gather
+electromagnetic fields.  Grid ``gamma_inv`` and ``sqrt_gamma`` are deliberately
+not sampled here: they belong to the grid field operators.  Analytic metric
+providers populate the grid, not particle samples.  There is no lower-order
+or analytic fallback.
 
 The four-point stencil needs three guard cells to cover midpoint samples
 before tile migration.  Points outside the stencil return NaN, and invalid
@@ -115,10 +121,13 @@ def interpolate_metric(
     """
     Interpolate one tile of grid ``Metric`` data to particle positions.
 
-    ``metric`` holds a single tile of cell-centered data and ``grid`` its
-    coordinate axes.  With ``derivatives=True`` the lapse, shift and inverse
+    ``metric`` holds a single tile of ``YeeMetric.center`` data and ``grid``
+    its C-grid coordinate axes (the base nodes, not half-cell locations).
+    With ``derivatives=True`` the lapse, shift and inverse
     metric gradients are the exact derivatives of the Hermite interpolant,
-    taken with one forward-mode JVP per resolved axis.
+    taken with one forward-mode JVP per resolved axis.  With derivatives
+    disabled the same metric values are returned and gradient fields are None.
+    Unresolved axes use the supplied node indices and have zero derivatives.
     """
 
     shape = position.shape[:-1]

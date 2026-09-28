@@ -710,15 +710,28 @@ class TestPusherConvergence(unittest.TestCase):
     SPATIAL_LEVELS = (16, 32, 64)
     TEMPORAL_STEPS = (200, 400, 800, 1600)
 
-    def test_pusher_converges_second_order_in_grid_spacing_for_every_chart(self):
+    def test_pusher_accuracy_for_exactly_reconstructed_cylindrical_metric(self):
+        """Cylindrical gamma is quadratic: spatial refinement has no error to remove."""
+        case = PUSHER_CASES[0]
+        reference = reference_trajectory(case["metric"], case["x0"], case["u0"], case["T"])
+        positions = []
+        for N in (16, 32):
+            x, _ = run_production_pusher(
+                case["metric"], case["x0"], case["u0"], case["T"], case["T"]/4000,
+                N, case["wind"], case["mins"], metric_name=case["metric_name"])
+            self.assertLess(float(jnp.linalg.norm(x-reference[:3])), 2e-9)
+            positions.append(x)
+        self.assertLess(float(jnp.linalg.norm(positions[0]-positions[1])), 1e-12)
+
+    def test_pusher_spatial_convergence_above_temporal_and_reference_floors(self):
         """
-        The pusher samples ``alpha``, ``beta^i``, ``gamma^ij`` and their gradients
-        from the grid, so the trajectory carries an O(h^2) metric-sampling error
-        that is independent of ``dt``.  This measures that order directly against
-        an analytic-metric reference.
+        Hermite values are generally third order and derivatives second order.
+        Integrated trajectory errors can converge faster through cancellation;
+        require at least second order without imposing a false upper bound.
+        Explicit dt and RK4 refinement keep the finest spatial error resolved.
         """
         report = []
-        for case in PUSHER_CASES:
+        for case in PUSHER_CASES[1:]:
             reference = reference_trajectory(
                 case["metric"],
                 case["x0"],
@@ -728,7 +741,7 @@ class TestPusherConvergence(unittest.TestCase):
                 case.get("D_values", (0, 0, 0)),
                 case.get("B_values", (0, 0, 0)),
             )
-            dt = case["T"] / 4000.0
+            dt = case["T"] / 16000.0
             errors = []
             for N in self.SPATIAL_LEVELS:
                 x_final, _u_final = run_production_pusher(
@@ -746,20 +759,33 @@ class TestPusherConvergence(unittest.TestCase):
                     B_values=case.get("B_values", (0, 0, 0)),
                 )
                 errors.append(float(jnp.linalg.norm(x_final - reference[:3])))
+            refined, _ = run_production_pusher(
+                case["metric"], case["x0"], case["u0"], case["T"], dt/2,
+                self.SPATIAL_LEVELS[-1], case["wind"], case["mins"],
+                metric_name=case["metric_name"], charge=case.get("charge", 0.0),
+                D_values=case.get("D_values", (0, 0, 0)),
+                B_values=case.get("B_values", (0, 0, 0)))
+            coarse_reference = reference_trajectory(
+                case["metric"], case["x0"], case["u0"], case["T"],
+                case.get("charge", 0.0), case.get("D_values", (0, 0, 0)),
+                case.get("B_values", (0, 0, 0)), n=20000)
+            temporal_delta = float(jnp.linalg.norm(refined-x_final))
+            reference_delta = float(jnp.linalg.norm(coarse_reference[:3]-reference[:3]))
             orders = [
                 convergence_order(errors[i], errors[i + 1]) for i in range(len(errors) - 1)
             ]
-            report.append(f"{case['name']}: errors={errors} orders={orders}")
+            report.append(f"{case['name']}: errors={errors} orders={orders} "
+                          f"temporal_delta={temporal_delta} reference_delta={reference_delta}")
+            self.assertLess(temporal_delta, .05*errors[-1], "\n".join(report))
+            self.assertLess(reference_delta, .01*errors[-1], "\n".join(report))
             for order in orders:
-                self.assertGreater(order, 1.65, "\n".join(report))
-                self.assertLess(order, 2.4, "\n".join(report))
-            self.assertGreater(orders[-1], 1.8, "\n".join(report))
+                self.assertGreater(order, 1.8, "\n".join(report))
+            jax.clear_caches()
 
     def test_pusher_converges_second_order_in_time_for_every_chart(self):
         """
-        Time-step self-convergence on a fixed grid, so the O(h^2) metric-sampling
-        error cancels exactly and only the Strang/Boris/leapfrog truncation
-        error is left.
+        Time-step self-convergence on a fixed reconstructed metric isolates
+        Strang/Boris/leapfrog temporal truncation from spatial reconstruction.
         """
         report = []
         for case in PUSHER_CASES:
@@ -796,7 +822,7 @@ class TestPusherConvergence(unittest.TestCase):
                 self.assertGreater(order, 1.7, "\n".join(report))
 
     def test_pusher_is_second_order_with_second_order_particle_shapes(self):
-        """``shape_factor=2`` is a supported option that no GR test exercises."""
+        """Second-order electromagnetic particle shapes retain GR spatial accuracy."""
         case = PUSHER_CASES[5]  # Gaussian-normal chart
         reference = reference_trajectory(case["metric"], case["x0"], case["u0"], case["T"])
         errors = []
@@ -1055,13 +1081,11 @@ class TestCurrentDepositionConvergence(unittest.TestCase):
             error = float(jnp.max(jnp.abs(totals - expected)) / jnp.max(jnp.abs(expected)))
             self.assertLess(error, 1.0e-12, f"{name}: relative error {error}")
 
-    def test_metric_sampled_onto_particles_is_second_order(self):
+    def test_metric_sampled_source_velocity_is_third_order(self):
         """
-        FPIC and Entity both evaluate the metric analytically at the particle.
-        This kernel interpolates it from the grid, so the source velocity
-        ``alpha v^i - beta^i`` -- and therefore the total deposited current --
-        carries an O(h^2) error.  Measured over many particle positions so the
-        result is not aliased by sub-cell placement.
+        Hermite primitive values and their consistent inverse give a generally
+        third-order source velocity ``alpha v^i - beta^i``. Sampling many
+        off-node positions avoids special sub-cell superconvergence.
         """
         key = jax.random.PRNGKey(11)
         report = []
@@ -1091,8 +1115,33 @@ class TestCurrentDepositionConvergence(unittest.TestCase):
             ]
             report.append(f"{name}: errors={errors} orders={orders}")
             for order in orders:
-                self.assertGreater(order, 1.85, "\n".join(report))
-                self.assertLess(order, 2.2, "\n".join(report))
+                self.assertGreater(order, 2.65, "\n".join(report))
+                self.assertLess(order, 3.35, "\n".join(report))
+
+    def test_hermite_metric_values_and_derivatives_have_distinct_orders(self):
+        """Smooth supplied data exercise lapse, shift and non-diagonal gamma in 3D."""
+        provider = generic_lapse_shift_metric_at_position
+        positions = jax.random.uniform(jax.random.PRNGKey(913), (400, 3), minval=-1.2, maxval=1.2)
+        exact = jax.vmap(provider)(positions)
+        gradients = jax.vmap(jax.jacfwd(lambda q: (provider(q)[0], provider(q)[1], provider(q)[3])))(positions)
+        errors = {name: [] for name in ("lapse", "shift", "gamma", "inverse", "grad_lapse", "grad_shift", "grad_inverse")}
+        for N in (12, 24, 48):
+            s, d = parameters((N, N, N), (4., 4., 4.), (-2., -2., -2.), .01)
+            m = build_center_metric(d, provider)
+            tile = jax.tree.map(lambda a: a[0, 0, 0], m.center)
+            grid = tuple(a[0, 0, 0] for a in d.grids.tiled_center_grid)
+            sampled = interpolate_metric(tile, positions, grid, "numerical", (True, True, True), (3, 3, 3))
+            computed = sampled[:4] + sampled[5:]
+            expected = exact[:4] + (gradients[0], gradients[1], jnp.moveaxis(gradients[2], -1, -3))
+            for name, a, b in zip(errors, computed, expected):
+                errors[name].append(float(jnp.sqrt(jnp.mean((a-b)**2))))
+        for name, values in errors.items():
+            expected_order = 2 if name.startswith("grad_") else 3
+            orders = [convergence_order(a, b) for a, b in zip(values, values[1:])]
+            with self.subTest(quantity=name):
+                for order in orders:
+                    self.assertGreater(order, expected_order-.35, (values, orders))
+                    self.assertLess(order, expected_order+.35, (values, orders))
 
 
 # ===========================================================================

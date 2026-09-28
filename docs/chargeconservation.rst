@@ -62,8 +62,9 @@ The ``static_metric`` solver evolves the contravariant densities ``D^i`` and
 ``update_D_relativity`` consumes.
 
 ``GR_direct_deposition`` is a metric-weighted volume deposit. It samples the
-lapse, shift and inverse metric at each particle to form ``alpha v^i - beta^i``,
-and supports current filtering. It does not satisfy the discrete continuity
+lapse, shift and covariant metric through the shared Hermite reconstruction,
+derives the inverse from that tensor, and forms ``alpha v^i - beta^i``.
+It supports current filtering. It does not satisfy the discrete continuity
 equation, so Gauss's law violation accumulates over a run.
 
 ``GR_esirkepov`` is charge conserving. It works because the conformal charge

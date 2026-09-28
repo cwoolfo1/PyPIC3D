@@ -1,13 +1,22 @@
 """Hermite reconstruction of the supplied grid metric at particle positions."""
 
 import unittest
+from functools import partial
 import jax
 import jax.numpy as jnp
 import numpy as np
 from jax.experimental import checkify
 from PyPIC3D.particles.particle_class import SpeciesConfig, TiledParticles
-from PyPIC3D.pusher.hybrid_boris_geodesic import hybrid_boris_geodesic_push
+from PyPIC3D.pusher.hybrid_boris_geodesic import coordinate_velocity, hybrid_boris_geodesic_push
 from PyPIC3D.pusher.particle_push import seed_leapfrog_velocity
+from PyPIC3D.deposition.GR_direct_deposition import GR_direct_deposition
+from PyPIC3D.relativity import (
+    initialize_flat_cartesian_metric,
+    initialize_flat_cylindrical_metric,
+    initialize_flat_spherical_metric,
+    initialize_kerr_schild_cartesian_metric,
+    initialize_kerr_schild_spherical_metric,
+)
 from PyPIC3D.relativity.interpolate_metric import (
     interpolate_hermite,
     interpolate_metric,
@@ -21,6 +30,7 @@ from tests.support.particle_metric_fixtures import (
     manufactured,
     sample_metric,
     sampled_rotation_checks,
+    consumer_runtime,
 )
 
 jax.config.update("jax_enable_x64", True)
@@ -81,6 +91,50 @@ class TestHermite(unittest.TestCase):
 
 
 class TestParticleMetric(unittest.TestCase):
+    def test_shared_reconstruction_for_every_supported_chart(self):
+        providers = (
+            ("flat_cartesian", initialize_flat_cartesian_metric),
+            ("flat_cylindrical", initialize_flat_cylindrical_metric),
+            ("flat_spherical", initialize_flat_spherical_metric),
+            ("kerr_schild_cartesian", partial(initialize_kerr_schild_cartesian_metric, spin=.4)),
+            ("kerr_schild_spherical", partial(initialize_kerr_schild_spherical_metric, spin=.4)),
+        )
+        for name, initialize in providers:
+            with self.subTest(metric=name):
+                s, d = kernel_parameters(
+                    Nx=8, Ny=8, Nz=1, x_min=2., y_min=.6, z_min=0.,
+                    x_wind=1., y_wind=.8, z_wind=1., solver="static_metric",
+                    particle_pusher="hybrid_boris_geodesic", metric=name, metric_spin=.4,
+                )
+                m = initialize(s, d)
+                tile = jax.tree.map(lambda a: a[0, 0, 0], m.center)
+                grid = tuple(a[0, 0, 0] for a in d.grids.tiled_center_grid)
+                q = jnp.array([[2.31, .83, .2], [2.67, 1.17, .8]])
+                get = lambda metric, derivatives=True: interpolate_metric(
+                    metric, q, grid, name, (True, True, False), (3, 3, 3),
+                    derivatives=derivatives)
+                original = get(tile)
+                poisoned = tile._replace(gamma_inv=jnp.full_like(tile.gamma_inv, jnp.nan),
+                                         sqrt_gamma=jnp.full_like(tile.sqrt_gamma, jnp.nan))
+                for a, b in zip(original, get(poisoned)):
+                    np.testing.assert_array_equal(a, b)
+                values = get(tile, False)
+                for a, b in zip(original[:5], values[:5]):
+                    np.testing.assert_array_equal(a, b)
+                self.assertEqual(values[5:], (None, None, None))
+                np.testing.assert_allclose(original.gamma @ original.gamma_inv,
+                                           jnp.broadcast_to(jnp.eye(3), original.gamma.shape), atol=1e-12)
+                np.testing.assert_allclose(original.sqrt_gamma**2, jnp.linalg.det(original.gamma), rtol=1e-12)
+                np.testing.assert_array_equal(original.grad_lapse[..., 2], 0.)
+                np.testing.assert_array_equal(original.grad_shift[..., 2], 0.)
+                np.testing.assert_array_equal(original.grad_gamma_inv[..., 2, :, :], 0.)
+                # A chart name must never override supplied grid primitives.
+                changed = get(tile._replace(lapse=tile.lapse*.7, shift=tile.shift+.1,
+                                            gamma=tile.gamma*2.))
+                np.testing.assert_allclose(changed.lapse, original.lapse*.7, atol=1e-12)
+                np.testing.assert_allclose(changed.shift, original.shift+.1, atol=1e-12)
+                np.testing.assert_allclose(changed.gamma_inv, original.gamma_inv/2., atol=1e-12)
+
     def test_inverse_and_derivatives(self):
         grid, m = manufactured()
         q = jnp.array([[0.247, 0.381, 3.0], [0.415, 0.274, 3.0]])
@@ -121,6 +175,19 @@ class TestParticleMetric(unittest.TestCase):
         b = interpolate_metric(m2, q, g2, "numerical", (True, True, False), (3, 3, 3))
         for v, w in zip(jax.tree.leaves(a), jax.tree.leaves(b)):
             np.testing.assert_allclose(v, w, rtol=1e-12, atol=1e-12)
+
+    def test_unresolved_axes_use_fixed_nodes_and_zero_derivatives(self):
+        grid, metric = manufactured()
+        q = jnp.array([[.247, .381, 3.], [.415, .274, 3.]])
+        sample = lambda p: interpolate_metric(
+            metric, p, grid, "numerical", (True, False, False), (3, 3, 3))
+        a = sample(q)
+        b = sample(q.at[:, 1:].set(100.))
+        for x, y in zip(a, b):
+            np.testing.assert_array_equal(x, y)
+        np.testing.assert_array_equal(a.grad_lapse[..., 1:], 0.)
+        np.testing.assert_array_equal(a.grad_shift[..., 1:], 0.)
+        np.testing.assert_array_equal(a.grad_gamma_inv[..., 1:, :, :], 0.)
 
     def test_polar_masks_do_not_enter_particle_geometry(self):
         s, d, m, D, B = make_runtime("spherical", 16, 32)
@@ -197,6 +264,107 @@ class TestParticleMetric(unittest.TestCase):
         np.testing.assert_array_equal(positive_definite_3x3(edge), [False, True, False, False])
         # a singular non-diagonal tensor is rejected without a floor or repair
         self.assertFalse(bool(positive_definite_3x3(jnp.ones((3, 3)))))
+
+
+class TestParticleMetricConsumers(unittest.TestCase):
+    def tearDown(self):
+        jax.clear_caches()
+
+    def assert_same_tree(self, actual, expected):
+        self.assertEqual(jax.tree.structure(actual), jax.tree.structure(expected))
+        for a, b in zip(jax.tree.leaves(actual), jax.tree.leaves(expected)):
+            np.testing.assert_allclose(a, b, rtol=2e-14, atol=2e-14)
+
+    def test_pusher_and_direct_deposition_use_supplied_primitives(self):
+        first_order_push = None
+        for order in (1, 2):
+            with self.subTest(shape_factor=order):
+                s, d, m, D, B, p, species = consumer_runtime(order)
+                # Inactive coordinates lie outside the supplied metric stencil.
+                # Keep them finite: deposition's particle-shape weights use x too.
+                p = p._replace(
+                    x=jnp.concatenate((p.x, jnp.zeros_like(p.x[..., :1, :])), axis=-2),
+                    u=jnp.concatenate((p.u, jnp.full_like(p.u[..., :1, :], jnp.nan)), axis=-2),
+                    active=jnp.concatenate((p.active, jnp.zeros_like(p.active[..., :1])), axis=-1),
+                )
+                push = jax.jit(
+                    lambda metric: hybrid_boris_geodesic_push(p, species, D, B, metric, s, d))
+                deposit = jax.jit(
+                    lambda metric: GR_direct_deposition(p, species, tuple(jnp.zeros_like(a) for a in D), metric, s, d))
+                poisoned = m._replace(center=m.center._replace(
+                    gamma_inv=jnp.full_like(m.center.gamma_inv, jnp.nan),
+                    sqrt_gamma=jnp.full_like(m.center.sqrt_gamma, jnp.nan)))
+                changed = m._replace(center=m.center._replace(
+                    lapse=m.center.lapse*.7, shift=m.center.shift+.1, gamma=m.center.gamma*2.))
+                for name, run in (("push", push), ("deposit", deposit)):
+                    original = run(m)
+                    same = run(poisoned)
+                    self.assert_same_tree(same, original)
+                    different = run(changed)
+                    if name == "deposit":
+                        self.assertTrue(all(bool(jnp.isfinite(a).all()) for a in original))
+                    else:
+                        for state in original:
+                            self.assertTrue(bool(jnp.isfinite(state.x[..., :2, :]).all()))
+                            self.assertTrue(bool(jnp.isfinite(state.u[..., :2, :]).all()))
+                        # Constant EM fields remove shape-dependent gather error,
+                        # so changing particle shape must not change the GR push.
+                        if order == 1:
+                            first_order_push = original
+                        else:
+                            self.assert_same_tree(original, first_order_push)
+                    difference = max(float(jnp.max(jnp.abs(jnp.nan_to_num(a)-jnp.nan_to_num(b))))
+                                     for a, b in zip(jax.tree.leaves(original), jax.tree.leaves(different))
+                                     if a.dtype != jnp.bool_)
+                    self.assertGreater(difference, 1e-6)
+
+    def test_birth_momentum_uses_shared_metric_and_masks_unused_slots(self):
+        from demos.static_metric_relativity.bz_monopole.plasma_injector import birth_covariant_momentum
+
+        s, d, m, _, _, p, _ = consumer_runtime()
+        grid = tuple(a[0, 0, 0] for a in d.grids.tiled_center_grid)
+        tile = jax.tree.map(lambda a: a[0, 0, 0], m.center)
+        q = p.x.reshape(-1, 3).at[1].set(jnp.nan)
+        momentum = p.u.reshape(-1, 3).at[1].set(jnp.nan)
+        active = jnp.array([True, False])
+        birth = jax.jit(checkify.checkify(
+            lambda metric: birth_covariant_momentum(momentum, q, active, metric, grid, s)))
+        err, original = birth(tile)
+        err.throw()
+        sampled = interpolate_metric(tile, q[:1], grid, s.metric, (True, True, False), (3, 3, 3))
+        np.testing.assert_allclose(original[0], jnp.linalg.cholesky(sampled.gamma[0]) @ momentum[0], atol=1e-14)
+        np.testing.assert_array_equal(original[1], 0.)
+        poisoned = tile._replace(gamma_inv=jnp.full_like(tile.gamma_inv, jnp.nan),
+                                 sqrt_gamma=jnp.full_like(tile.sqrt_gamma, jnp.nan))
+        err, same = birth(poisoned)
+        err.throw()
+        self.assert_same_tree(same, original)
+        err, scaled = birth(tile._replace(gamma=2.*tile.gamma))
+        err.throw()
+        np.testing.assert_allclose(scaled, jnp.sqrt(2.)*original, atol=1e-14)
+
+    def test_midpoint_sampling_agrees_across_tile_seam(self):
+        results = []
+        for tile_shape in ((8, 8, 1), (4, 8, 1)):
+            s, d, m, D, B, p, species = consumer_runtime(tile_shape=tile_shape)
+            err, (new, mid) = jax.jit(checkify.checkify(
+                lambda p: hybrid_boris_geodesic_push(p, species, D, B, m, s, d)))(p)
+            err.throw()
+            self.assertGreater(float(mid.x.reshape(-1, 3)[0, 0]), 1.5)
+            for tx in range(p.x.shape[0]):
+                grid = tuple(a[tx, 0, 0] for a in d.grids.tiled_center_grid)
+                tile = jax.tree.map(lambda a: a[tx, 0, 0], m.center)
+                get = lambda q: interpolate_metric(tile, q, grid, s.metric,
+                    (True, True, False), (3, 3, 3), derivatives=False)
+                x, u = p.x[tx], new.u[tx]
+                expected_mid = x + .5*d.dt*coordinate_velocity(u, get(x))
+                expected_new = x + d.dt*coordinate_velocity(u, get(expected_mid))
+                np.testing.assert_allclose(mid.x[tx], expected_mid, atol=1e-14)
+                np.testing.assert_allclose(new.x[tx], expected_new, atol=1e-14)
+                stale = x + d.dt*coordinate_velocity(u, get(x))
+                self.assertGreater(float(jnp.max(jnp.abs(expected_new-stale))), 1e-9)
+            results.append(tuple(a.reshape(-1, 3) for a in (new.x, new.u, mid.x)))
+        self.assert_same_tree(results[0], results[1])
 
 
 class TestCheckedSampling(unittest.TestCase):

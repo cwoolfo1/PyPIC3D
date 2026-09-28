@@ -29,8 +29,9 @@ class YeeMetric(NamedTuple):
     Metric state on the grid locations used by the static-metric update.
 
     ``D`` and ``B`` are tuples with one metric per component location.
-    ``center`` is interpolated to particles by the pusher and current
-    deposition.  ``vertex`` is a shared nodal metric for diagnostics.
+    ``center`` supplies lapse, shift and covariant gamma to the shared Hermite
+    particle sampler; particle inverses and determinants are derived there.
+    ``vertex`` is a shared nodal metric for diagnostics.
     """
 
     D: tuple

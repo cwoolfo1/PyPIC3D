@@ -6,14 +6,48 @@ import jax
 import jax.numpy as jnp
 from PyPIC3D.utilities.parameters import build_static_parameters, build_dynamic_parameters
 from PyPIC3D.utilities.grids import build_yee_grid, build_tiled_yee_grids
-from PyPIC3D.relativity.core import B_FIELD_LOCATIONS, Metric
+from PyPIC3D.relativity.core import B_FIELD_LOCATIONS, Metric, build_yee_metric
 from PyPIC3D.relativity.interpolate_metric import interpolate_metric
 from PyPIC3D.relativity.flat import initialize_flat_cartesian_metric, initialize_flat_spherical_metric
 from PyPIC3D.boundary_conditions.polar import refresh_vector
 from PyPIC3D.pusher.hybrid_boris_geodesic import magnetic_boris_rotation, gather_vector
+from PyPIC3D.particles.particle_class import SpeciesConfig, TiledParticles
+from tests.kernel_fixtures import kernel_parameters, empty_tiled_vector
 
 jax.config.update('jax_enable_x64', True)
 PERIOD = 2*np.pi*np.sqrt(1.16)
+
+
+def consumer_runtime(shape_factor=1, tile_shape=None):
+    """Small numerical metric and off-node particles; no demo evolution."""
+    s, d = kernel_parameters(
+        Nx=8, Ny=8, Nz=1, x_min=1., y_min=.5, z_min=0.,
+        x_wind=1., y_wind=1., z_wind=1., dt=.005,
+        solver='static_metric', particle_pusher='hybrid_boris_geodesic',
+        metric='numerical', shape_factor=shape_factor, tile_shape=tile_shape,
+    )
+
+    def provider(position):
+        x, y, _ = position
+        gamma = jnp.array([[2.+.2*jnp.sin(x), .2, .1],
+                           [.2, 3.+.1*jnp.cos(y), -.1], [.1, -.1, 1.5]])
+        lapse = 1.+.03*jnp.sin(x)+.02*jnp.cos(y)
+        shift = jnp.array([.04*x*y, .02*y, .01*x])
+        return lapse, shift, gamma, jnp.linalg.inv(gamma), jnp.sqrt(jnp.linalg.det(gamma))
+
+    metric = build_yee_metric(d, provider)
+    # The first particle's midpoint crosses x=1.5, the seam in the two-tile fixture.
+    x = jnp.array([[1.4999, .82, 0.], [1.63, 1.12, 0.]])
+    u = jnp.array([[.6, .2, -.1], [-.2, .1, .3]])
+    ntx = 8 // s.tile_shape[0]
+    slots = 2 // ntx
+    shape = (ntx, 1, 1, 1, slots)
+    particles = TiledParticles(x.reshape(shape+(3,)), u.reshape(shape+(3,)), jnp.ones(shape, bool))
+    species = SpeciesConfig(jnp.ones(1), jnp.ones(1), jnp.ones(1), jnp.ones((1,3), bool))
+    zeros = empty_tiled_vector(s, d)
+    D = tuple(a+v for a, v in zip(zeros, (.02, .01, 0.)))
+    B = tuple(a+v for a, v in zip(zeros, (0., 0., .4)))
+    return s, d, metric, D, B, particles, species
 
 
 def manufactured(offset=0.0):

@@ -1,10 +1,11 @@
 Field Solvers
 =============
 
-PyPIC3D has two production solver names:
+PyPIC3D provides these solver names:
 
 - ``electrodynamic_yee``
 - ``electrostatic``
+- ``static_metric``
 
 Electrodynamic Yee Step
 -----------------------
@@ -82,6 +83,58 @@ update.
 
 Particles interpolate the sum of evolved and prescribed external fields.
 Maxwell updates use only evolved fields.
+
+Static-Metric Particle Sampling
+--------------------------------
+
+The ``static_metric`` solver uses ``hybrid_boris_geodesic``. Every particle
+metric sample uses the shared ``interpolate_metric`` function: the velocity
+update, position midpoint, direct GR current deposition, and particle-birth
+momentum conversion all use the same reconstruction. Leapfrog initialization
+also uses it through the shared pusher. ``GR_esirkepov`` deposits from particle
+endpoints and does not need a separate particle-metric sample.
+
+The sampler reconstructs lapse, shift, and the covariant spatial metric from
+``YeeMetric.center`` on the base C grid using tensor-product cardinal cubic
+Hermite polynomials (Catmull--Rom), with centered nodal slopes. It computes
+the inverse and determinant from the reconstructed tensor rather than
+interpolating the stored grid inverse or determinant. Analytic metric
+providers supply grid values; there is no analytic or lower-order fallback
+at particle positions and no interpolation-method setting.
+
+Metric derivatives are derivatives of the same interpolant, including
+
+.. math::
+
+   \partial_k\gamma^{-1}
+   = -\gamma^{-1}(\partial_k\gamma)\gamma^{-1}.
+
+``ParticleMetric.grad_lapse[..., k]`` stores ``d_k alpha``,
+``grad_shift[..., i, k]`` stores ``d_k beta^i``, and
+``grad_gamma_inv[..., k, i, j]`` stores ``d_k gamma^ij``.
+Sampling with ``derivatives=False`` returns the same metric values and
+``None`` for the derivative fields. Smooth non-polynomial data generally
+give third-order values and second-order derivatives; polynomial degree
+alone does not imply fourth-order accuracy because the slopes are estimated.
+
+The four-node stencil in each resolved direction requires at least three
+guard cells for particle and midpoint sampling before tile migration.
+Configurations using the GR particle sampler default to three and reject
+smaller values. A globally single-cell direction uses its designated base
+node and has zero metric derivative; a single-cell tile in a resolved
+direction still interpolates normally.
+
+Unused particle slots are sampled at safe interior positions. Samples outside
+the available stencil produce NaNs, and checked execution reports invalid
+active samples, nonpositive lapse, or invalid spatial tensors without repairs.
+The derived volume factor preserves the chart's signed orientation in
+reflected spherical and cylindrical guards.
+
+This contract is independent of ``shape_factor``: electromagnetic field
+gathering and particle deposition retain their selected particle shapes.
+Output metadata identifies the reconstruction as
+``cardinal_cubic_hermite_consistent_v1``; this is descriptive metadata, not
+a selectable numerical mode.
 
 Boundary Conditions and PML
 ---------------------------

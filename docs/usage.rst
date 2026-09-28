@@ -109,10 +109,13 @@ Time and Grid Parameters
 Numerical Choices
 -----------------
 
-- ``solver`` is ``electrodynamic_yee`` or ``electrostatic``.
+- ``solver`` is ``electrodynamic_yee``, ``electrostatic``, or ``static_metric``.
 - ``particle_pusher`` is ``boris`` or ``higuera_cary``. The ``relativistic``
   switch selects relativistic or non-relativistic Boris; Higuera-Cary uses its
   relativistic update.
+- ``static_metric`` uses ``hybrid_boris_geodesic`` and the shared Hermite
+  particle-metric reconstruction described in :doc:`solvers`. Its particle
+  sampler requires ``guard_cells >= 3`` (the default for this configuration).
 - ``particle_batch_size`` is the positive, static number of active particles
   processed at once inside each tile. An explicit value is reduced to the tile
   slot capacity when necessary. If omitted, initialization uses every active
@@ -121,7 +124,8 @@ Numerical Choices
   mesh device, capped by the largest active tile population. Other accelerator
   backends use a conservative target of 1024 particles. The resolved value is
   printed before JIT compilation.
-- ``shape_factor`` is ``1`` or ``2``.
+- ``shape_factor`` is ``1`` or ``2`` for particle shapes and electromagnetic
+  field gathering. It does not select the particle-metric reconstruction.
 - ``current_calculation`` is ``j_from_rhov`` or ``esirkepov`` for the Yee
   solvers, or ``GR_direct_deposition`` or ``GR_esirkepov`` for
   ``static_metric``. ``GR_esirkepov`` is charge conserving and preserves
