@@ -13,7 +13,7 @@ from PyPIC3D.deposition.GR_Esirkepov import GR_Esirkepov_current
 from PyPIC3D.deposition.rho import compute_rho
 from PyPIC3D.particles.particle_tile_communication import refresh_tiled_particle_tiles
 from PyPIC3D.relativity.core import B_FIELD_LOCATIONS, D_FIELD_LOCATIONS
-from PyPIC3D.relativity.flat import initialize_flat_spherical_metric
+from PyPIC3D.relativity.metrics.flat import initialize_flat_spherical_metric
 from PyPIC3D.solvers.gr_static.static_metric import compute_covariant_E, compute_covariant_H
 from tests.support.polar_fixtures import particle
 

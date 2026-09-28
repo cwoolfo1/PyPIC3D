@@ -12,7 +12,7 @@ from PyPIC3D.particles.particle_tile_communication import update_tiled_particle_
 from PyPIC3D.particles.particle_class import SpeciesConfig, TiledParticles
 from PyPIC3D.pusher.particle_push import particle_push, seed_leapfrog_velocity
 from PyPIC3D.pusher.hybrid_boris_geodesic import hybrid_boris_geodesic_push
-from PyPIC3D.relativity.flat import initialize_flat_cartesian_metric
+from PyPIC3D.relativity.metrics.flat import initialize_flat_cartesian_metric
 from PyPIC3D.utilities.grids import build_tiled_yee_grids, build_yee_grid
 from tests.kernel_fixtures import empty_tiled_vector, kernel_parameters
 

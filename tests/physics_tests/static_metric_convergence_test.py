@@ -9,9 +9,9 @@ from PyPIC3D.pusher.hybrid_boris_geodesic import (
     geodesic_acceleration,
     hybrid_boris_geodesic_push,
 )
-from PyPIC3D.relativity.flat import initialize_flat_cartesian_metric
+from PyPIC3D.relativity.metrics.flat import initialize_flat_cartesian_metric
 from PyPIC3D.relativity.interpolate_metric import interpolate_metric
-from PyPIC3D.relativity.kerr_schild import initialize_kerr_schild_spherical_metric
+from PyPIC3D.relativity.metrics.kerr_schild import initialize_kerr_schild_spherical_metric
 from PyPIC3D.solvers.gr_static.static_metric import update_B_relativity
 from tests.kernel_fixtures import empty_tiled_vector, kernel_parameters
 

@@ -15,7 +15,7 @@ from demos.static_metric_relativity.bz_monopole.run_bz_monopole import initializ
 from PyPIC3D.boundary_conditions.staggered import refresh_fields as refresh_vector
 from PyPIC3D.relativity.core import B_FIELD_LOCATIONS
 from PyPIC3D.deposition.rho import compute_rho
-from PyPIC3D.relativity.kerr_schild import _kerr_schild_spherical_metric_at_position
+from PyPIC3D.relativity.metrics.kerr_schild import _kerr_schild_spherical_metric_at_position
 
 class TestParameters(unittest.TestCase):
     def test_production_defaults(self):

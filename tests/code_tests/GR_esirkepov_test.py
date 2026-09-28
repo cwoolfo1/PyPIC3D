@@ -34,12 +34,12 @@ from PyPIC3D.initialization import (
     _validate_tiled_yee_configuration,
 )
 from PyPIC3D.particles.particle_class import SpeciesConfig, TiledParticles
-from PyPIC3D.relativity.flat import (
+from PyPIC3D.relativity.metrics.flat import (
     initialize_flat_cartesian_metric,
     initialize_flat_cylindrical_metric,
     initialize_flat_spherical_metric,
 )
-from PyPIC3D.relativity.kerr_schild import (
+from PyPIC3D.relativity.metrics.kerr_schild import (
     initialize_kerr_schild_cartesian_metric,
     initialize_kerr_schild_spherical_metric,
 )

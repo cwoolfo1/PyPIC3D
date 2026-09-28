@@ -49,12 +49,12 @@ from PyPIC3D.relativity.core import (
     contravariant_three_velocity,
     covariant_lorentz_factor,
 )
-from PyPIC3D.relativity.flat import (
+from PyPIC3D.relativity.metrics.flat import (
     _flat_cartesian_metric_at_position,
     _flat_cylindrical_metric_at_position,
     _flat_spherical_metric_at_position,
 )
-from PyPIC3D.relativity.kerr_schild import (
+from PyPIC3D.relativity.metrics.kerr_schild import (
     _kerr_schild_cartesian_metric_at_position,
     _kerr_schild_spherical_metric_at_position,
 )

@@ -46,7 +46,7 @@ import matplotlib.pyplot as plt
 from PyPIC3D.initialization import initialize_simulation
 from PyPIC3D.pusher.hybrid_boris_geodesic import hybrid_boris_geodesic_push
 from PyPIC3D.pusher.particle_push import seed_leapfrog_velocity
-from PyPIC3D.relativity.kerr_schild import (
+from PyPIC3D.relativity.metrics.kerr_schild import (
     _kerr_schild_spherical_metric_at_position,
 )
 

@@ -8,7 +8,7 @@ from PyPIC3D.utilities.parameters import build_static_parameters, build_dynamic_
 from PyPIC3D.utilities.grids import build_yee_grid, build_tiled_yee_grids
 from PyPIC3D.relativity.core import B_FIELD_LOCATIONS, Metric, build_yee_metric
 from PyPIC3D.relativity.interpolate_metric import interpolate_metric
-from PyPIC3D.relativity.flat import initialize_flat_cartesian_metric, initialize_flat_spherical_metric
+from PyPIC3D.relativity.metrics.flat import initialize_flat_cartesian_metric, initialize_flat_spherical_metric
 from PyPIC3D.boundary_conditions.polar import refresh_vector
 from PyPIC3D.pusher.hybrid_boris_geodesic import magnetic_boris_rotation, gather_vector
 from PyPIC3D.particles.particle_class import SpeciesConfig, TiledParticles

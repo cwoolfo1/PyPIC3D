@@ -4,7 +4,7 @@ import jax
 import jax.numpy as jnp
 from tests.support.polar_runtime import SimulationParameters,build_runtime
 from PyPIC3D.particles.particle_class import TiledParticles,SpeciesConfig
-from PyPIC3D.relativity.flat import initialize_flat_spherical_metric
+from PyPIC3D.relativity.metrics.flat import initialize_flat_spherical_metric
 jax.config.update('jax_enable_x64',True)
 
 @lru_cache(None)

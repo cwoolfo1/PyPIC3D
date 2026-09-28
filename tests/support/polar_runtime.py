@@ -10,7 +10,7 @@ import jax
 import jax.numpy as jnp
 from jax.sharding import NamedSharding, PartitionSpec as P
 
-from PyPIC3D.relativity.kerr_schild import initialize_kerr_schild_spherical_metric
+from PyPIC3D.relativity.metrics.kerr_schild import initialize_kerr_schild_spherical_metric
 from PyPIC3D.utilities.grids import build_yee_grid, build_tiled_yee_grids
 from PyPIC3D.utilities.parameters import build_static_parameters, build_dynamic_parameters
 

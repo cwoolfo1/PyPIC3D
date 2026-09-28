@@ -2,7 +2,7 @@
 from functools import lru_cache
 import math
 from demos.static_metric_relativity.bz_monopole.simulation_parameters import SimulationParameters, build_runtime
-from PyPIC3D.relativity.flat import initialize_flat_spherical_metric
+from PyPIC3D.relativity.metrics.flat import initialize_flat_spherical_metric
 from tests.support.polar_fixtures import particle
 
 

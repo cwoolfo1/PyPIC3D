@@ -32,7 +32,7 @@ from PyPIC3D.boundary_conditions.supergaussian import (
 )
 from PyPIC3D.utilities.parameters import DynamicParameters, GridParameters, StaticParameters
 from PyPIC3D.relativity.core import B_FIELD_LOCATIONS, D_FIELD_LOCATIONS
-from PyPIC3D.relativity.kerr_schild import initialize_kerr_schild_spherical_metric
+from PyPIC3D.relativity.metrics.kerr_schild import initialize_kerr_schild_spherical_metric
 from PyPIC3D.utilities.grids import build_tiled_yee_grids, build_yee_grid
 
 

@@ -5,7 +5,7 @@ import jax.numpy as jnp
 import numpy as np
 from PyPIC3D.boundary_conditions.polar import current_factors,divergence,refresh_vector,divide
 from PyPIC3D.relativity.core import B_FIELD_LOCATIONS
-from PyPIC3D.relativity.flat import initialize_flat_spherical_metric
+from PyPIC3D.relativity.metrics.flat import initialize_flat_spherical_metric
 from PyPIC3D.deposition.rho import compute_rho
 from PyPIC3D.deposition.GR_Esirkepov import GR_Esirkepov_current
 from PyPIC3D.solvers.gr_static.static_metric import update_D_relativity
@@ -15,7 +15,7 @@ jax.config.update('jax_enable_x64',True)
 
 class TestPolar(unittest.TestCase):
     def test_polar_metric_parameters_must_match_geometry(self):
-        from PyPIC3D.relativity.kerr_schild import initialize_kerr_schild_spherical_metric
+        from PyPIC3D.relativity.metrics.kerr_schild import initialize_kerr_schild_spherical_metric
         p,s,d,m=polar_runtime()
         with self.assertRaisesRegex(ValueError,'match static parameters'):
             initialize_kerr_schild_spherical_metric(s,d,mass=2.,spin=p.spin)
