@@ -91,32 +91,29 @@ runner takes no arguments.
 The run writes snapshots, ``diagnostics.npz`` and ``final_state.npz`` to
 ``data/`` and stops if the exterior Gauss or divergence-of-B residuals exceed
 their tolerances. ``plot_entity_bz.py`` redraws the Figure 6 panels from the
-saved snapshots. Figures and animations honor the saved cap angle and leave
-excised regions blank; legacy full-sphere snapshots remain readable.
+saved snapshots. Figures and animations use the saved angular coordinates;
+legacy full-sphere snapshots remain readable.
 
-The demo uses standard metric-weighted E/H interpolation and defaults to
-``polar_cap_angle=math.radians(10)``: a domain of 10 to 170 degrees with
-64 angular cells. The cut surfaces are conducting field walls with specular
-particle reflection; reflected particles retain their azimuth. The angle must
-exceed ``guard_cells*dtheta`` so metric halos also remain inside the regular
-chart. Coarser angular grids may require larger caps. Zero-cap BZ field
-initialization is rejected because the standard formula divides by the
-pointwise metric volume density, which vanishes at the axes.
+The demo uses the general static-metric finite-difference field updates and
+standard metric-weighted E/H interpolation. Set ``theta_start`` and
+``theta_end`` in radians; defaults are 10 and 170 degrees with 64 angular
+cells. Field and particle boundaries are independent directional tuples:
+``boundary_conditions=(3, 1, 0)`` and
+``particle_boundary_conditions=(2, 1, 0)``. These retain the radial treatment,
+use conducting fields and reflecting particles in theta, and periodic phi
+with one cell. Reflections retain azimuth. Both angular endpoints must leave
+space for all metric guard nodes inside the regular spherical chart; radial
+guard nodes must remain above r=0. These checks precede metric initialization.
 
-The interpolation is independent of metric names and polar curl geometry,
-and requires nonsingular metric samples throughout its stencils. It does
-not supply general limits at coordinate singularities. Particle metric
-reconstruction and finite-volume field updates retain their existing methods.
-Excision changes the physical boundary problem; cap-size and long-time
-convergence remain necessary before interpreting full-sphere jet power.
+The particle metric uses Hermite reconstruction. Source filtering acts on
+conformal charge/current and is checked with the same finite-difference
+divergence as the field solver. The existing polar finite-volume solver
+remains available independently and is not selected by this demo.
 
-The default configuration completed 200 M with standard interpolation and
-accepted exterior constraints. ``STANDARD_200M_REPORT.md`` beside the runner
-records the configuration, provenance, results, and limitations. Historical
-comparison scripts and raw artifacts are retained only in the ignored local
-``research_archive/bz_monopole/`` directory; they are not part of a fresh checkout
-or maintained demo entry points. There is no interpolation selector or
-constraint-waiver option.
+The historical ``STANDARD_200M_REPORT.md`` records a 200 M run using standard constitutive
+interpolation **and polar finite-volume evolution**; it is not evidence for
+a 200 M finite-difference run. The finite-difference demo has passed a short
+four-step production-grid check; long-run validation remains to be performed.
 
 For a short CPU diagnostic, call the runner from the repository root with
 an unused output directory:

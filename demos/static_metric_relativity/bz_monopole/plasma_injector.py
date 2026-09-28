@@ -22,7 +22,7 @@ class InjectionReport(NamedTuple):
 def empty_particles(p, static):
     shape = (p.devices, 1, 1, 2, p.slots_per_species)
     # Inactive positions must also have a finite metric: JAX evaluates masked lanes.
-    x = jnp.broadcast_to(jnp.array([p.r_min+0.5*p.dr, 0.5*jnp.pi, 0.]), shape+(3,))
+    x = jnp.broadcast_to(jnp.array([p.r_min+0.5*p.dr, 0.5*(p.theta_start+p.theta_end), 0.]), shape+(3,))
     particles = TiledParticles(x=x, u=jnp.zeros_like(x), active=jnp.zeros(shape, bool))
     species = SpeciesConfig(charge=jnp.array([-1., 1.]), mass=jnp.ones(2),
                             weight=jnp.full(2, p.weight), update_x=jnp.ones((2, 3), bool))
@@ -93,18 +93,17 @@ def inject_pairs(particles, species, magnetization, D, B, metric, static, dynami
     p = parameters
     g = static.guard_cells
     nr, nt, _ = static.tile_shape
-    nt += 1  # both polar charge-control volumes are owned
+    nt += 1  # reflecting endpoint charge nodes are available for injection
     slots = particles.active.shape[-1]
     candidate_capacity = min(slots, nr*nt*(p.pairs_per_cell+2))
     interior = (slice(None),)*3 + (slice(g,-g),slice(g,-g+1),slice(g,-g))
-    volume = metric.geometry.volume[interior]
     rgrid, tgrid, _ = dynamic.grids.tiled_center_grid
     sigma = magnetization.sigma[interior]
     valid = magnetization.valid[interior]
     next_key, event_key = jax.random.split(key)
     event_key = jax.random.fold_in(event_key, step)
 
-    def one_tile(x, u, active, sig, valid, vol, rline, tline, pline, primitive_metric, tile_id):
+    def one_tile(x, u, active, sig, valid, rline, tline, pline, primitive_metric, tile_id):
         rr, tt = jnp.meshgrid(rline[g:-g], tline[g:-g+1], indexing="ij")
         rr, tt = rr.reshape(-1), tt.reshape(-1)
         cells = jnp.arange(nr*nt)
@@ -113,8 +112,8 @@ def inject_pairs(particles, species, magnetization, D, B, metric, static, dynami
         # Injection samples clipped charge-control volumes. Radial boundary
         # truncation is integrated with the same 8-point geometry quadrature.
         rlo=jnp.maximum(rr-p.dr/2,p.r_min); rhi=jnp.minimum(rr+p.dr/2,p.sponge_start)
-        tlo=jnp.maximum(tt-p.dtheta/2,p.polar_cap_angle)
-        thi=jnp.minimum(tt+p.dtheta/2,jnp.pi-p.polar_cap_angle)
+        tlo=jnp.maximum(tt-p.dtheta/2,p.theta_start)
+        thi=jnp.minimum(tt+p.dtheta/2,p.theta_end)
         from numpy.polynomial.legendre import leggauss
         nodes,weights=leggauss(8)
         integral=jnp.zeros_like(rr)
@@ -156,7 +155,7 @@ def inject_pairs(particles, species, magnetization, D, B, metric, static, dynami
 
     x, u, active, newborn, requested, inserted, birth_errors = jax.vmap(one_tile)(
         particles.x[:, 0, 0], particles.u[:, 0, 0], particles.active[:, 0, 0],
-        sigma[:, 0, 0], valid[:, 0, 0], volume[:, 0, 0], rgrid[:, 0, 0],
+        sigma[:, 0, 0], valid[:, 0, 0], rgrid[:, 0, 0],
         tgrid[:, 0, 0], dynamic.grids.tiled_center_grid[2][:,0,0],
         jax.tree.map(lambda a: a[:,0,0], metric.center), jnp.arange(p.devices))
     result = TiledParticles(x[:, None, None], u[:, None, None], active[:, None, None])

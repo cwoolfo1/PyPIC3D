@@ -1,4 +1,4 @@
-"""Run configuration in Gaussian geometrized units: G=M=c=m=|q|=1.
+"""Historical polar test configuration, independent of the maintained BZ demo.
 
 The density normalization n0 is the TOTAL electron plus positron density.
 """
@@ -46,10 +46,7 @@ class SimulationParameters:
     gauss_tolerance: float = 1e-10
     magnetic_divergence_tolerance: float = 1e-10
     constraint_check_interval: int = 100
-    theta_start: float = math.radians(10)
-    theta_end: float = math.radians(170)
-    boundary_conditions: tuple = (3, 1, 0)
-    particle_boundary_conditions: tuple = (2, 1, 0)
+    polar_cap_angle: float = math.radians(10)  # reflecting conducting cap walls
 
 
     @property
@@ -58,7 +55,7 @@ class SimulationParameters:
 
     @property
     def dtheta(self):
-        return (self.theta_end-self.theta_start) / self.ntheta
+        return (math.pi-2*self.polar_cap_angle) / self.ntheta
 
     @property
     def n0(self):
@@ -103,31 +100,25 @@ def build_runtime(parameters=SimulationParameters()):
     Returns ``(static, dynamic, metric, cfl_dt)``.
     """
     p = parameters
-    if not (math.isfinite(p.theta_start) and math.isfinite(p.theta_end)
-            and 0 < p.theta_start < p.theta_end < math.pi):
-        raise ValueError('theta_start and theta_end must be finite and satisfy 0 < start < end < pi')
-    if min(p.theta_start, math.pi-p.theta_end) <= p.guard_cells*p.dtheta:
-        raise ValueError('Angular grid guard nodes must stay strictly inside (0, pi)')
-    if not (math.isfinite(p.r_min) and math.isfinite(p.r_max) and 0 < p.r_min < p.r_max):
-        raise ValueError('Radial bounds must be finite and satisfy 0 < r_min < r_max')
-    if p.r_min <= p.guard_cells*p.dr:
-        raise ValueError('Radial metric guard nodes must stay strictly above r=0')
     jax.config.update("jax_enable_x64", True)
     config = dict(Nx=p.nr, Ny=p.ntheta, Nz=1, x_wind=p.r_max-p.r_min,
-                  y_wind=p.theta_end-p.theta_start, z_wind=2*math.pi, x_min=p.r_min,
-                  y_min=p.theta_start, z_min=0.0, dx=p.dr, dy=p.dtheta,
+                  y_wind=math.pi-2*p.polar_cap_angle, z_wind=2*math.pi, x_min=p.r_min,
+                  y_min=p.polar_cap_angle, z_min=0.0, dx=p.dr, dy=p.dtheta,
                   dz=2*math.pi, dt=1.0)
     static = build_static_parameters(dict(
         **config, name="bz_monopole", solver="static_metric",
         metric="kerr_schild_spherical", metric_mass=1., metric_spin=p.spin,
         particle_pusher="hybrid_boris_geodesic", current_deposition="GR_esirkepov",
         current_filter="none", shape_factor=1, guard_cells=p.guard_cells,
-        tile_shape=(p.nr//p.devices, p.ntheta, 1), boundary_conditions=p.boundary_conditions,
+        tile_shape=(p.nr//p.devices, p.ntheta, 1), boundary_conditions=(3, 4, 0),
         # Two-GPU timing favors larger active batches;
         # 256-particle batches spend more time in loop/kernel overhead.
-        particle_boundary_conditions=p.particle_boundary_conditions, particle_batch_size=p.particle_batch_size,
-        horizon_field_cells=p.horizon_field_cells))
+        particle_boundary_conditions=(2, 4, 0), particle_batch_size=p.particle_batch_size,
+        horizon_field_cells=p.horizon_field_cells, polar_cap_angle=p.polar_cap_angle))
     center, vertex = build_yee_grid(SimpleNamespace(**config))
+    theta=p.polar_cap_angle+jnp.arange(-1,p.ntheta+1,dtype=jnp.float64)*p.dtheta
+    center=(center[0],theta,center[2])
+    vertex=(vertex[0],theta+p.dtheta/2,vertex[2])
     tc, tv = build_tiled_yee_grids(static, SimpleNamespace(**config, grids=SimpleNamespace(center=center, vertex=vertex)))
     config["grids"] = dict(center=center, vertex=vertex, tiled_center_grid=tc, tiled_vertex_grid=tv)
     dynamic = build_dynamic_parameters(config)
@@ -135,7 +126,8 @@ def build_runtime(parameters=SimulationParameters()):
     metric = jax.tree.map(lambda a: shard_array(a, static), metric)
     interior = (slice(None),)*3 + (slice(p.guard_cells, -p.guard_cells),)*3
     m = metric.center
-    # Directional characteristic bounds in the regular spherical chart.
+    # Directional characteristic bounds use regular analytic inverse components,
+    # including the axes where the unused full inverse tensor is masked.
     rr=dynamic.grids.tiled_center_grid[0][..., :,None,None]
     tt=dynamic.grids.tiled_center_grid[1][...,None,:,None]
     sig=rr**2+p.spin**2*jnp.cos(tt)**2

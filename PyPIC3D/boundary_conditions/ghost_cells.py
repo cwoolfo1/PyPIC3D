@@ -4,7 +4,7 @@ import jax
 import jax.numpy as jnp
 from jax.sharding import PartitionSpec as P
 
-from PyPIC3D.boundary_conditions.grid_and_stencil import BC_CONDUCTING, BC_CONSTANT, BC_PERIODIC, BC_POLAR
+from PyPIC3D.boundary_conditions.grid_and_stencil import BC_ABSORBING, BC_CONDUCTING, BC_CONSTANT, BC_PERIODIC, BC_POLAR
 
 
 MESH_AXES = ("tile_x", "tile_y", "tile_z")
@@ -273,6 +273,68 @@ def _apply_local_reflecting_boundary_axis(
     return tile
 
 
+def _staggered_conducting_axis(tile, axis, g, axis_name, axis_size,
+                                positive, negative, location, parity, *, fold):
+    """Reflect about actual endpoint nodes, preserving the owned upper C plane.
+
+    Folding creates the even/odd image source. An even source on a wall node
+    receives its coincident image, so its point density is doubled; integrating
+    nodal densities uses endpoint trapezoid weights. No metric volumes enter.
+    """
+    n = tile.shape[axis] - 2*g
+    staggered = location == 'V'
+    upper = g+n-1 if staggered else g+n
+    index = jax.lax.axis_index(axis_name)
+    parity = 1 if parity is None else parity
+    def plane(i):
+        result = [slice(None)] * 3
+        result[axis] = i
+        return tuple(result)
+    def wall(a, low):
+        outside = range(g) if low else range(upper+1, a.shape[axis])
+        original = a
+        for i in outside:
+            j = i-g
+            owner = (-j-1 if staggered else -j) if low else (2*n-1-j if staggered else 2*n-j)
+            sign = parity
+            # A narrow single-tile direction can fit fewer cells than halos.
+            # Continue reflecting until the owner is inside the domain.
+            if axis_size == 1:
+                last = n-1 if staggered else n
+                while owner < 0 or owner > last:
+                    owner = ((-owner-1 if staggered else -owner) if owner < 0 else
+                             (2*n-1-owner if staggered else 2*n-owner))
+                    sign *= parity
+            if fold:
+                a = a.at[plane(g+owner)].add(sign*original[plane(i)])
+                a = a.at[plane(i)].set(0.)
+            else:
+                a = a.at[plane(i)].set(sign*original[plane(g+owner)])
+        return a
+    if fold:
+        tile = jax.lax.cond(index == 0, lambda a: wall(a, True), lambda a: a, tile)
+        tile = jax.lax.cond(index == axis_size-1, lambda a: wall(a, False), lambda a: a, tile)
+        if not staggered:
+            tile = jax.lax.cond(index == 0,
+                lambda a: a.at[plane(g)].multiply(1+parity), lambda a: a, tile)
+            tile = jax.lax.cond(index == axis_size-1,
+                lambda a: a.at[plane(g+n)].multiply(1+parity), lambda a: a, tile)
+        endpoint = tile[plane(g+n)]
+        # Reflection has already folded the exterior sources. Exchange only
+        # inter-tile deposits, using the ordinary nonperiodic communication.
+        tile = _fold_axis(tile, axis, g, axis_name, axis_size, BC_ABSORBING, positive, negative)
+    else:
+        endpoint = tile[plane(g+n)]
+        tile = _refresh_axis(tile, axis, g, axis_name, positive, negative)
+    if not staggered:
+        tile = jax.lax.cond(index == axis_size-1,
+                            lambda a: a.at[plane(g+n)].set(endpoint), lambda a: a, tile)
+    if not fold:
+        tile = jax.lax.cond(index == 0, lambda a: wall(a, True), lambda a: a, tile)
+        tile = jax.lax.cond(index == axis_size-1, lambda a: wall(a, False), lambda a: a, tile)
+    return tile
+
+
 def _local_refresh_scalar_tile(
     tile,
     g,
@@ -282,6 +344,7 @@ def _local_refresh_scalar_tile(
     send_positive,
     send_negative,
     reflecting_parity=None,
+    location=None,
 ):
     axis_parities = (None, None, None) if reflecting_parity is None else reflecting_parity
     for axis, axis_name, boundary_condition, reduced_axis, positive, negative, parity in zip(
@@ -295,6 +358,19 @@ def _local_refresh_scalar_tile(
     ):
         if boundary_condition == BC_POLAR:
             continue  # polar theta is handled with explicit C/V ownership
+        if boundary_condition == BC_CONDUCTING and location is not None:
+            tile = _staggered_conducting_axis(
+                tile, axis, g, axis_name, mesh_shape[axis], positive, negative,
+                location[axis], parity, fold=False)
+            continue
+        # A normal staggered source owns the lower absorbing face even though
+        # it is stored in a halo. Preserve it before the transverse directions
+        # are processed, so corner sources receive their transverse folding.
+        keep_face = (boundary_condition == BC_ABSORBING and location is not None
+                     and location[axis] == 'V')
+        if keep_face:
+            face = _axis_boundary_plane(axis, g-1)
+            lower_flux = tile[face]
         if reduced_axis:
             tile = _local_refresh_reduced_axis(
                 tile,
@@ -316,6 +392,9 @@ def _local_refresh_scalar_tile(
                     axis_name,
                     mesh_shape[axis],
                 )
+        if keep_face:
+            tile = jax.lax.cond(jax.lax.axis_index(axis_name) == 0,
+                lambda a: a.at[face].set(lower_flux), lambda a: a, tile)
 
     return tile
 
@@ -445,6 +524,7 @@ def _local_fold_scalar_tile(
     send_positive,
     send_negative,
     reflecting_parity=None,
+    location=None,
 ):
     axis_parities = (None, None, None) if reflecting_parity is None else reflecting_parity
     for axis, axis_name, axis_size, boundary_condition, reduced_axis, positive, negative, parity in zip(
@@ -459,6 +539,16 @@ def _local_fold_scalar_tile(
     ):
         if boundary_condition == BC_POLAR:
             continue  # polar theta is handled with explicit C/V ownership
+        if boundary_condition == BC_CONDUCTING and location is not None:
+            tile = _staggered_conducting_axis(
+                tile, axis, g, axis_name, mesh_shape[axis], positive, negative,
+                location[axis], parity, fold=True)
+            continue
+        keep_face = (boundary_condition == BC_ABSORBING and location is not None
+                     and location[axis] == 'V')
+        if keep_face:
+            face = _axis_boundary_plane(axis, g-1)
+            lower_flux = tile[face]
         if reduced_axis:
             tile = _local_fold_reduced_axis(
                 tile,
@@ -479,6 +569,9 @@ def _local_fold_scalar_tile(
                 negative,
                 reflecting_parity=parity,
             )
+        if keep_face:
+            tile = jax.lax.cond(jax.lax.axis_index(axis_name) == 0,
+                lambda a: a.at[face].set(lower_flux), lambda a: a, tile)
 
     return tile
 
@@ -560,6 +653,7 @@ def make_distributed_ghost_updater(
     num_guard_cells,
     *,
     reflecting_parity=None,
+    location=None,
 ):
     """
     Build a shard-mapped scalar halo refresher.
@@ -589,6 +683,7 @@ def make_distributed_ghost_updater(
             send_positive,
             send_negative,
             reflecting_parity=reflecting_parity,
+            location=location,
         )
         return tile[jnp.newaxis, jnp.newaxis, jnp.newaxis, :, :, :]
 
@@ -688,6 +783,7 @@ def make_distributed_ghost_folder(
     num_guard_cells,
     *,
     reflecting_parity=None,
+    location=None,
 ):
     """
     Build a shard-mapped scalar ghost-deposit folder.
@@ -717,6 +813,7 @@ def make_distributed_ghost_folder(
             send_positive,
             send_negative,
             reflecting_parity=reflecting_parity,
+            location=location,
         )
         return tile[jnp.newaxis, jnp.newaxis, jnp.newaxis, :, :, :]
 
@@ -885,6 +982,12 @@ def update_tiled_ghost_cells(
     particle deposits are even by default.
     """
 
+    if (bc_type == BC_TYPE_PARTICLE and static_parameters.solver == 'static_metric'
+            and BC_POLAR not in static_parameters.particle_boundary_conditions):
+        from .staggered import source_boundaries
+        return source_boundaries(field_tiles, static_parameters._replace(guard_cells=int(num_guard_cells)),
+                                 fold=False, vector=False, reflecting_parity=reflecting_parity)
+
     tile_shape = tuple(int(width) for width in static_parameters.tile_shape)
     mesh = static_parameters.field_mesh
     reflecting_parity = _particle_reflecting_parity(bc_type, reflecting_parity, vector=False)
@@ -918,6 +1021,12 @@ def update_tiled_vector_ghost_cells(
     through the same distributed halo exchange. Particle vectors default to
     odd normal and even tangential reflection parity.
     """
+
+    if (bc_type == BC_TYPE_PARTICLE and static_parameters.solver == 'static_metric'
+            and BC_POLAR not in static_parameters.particle_boundary_conditions):
+        from .staggered import source_boundaries
+        return source_boundaries(field_tiles, static_parameters._replace(guard_cells=int(num_guard_cells)),
+                                 fold=False, vector=True, reflecting_parity=reflecting_parity)
 
     tile_shape = tuple(int(width) for width in static_parameters.tile_shape)
     mesh = static_parameters.field_mesh
@@ -1004,6 +1113,12 @@ def fold_tiled_ghost_cells(
     deposits use parity-aware nearest-to-nearest reflection.
     """
 
+    if (bc_type == BC_TYPE_PARTICLE and static_parameters.solver == 'static_metric'
+            and BC_POLAR not in static_parameters.particle_boundary_conditions):
+        from .staggered import source_boundaries
+        return source_boundaries(field_tiles, static_parameters._replace(guard_cells=int(num_guard_cells)),
+                                 fold=True, vector=False, reflecting_parity=reflecting_parity)
+
     tile_shape = tuple(int(width) for width in static_parameters.tile_shape)
     mesh = static_parameters.field_mesh
     reflecting_parity = _particle_reflecting_parity(bc_type, reflecting_parity, vector=False)
@@ -1031,6 +1146,12 @@ def fold_tiled_vector_ghost_cells(
     """
     Fold tile-ghost deposits for a tiled vector field.
     """
+
+    if (bc_type == BC_TYPE_PARTICLE and static_parameters.solver == 'static_metric'
+            and BC_POLAR not in static_parameters.particle_boundary_conditions):
+        from .staggered import source_boundaries
+        return source_boundaries(field_tiles, static_parameters._replace(guard_cells=int(num_guard_cells)),
+                                 fold=True, vector=True, reflecting_parity=reflecting_parity)
 
     tile_shape = tuple(int(width) for width in static_parameters.tile_shape)
     mesh = static_parameters.field_mesh

@@ -4,14 +4,15 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from jax.experimental import checkify
-from tests.support.polar_fixtures import polar_runtime as polar_setup,particle
+from tests.support.bz_fixtures import bz_runtime as polar_setup, particle
+from PyPIC3D.diagnostics.static_metric import node_weights
 from demos.static_metric_relativity.bz_monopole import magnetization as mag
 from demos.static_metric_relativity.bz_monopole.simulation_parameters import SimulationParameters
 from demos.static_metric_relativity.bz_monopole.plasma_injector import (birth_covariant_momentum,empty_particles,
     inject_pairs,thermal_momentum,orthonormal_to_covariant)
 from PyPIC3D.relativity.interpolate_metric import interpolate_metric
 from demos.static_metric_relativity.bz_monopole.run_bz_monopole import initialize_fields,diagnostics,apply_sponge
-from PyPIC3D.boundary_conditions.polar import refresh_vector
+from PyPIC3D.boundary_conditions.staggered import refresh_fields as refresh_vector
 from PyPIC3D.relativity.core import B_FIELD_LOCATIONS
 from PyPIC3D.deposition.rho import compute_rho
 from PyPIC3D.relativity.kerr_schild import _kerr_schild_spherical_metric_at_position
@@ -22,7 +23,7 @@ class TestParameters(unittest.TestCase):
         self.assertEqual((p.nr,p.ntheta,p.devices,p.guard_cells),(64,64,1,3))
         self.assertEqual(p.courant,.2)
         self.assertEqual(p.end_time,200.)
-        self.assertAlmostEqual(p.polar_cap_angle,np.deg2rad(10))
+        self.assertAlmostEqual(p.theta_start,np.deg2rad(10))
         self.assertEqual((p.skin_depth,p.pairs_per_cell,p.maximum_timestep),(.02,16,.004))
     def test_horizon_normalization(self):
         p,*_=polar_setup()
@@ -33,12 +34,12 @@ class TestParameters(unittest.TestCase):
 class TestMagnetization(unittest.TestCase):
     def test_number_and_inactive(self):
         p,s,d,m=polar_setup(order=2);zero=jnp.zeros_like(m.center.sqrt_gamma)
-        for theta in (.01*p.dtheta,np.pi-.01*p.dtheta):
+        for theta in (p.theta_start+.01*p.dtheta,p.theta_end-.01*p.dtheta):
             pts,sp=particle(s,d,theta)
             sp=sp._replace(weight=jnp.array([2.5]))
             n=mag.deposit_number_density(pts,sp,zero,m,s,d)
             self.assertTrue(bool(jnp.all(n>=0)))
-            total=jnp.sum(jnp.where(m.geometry.charge_owned,n[0]*m.geometry.volume,0))
+            total=jnp.sum(jnp.where(node_weights(s,zero)>0,n[0]*m.center.sqrt_gamma*d.dx*d.dy*d.dz*node_weights(s,zero),0))
             self.assertAlmostEqual(float(total),2.5,places=12)
             n=mag.deposit_number_density(pts._replace(active=jnp.zeros_like(pts.active)),sp,zero,m,s,d)
             self.assertEqual(float(n.sum()),0.)
@@ -54,7 +55,7 @@ class TestMagnetization(unittest.TestCase):
             n=jnp.ones((2,)+shape)
             result=mag.magnetization_from_density(B,n,jnp.ones(2),m)
             exact=jnp.cos(2*tc)**2+rc**2*jnp.sin(tc)**2
-            error=jnp.max(jnp.where(m.geometry.charge_owned,jnp.abs(result.magnetic_squared-exact),0))
+            error=jnp.max(jnp.where((node_weights(s,m.center.sqrt_gamma)>0)&(tc>p.theta_start+p.dtheta)&(tc<p.theta_end-p.dtheta),jnp.abs(result.magnetic_squared-exact),0))
             errors.append(float(error))
             self.assertTrue(bool(jnp.allclose(result.sigma,result.magnetic_squared/(8*jnp.pi))))
         self.assertGreater(errors[0]/errors[1],3.7);self.assertGreater(errors[1]/errors[2],3.7)
@@ -82,7 +83,7 @@ class TestInjection(unittest.TestCase):
         x=np.asarray(r.x)[np.asarray(r.active)]
         self.assertTrue(np.all((x[:,1]>0)&(x[:,1]<np.pi)&(x[:,0]>=self.p.r_min)&(x[:,0]<self.p.sponge_start)))
         n=mag.deposit_number_density(r,self.sp,self.zero[0],self.m,self.s,self.d)
-        total=float(jnp.sum(jnp.where(self.m.geometry.charge_owned,n.sum(0)*self.m.geometry.volume,0)))
+        total=float(jnp.sum(jnp.where(node_weights(self.s,self.zero[0])>0,n.sum(0)*self.m.center.sqrt_gamma*self.d.dx*self.d.dy*self.d.dz*node_weights(self.s,self.zero[0]),0)))
         np.testing.assert_allclose(total,2*float(self.sp.weight[0])*int(rep.inserted.sum()),
                                    rtol=16*np.finfo(np.float64).eps,atol=0.)
     def test_threshold_and_capacity(self):
@@ -124,7 +125,7 @@ class TestInjection(unittest.TestCase):
 
 class TestRunner(unittest.TestCase):
     def test_initialize_sponge(self):
-        p,s,d,m=polar_setup(cap=np.deg2rad(30));particles,sp=empty_particles(p,s);fields,b=initialize_fields(p,s,d,m)
+        p,s,d,m=polar_setup();particles,sp=empty_particles(p,s);fields,b=initialize_fields(p,s,d,m)
         self.assertTrue(all(np.isfinite(np.asarray(a)).all() for a in jax.tree.leaves(fields)))
         stationary=(fields[0],b)+fields[2:]
         damped=apply_sponge(stationary,b,p,s,d)
@@ -135,22 +136,24 @@ class TestRunner(unittest.TestCase):
 
 
 class TestBirthMetric(unittest.TestCase):
-    def test_polar_seam_norm_and_placeholder_independence(self):
+    def test_radial_seam_norm_and_placeholder_independence(self):
         p,s,d,m=polar_setup(devices=2,nt=32)
         momentum=jnp.array([[.3,-.4,.7],[-.2,.9,.1],[.8,.1,-.2]])
         seam=p.r_min+p.dr*s.tile_shape[0]
-        positions=jnp.array([[seam,.1*p.dtheta,0.],[seam,np.pi-.1*p.dtheta,0.],[np.nan,np.nan,np.nan]])
+        positions=jnp.array([[seam,p.theta_start+.1*p.dtheta,0.],[seam,p.theta_end-.1*p.dtheta,0.],[np.nan,np.nan,np.nan]])
         active=jnp.array([True,True,False]);results=[]
         for tile in range(2):
             grid=tuple(a[tile,0,0] for a in d.grids.tiled_center_grid)
             metric=jax.tree.map(lambda a:a[tile,0,0],m.center)
             f=lambda met:birth_covariant_momentum(momentum,positions,active,met,grid,s)
-            error,cov=jax.jit(checkify.checkify(f))(metric);error.throw()
+            checked=jax.jit(checkify.checkify(f))
+            error,cov=checked(metric);error.throw()
             sampled=interpolate_metric(metric,positions[:2],grid,s.metric,(True,True,False),(3,3,3),derivatives=False)
             norm=jnp.einsum('ni,nij,nj->n',cov[:2],sampled.gamma_inv,cov[:2])
             np.testing.assert_allclose(norm,(momentum[:2]**2).sum(-1),rtol=1e-12,atol=1e-12)
             poisoned=metric._replace(gamma_inv=jnp.full_like(metric.gamma_inv,jnp.nan),sqrt_gamma=jnp.full_like(metric.sqrt_gamma,jnp.nan))
-            np.testing.assert_array_equal(f(poisoned),cov)
+            poison_error,poison_cov=checked(poisoned);poison_error.throw()
+            np.testing.assert_array_equal(poison_cov,cov)
             np.testing.assert_array_equal(f(metric),birth_covariant_momentum(momentum,positions,active,metric,grid,s._replace(shape_factor=2)))
             np.testing.assert_array_equal(cov[2],jnp.zeros(3));results.append(cov)
             changed=metric._replace(gamma=metric.gamma*2)
@@ -161,7 +164,7 @@ class TestBirthMetric(unittest.TestCase):
         from dataclasses import replace
         from demos.static_metric_relativity.bz_monopole.simulation_parameters import SimulationParameters,build_runtime
         p=SimulationParameters(nr=16,ntheta=16,devices=1,r_max=4.,sponge_start=3.,
-                               maximum_timestep=None,polar_cap_angle=np.deg2rad(30))
+                               maximum_timestep=None,theta_start=np.deg2rad(30),theta_end=np.deg2rad(150))
         _,d,_,cfl_dt=build_runtime(p)
         self.assertEqual(float(d.dt),cfl_dt)
         _,changed,_,_=build_runtime(replace(p,skin_depth=p.skin_depth/10))
@@ -170,7 +173,8 @@ class TestBirthMetric(unittest.TestCase):
         self.assertEqual(float(d2.dt),cfl_dt/2)
 
     def test_active_axis_sample_is_reported(self):
-        p,s,d,m=polar_setup()
+        from tests.support.polar_fixtures import polar_runtime
+        p,s,d,m=polar_runtime()
         grid=tuple(a[0,0,0] for a in d.grids.tiled_center_grid)
         metric=jax.tree.map(lambda a:a[0,0,0],m.center)
         f=lambda:birth_covariant_momentum(jnp.ones((1,3)),jnp.array([[2.,0.,0.]]),jnp.ones(1,bool),metric,grid,s)

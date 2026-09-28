@@ -9,7 +9,7 @@ from PyPIC3D.relativity.flat import initialize_flat_spherical_metric
 from PyPIC3D.deposition.rho import compute_rho
 from PyPIC3D.deposition.GR_Esirkepov import GR_Esirkepov_current
 from PyPIC3D.solvers.gr_static.static_metric import update_D_relativity
-from demos.static_metric_relativity.bz_monopole.run_bz_monopole import monopole_field
+from tests.support.polar_fixtures import monopole_field
 from tests.support.polar_fixtures import polar_runtime,particle
 jax.config.update('jax_enable_x64',True)
 

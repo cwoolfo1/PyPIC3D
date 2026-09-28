@@ -2,7 +2,7 @@
 from functools import lru_cache
 import jax
 import jax.numpy as jnp
-from demos.static_metric_relativity.bz_monopole.simulation_parameters import SimulationParameters,build_runtime
+from tests.support.polar_runtime import SimulationParameters,build_runtime
 from PyPIC3D.particles.particle_class import TiledParticles,SpeciesConfig
 from PyPIC3D.relativity.flat import initialize_flat_spherical_metric
 jax.config.update('jax_enable_x64',True)
@@ -25,3 +25,13 @@ def particle(s,d,theta,r=2.1,charge=1.):
     tx=min(int((r-float(d.grids.center[0][1]))/float(d.dx))//s.tile_shape[0],x.shape[0]-1)
     active=active.at[tx,0,0,0,0].set(True)
     return TiledParticles(x,jnp.zeros_like(x),active),SpeciesConfig(jnp.array([charge]),jnp.ones(1),jnp.ones(1),jnp.ones((1,3),bool))
+
+from PyPIC3D.boundary_conditions.polar import divide
+
+def monopole_field(p, metric, dynamic):
+    """Discrete curl of A_phi on D_phi=(C,C,V), yielding B_r=(C,V,V)."""
+    theta = dynamic.grids.tiled_center_grid[1][..., None, :, None]
+    flux = (-p.B0*jnp.cos(theta+dynamic.dy)+p.B0*jnp.cos(theta))/dynamic.dy
+    Br = divide(jnp.broadcast_to(flux, metric.B[0].sqrt_gamma.shape)*dynamic.dy*dynamic.dz,
+                metric.geometry.B_area[0])
+    return (Br, jnp.zeros_like(Br), jnp.zeros_like(Br))

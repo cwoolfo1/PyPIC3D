@@ -3,6 +3,8 @@ import jax.numpy as jnp
 from PyPIC3D.boundary_conditions import ghost_cells
 from PyPIC3D.boundary_conditions.supergaussian import apply_tiled_supergaussian_absorber
 from PyPIC3D.relativity.core import B_FIELD_LOCATIONS, D_FIELD_LOCATIONS
+from PyPIC3D.boundary_conditions.staggered import refresh_fields
+from PyPIC3D.boundary_conditions.grid_and_stencil import BC_CONDUCTING
 
 
 def _location_interpolate_axis(field, source_location, target_location, axis):
@@ -142,6 +144,8 @@ def update_D_relativity(D_tiles, H_tiles, J_tiles, metric, static_parameters, dy
         return update_fields(D_tiles,H_tiles,J_tiles,metric,static_parameters,dynamic_parameters,dt)
     Dx, Dy, Dz = D_tiles
     Jx, Jy, Jz = J_tiles
+    if BC_CONDUCTING in static_parameters.boundary_conditions:
+        H_tiles = refresh_fields(H_tiles, static_parameters, B_FIELD_LOCATIONS)
     Hx, Hy, Hz = H_tiles
 
     g = int(static_parameters.guard_cells)
@@ -183,6 +187,9 @@ def update_D_relativity(D_tiles, H_tiles, J_tiles, metric, static_parameters, dy
             dt,
         )
 
+    if (BC_CONDUCTING in static_parameters.boundary_conditions
+            or static_parameters.horizon_field_cells):
+        return refresh_fields(D_tiles, static_parameters, D_FIELD_LOCATIONS, 'D')
     return ghost_cells.update_tiled_vector_ghost_cells(D_tiles, static_parameters, g)
 
 
@@ -195,6 +202,8 @@ def update_B_relativity(E_tiles, B_tiles, metric, static_parameters, dynamic_par
         from PyPIC3D.boundary_conditions.polar import update_fields
         return update_fields(B_tiles,E_tiles,None,metric,static_parameters,dynamic_parameters,dt,magnetic=True)
     Bx, By, Bz = B_tiles
+    if BC_CONDUCTING in static_parameters.boundary_conditions:
+        E_tiles = refresh_fields(E_tiles, static_parameters, D_FIELD_LOCATIONS)
     Ex, Ey, Ez = E_tiles
 
     g = int(static_parameters.guard_cells)
@@ -232,4 +241,7 @@ def update_B_relativity(E_tiles, B_tiles, metric, static_parameters, dynamic_par
             dt,
         )
 
+    if (BC_CONDUCTING in static_parameters.boundary_conditions
+            or static_parameters.horizon_field_cells):
+        return refresh_fields(B_tiles, static_parameters, B_FIELD_LOCATIONS, 'B')
     return ghost_cells.update_tiled_vector_ghost_cells(B_tiles, static_parameters, g)

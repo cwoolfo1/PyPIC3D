@@ -7,7 +7,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from demos.static_metric_relativity.bz_monopole.simulation_parameters import SimulationParameters, build_runtime
+from tests.support.polar_runtime import SimulationParameters, build_runtime
 from PyPIC3D.boundary_conditions.polar import refresh_vector, divergence, plane
 from PyPIC3D.deposition.GR_Esirkepov import GR_Esirkepov_current
 from PyPIC3D.deposition.rho import compute_rho
@@ -87,28 +87,12 @@ class TestExcisedCaps(unittest.TestCase):
         residual = (q1-q0)/d.dt+divergence(J, m.geometry, s)
         self.assertLess(float(jnp.max(jnp.abs(jnp.where(m.geometry.charge_owned, residual, 0)))), 1e-11)
 
-    def test_standard_initialization_and_pic_steps(self):
-        from demos.static_metric_relativity.bz_monopole import run_bz_monopole as runner
-        from demos.static_metric_relativity.bz_monopole.plasma_injector import empty_particles
-        p, s = self.p, self.s
-        particles, species = empty_particles(p, s)
-        fields, background = runner.initialize_fields(p, s, self.d, self.m)
-        execute = runner.make_step(p, species, s, self.d, background)
-        key = jax.random.PRNGKey(p.seed)
-        for step in range(2):
-            particles, fields, key, _ = execute(particles, fields, key, step)
-        self.assertGreater(int(particles.active.sum()), 0)
-        self.assertTrue(bool(runner.finite_state(particles, fields)))
-        runner.check_constraints(runner.constraint_residuals(particles, species, fields, s, self.d, p))
-
-    def test_full_sphere_geometry_allowed_but_field_initialization_rejected(self):
-        from demos.static_metric_relativity.bz_monopole import run_bz_monopole as runner
+    def test_full_sphere_metric_retains_axis_values(self):
         from tests.support.polar_fixtures import polar_runtime
         p, s, d, m = polar_runtime()
         self.assertEqual(p.polar_cap_angle, 0.)
         self.assertTrue(bool(jnp.any(m.D[0].sqrt_gamma == 0.)))
-        with self.assertRaisesRegex(ValueError, 'requires excised polar caps'):
-            runner.initialize_fields(p, s, d, m)
+        self.assertTrue(all(np.isfinite(np.asarray(a)).all() for a in jax.tree.leaves(m)))
 
 
 if __name__ == '__main__':

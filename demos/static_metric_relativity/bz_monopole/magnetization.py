@@ -3,7 +3,6 @@ from typing import NamedTuple
 import jax
 import jax.numpy as jnp
 
-from PyPIC3D.boundary_conditions.polar import divide
 from PyPIC3D.deposition.rho import compute_rho
 from PyPIC3D.relativity.core import B_FIELD_LOCATIONS
 from PyPIC3D.solvers.gr_static.static_metric import _location_interpolate
@@ -22,12 +21,12 @@ def deposit_number_density(particles, species, template, metric, static, dynamic
     for s in range(species.charge.shape[0]):
         config = species._replace(charge=jnp.arange(species.charge.shape[0]) == s)
         conformal = compute_rho(particles, config, template, static, dynamic)
-        result.append(divide(conformal*dynamic.dx*dynamic.dy*dynamic.dz, metric.geometry.volume))
+        result.append(conformal / metric.center.sqrt_gamma)
     return jnp.stack(result)
 
 
 def collocate_magnetic_field(B):
-    """Collocate physical polar-chart components at cell centers, including finite caps.
+    """Collocate physical components at cell centers.
 
     Never contract components sampled at different Yee positions.
     """

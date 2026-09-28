@@ -12,7 +12,7 @@ from demos.static_metric_relativity.bz_monopole import animate_bz
 
 def snapshot(p, time):
     r=np.linspace(p.r_min,p.r_max,64)
-    theta=np.linspace(p.polar_cap_angle,np.pi-p.polar_cap_angle,65)
+    theta=np.linspace(p.theta_start,p.theta_end,65)
     shape=(len(r),len(theta))
     return dict(r=r,theta=theta,time=time,
         Hphi=np.broadcast_to(-p.B0*p.spin*np.sin(theta)**2/8,shape),
@@ -20,7 +20,7 @@ def snapshot(p, time):
         luminosity=np.full(len(r),p.B0**2*p.omega_h**2/6),
         spin=p.spin,B0=p.B0,omega_h=p.omega_h,r_min=p.r_min,r_max=p.r_max,
         sponge_start=p.sponge_start,nr=p.nr,ntheta=p.ntheta,skin_depth=p.skin_depth,
-        pairs_per_cell=p.pairs_per_cell,polar_cap_angle=p.polar_cap_angle)
+        pairs_per_cell=p.pairs_per_cell,theta_start=p.theta_start,theta_end=p.theta_end)
 
 
 class TestBZOutput(unittest.TestCase):
@@ -51,19 +51,20 @@ class TestBZOutput(unittest.TestCase):
             coordinates=figure.axes[0].collections[0].get_coordinates()
             # The map ends on the cap surfaces, without painting the excised wedges.
             angles=np.arctan2(coordinates[...,0],coordinates[...,1])
-            np.testing.assert_allclose(angles[:,0],p.polar_cap_angle,rtol=0,atol=1e-14)
-            np.testing.assert_allclose(angles[:,-1],np.pi-p.polar_cap_angle,rtol=0,atol=1e-14)
+            np.testing.assert_allclose(angles[:,0],p.theta_start,rtol=0,atol=1e-14)
+            np.testing.assert_allclose(angles[:,-1],p.theta_end,rtol=0,atol=1e-14)
             import matplotlib.pyplot as plt
             plt.close(figure)
-            for cap in (-.1,np.pi/2,np.nan,[.1]):
-                np.savez(path,**dict(data,polar_cap_angle=cap))
-                with self.assertRaisesRegex(ValueError,'polar_cap_angle'):
+            for theta in ([np.nan, 1.], [.4, .3], [-.1, 1.], [.1, 3.2]):
+                invalid = dict(data, theta=np.asarray(theta))
+                np.savez(path, **invalid)
+                with self.assertRaises(ValueError):
                     plotter.load_snapshot(path)
-            np.savez(path,**dict(data,polar_cap_angle=.2))
-            with self.assertRaisesRegex(ValueError,'declared domain'):
-                plotter.load_snapshot(path)
-            legacy=snapshot(replace(p,polar_cap_angle=0.),0.)
-            del legacy['polar_cap_angle']
+            # Historical cap metadata is ignored; coordinates are authoritative.
+            np.savez(path, **dict(data, polar_cap_angle=.2))
+            np.testing.assert_array_equal(plotter.load_snapshot(path)['theta'], data['theta'])
+            legacy=snapshot(replace(p,theta_start=0.,theta_end=np.pi),0.)
+            del legacy['theta_start'], legacy['theta_end']
             legacy['allow_divergence_errors'] = np.asarray(True)
             np.savez(path,**legacy)
             np.testing.assert_array_equal(plotter.load_snapshot(path)['theta'],legacy['theta'])

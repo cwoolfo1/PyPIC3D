@@ -114,9 +114,8 @@ def build_static_parameters(static_config):
     if isinstance(horizon_cells, bool) or not isinstance(horizon_cells, Integral) or horizon_cells < 0:
         raise ValueError('horizon_field_cells must be a nonnegative integer')
     if horizon_cells and (static_config.get('solver') != 'static_metric'
-                          or static_config.get('metric') != 'kerr_schild_spherical'
-                          or _axis_tuple(static_config['boundary_conditions'])[1] != BC_POLAR):
-        raise ValueError('Horizon field layers require the polar spherical Kerr-Schild solver')
+                          or static_config.get('metric') != 'kerr_schild_spherical'):
+        raise ValueError('Horizon field layers require the spherical Kerr-Schild solver')
     hybrid = (static_config.get("solver") == "static_metric" or
               static_config.get("particle_pusher") == "hybrid_boris_geodesic")
     if static_config.get("guard_cells") is None:

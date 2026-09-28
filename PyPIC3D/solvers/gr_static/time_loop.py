@@ -1,4 +1,5 @@
 import jax
+from PyPIC3D.boundary_conditions.grid_and_stencil import BC_CONDUCTING
 
 from PyPIC3D.deposition.GR_direct_deposition import GR_direct_deposition
 from PyPIC3D.deposition.GR_Esirkepov import GR_Esirkepov_current
@@ -43,8 +44,14 @@ def time_loop_static_metric(
     D_n_minusone, B_n_minusthreehalves = previous_fields
     # unpack the previous fixed-metric field state
 
-    if metric.geometry is not None:
-        from PyPIC3D.boundary_conditions.polar import refresh_vector
+    refresh_required = (metric.geometry is not None or
+                        BC_CONDUCTING in static_parameters.boundary_conditions or
+                        static_parameters.horizon_field_cells > 0)
+    if refresh_required:
+        if metric.geometry is not None:
+            from PyPIC3D.boundary_conditions.polar import refresh_vector
+        else:
+            from PyPIC3D.boundary_conditions.staggered import refresh_fields as refresh_vector
         from PyPIC3D.relativity.core import D_FIELD_LOCATIONS, B_FIELD_LOCATIONS
         D_n=refresh_vector(D_n,static_parameters,D_FIELD_LOCATIONS,'D')
         B_n_minushalf=refresh_vector(B_n_minushalf,static_parameters,B_FIELD_LOCATIONS,'B')
@@ -63,7 +70,7 @@ def time_loop_static_metric(
 
     push_D, push_B = add_external_fields(D_n, B_n, external_fields)
     # particles see evolved fields plus prescribed external fields
-    if metric.geometry is not None:
+    if refresh_required:
         push_D=refresh_vector(push_D,static_parameters,D_FIELD_LOCATIONS,'D')
         push_B=refresh_vector(push_B,static_parameters,B_FIELD_LOCATIONS,'B')
 
@@ -107,6 +114,11 @@ def time_loop_static_metric(
         from PyPIC3D.boundary_conditions.polar import step_diagnostics
         boundary_diagnostics=step_diagnostics(particles_n,particles,J_n_plushalf,species_config,
                                               metric,static_parameters,dynamic_parameters)
+    if metric.geometry is None and return_diagnostics:
+        from PyPIC3D.diagnostics.static_metric import step_diagnostics
+        boundary_diagnostics = step_diagnostics(particles_n, particles, J_n_plushalf,
+                                                species_config, metric, static_parameters,
+                                                dynamic_parameters)
     particles, fullstep_overflow = refresh_tiled_particle_tiles(
         particles,
         static_parameters,

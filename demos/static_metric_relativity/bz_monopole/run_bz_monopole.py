@@ -18,7 +18,8 @@ import jax.numpy as jnp
 import numpy as np
 from tqdm import tqdm
 
-from PyPIC3D.boundary_conditions.polar import divergence, divide, refresh_vector
+from PyPIC3D.boundary_conditions.staggered import refresh_fields as refresh_vector
+from PyPIC3D.diagnostics.static_metric import divergence, node_weights
 from PyPIC3D.deposition.rho import compute_rho
 from PyPIC3D.relativity.core import B_FIELD_LOCATIONS, D_FIELD_LOCATIONS
 from PyPIC3D.solvers.gr_static.static_metric import (
@@ -35,25 +36,18 @@ else:
     from plasma_injector import empty_particles, inject_pairs
 
 def monopole_field(p, metric, dynamic):
-    """Discrete curl of A_phi on D_phi=(C,C,V), yielding B_r=(C,V,V)."""
-    theta = dynamic.grids.tiled_center_grid[1][..., None, :, None]
-    flux = (-p.B0*jnp.cos(theta+dynamic.dy)+p.B0*jnp.cos(theta))/dynamic.dy
-    Br = divide(jnp.broadcast_to(flux, metric.B[0].sqrt_gamma.shape)*dynamic.dy*dynamic.dz,
-                metric.geometry.B_area[0])
+    """Continuum monopole sampled on the ordinary magnetic Yee locations."""
+    theta = dynamic.grids.tiled_vertex_grid[1][..., None, :, None]
+    Br = p.B0*jnp.sin(theta)/metric.B[0].sqrt_gamma
     return (Br, jnp.zeros_like(Br), jnp.zeros_like(Br))
 
 
 def refresh_fields(vector, locations, static):
-    """Refresh polar D or B halos, including the frozen horizon layers."""
+    """Refresh D or B halos, including the frozen horizon layers."""
     return refresh_vector(vector, static, locations, 'B' if locations == B_FIELD_LOCATIONS else 'D')
 
 
 def initialize_fields(p, static, dynamic, metric):
-    if p.polar_cap_angle <= 0 or static.polar_cap_angle <= 0:
-        raise ValueError(
-            'BZ field initialization requires excised polar caps: standard metric '
-            'interpolation is undefined at the zero-determinant axes. Set '
-            'polar_cap_angle > guard_cells*dtheta (default: 10 degrees at ntheta=64).')
     B0 = tuple(shard_array(x, static) for x in monopole_field(p, metric, dynamic))
     B0=refresh_fields(B0, B_FIELD_LOCATIONS, static)
     zero = jnp.zeros_like(B0[0])
@@ -117,8 +111,7 @@ def make_step(p, species, static, dynamic, background, *, sponge=True,
                 from .current_filter import filter_current
             else:
                 from current_filter import filter_current
-            transform = lambda current: filter_current(current, fields[6].geometry,
-                                                       static, current_filter_passes)
+            transform = lambda current: filter_current(current, fields[6], static, current_filter_passes)
         errors, (particles, fields, boundary) = time_loop_static_metric(
             particles, species, fields, static, dynamic, return_diagnostics=True,
             return_errors=True, current_transform=transform)
@@ -172,7 +165,7 @@ def check_sharding(particles, fields, static):
             raise RuntimeError('Particle or field state lost radial device sharding')
 
 
-def exterior_mask(geometry, static, dynamic, p, *, magnetic=False):
+def exterior_mask(metric, static, dynamic, p, *, magnetic=False):
     """Owned exterior cells checked for Gauss/div B; tile seams stay included.
 
     Excludes the horizon interior, two cells at each physical boundary, and the
@@ -180,46 +173,47 @@ def exterior_mask(geometry, static, dynamic, p, *, magnetic=False):
     """
     g = static.guard_cells
     if magnetic:
-        owned = jnp.zeros_like(geometry.charge_owned).at[
+        owned = jnp.zeros_like(metric.center.sqrt_gamma, dtype=bool).at[
             (slice(None),)*3+(slice(g,-g),slice(g,-g),slice(g,g+1))].set(True)
         grids = dynamic.grids.tiled_vertex_grid
     else:
-        owned = geometry.charge_owned
+        owned = node_weights(static, metric.center.sqrt_gamma) > 0
         grids = dynamic.grids.tiled_center_grid
     r = grids[0][..., :, None, None]
     theta = grids[1][..., None, :, None]
     interior = owned & (r >= p.r_min+2*p.dr) & (r <= p.r_max-2*p.dr)
     interior &= r >= p.horizon
     interior &= (r < p.sponge_start-2*p.dr)
-    interior &= (theta >= p.polar_cap_angle+2*p.dtheta) & (theta <= jnp.pi-p.polar_cap_angle-2*p.dtheta)
+    interior &= (theta >= p.theta_start+2*p.dtheta) & (theta <= p.theta_end-2*p.dtheta)
     return interior
 
 
 def constraint_residuals(particles, species, fields, static, dynamic, p, *, current_filter_passes=0):
-    """Exterior integrated-flux Gauss and div B residuals, normalized by field scale.
-
-    Cell counts distinguish an empty exterior from a valid zero residual.
-    """
-    geometry = fields[6].geometry
+    """Conformal FD residuals, reported dimensionally and in cell-flux units."""
+    metric = fields[6]
     charge = compute_rho(particles, species, fields[3], static, dynamic)
-    charge *= 4*jnp.pi*dynamic.dx*dynamic.dy*dynamic.dz
     if current_filter_passes:
         if __package__:
-            from .current_filter import smooth_integrated
+            from .current_filter import smooth_conformal
         else:
-            from current_filter import smooth_integrated
-        charge = smooth_integrated(charge, static, current_filter_passes)
-    divD = divergence(fields[0], geometry, static)
-    divB = divergence(fields[1], geometry, static, True)
-    dm = exterior_mask(geometry, static, dynamic, p)
-    bm = exterior_mask(geometry, static, dynamic, p, magnetic=True)
+            from current_filter import smooth_conformal
+        charge = smooth_conformal(charge, static, current_filter_passes)
+    divD = divergence(fields[0], metric.D, dynamic)
+    divB = divergence(fields[1], metric.B, dynamic, forward=True)
+    dm = exterior_mask(metric, static, dynamic, p)
+    bm = exterior_mask(metric, static, dynamic, p, magnetic=True)
+    volume = dynamic.dx*dynamic.dy*dynamic.dz
     def maximum(value, mask):
         return jnp.max(jnp.where(mask, jnp.abs(value), 0.))
-    dscale = jnp.maximum(1., jnp.maximum(maximum(divD, dm), maximum(charge, dm)))
+    gauss_abs = maximum(divD-4*jnp.pi*charge, dm)
+    magnetic_abs = maximum(divB, bm)
+    dscale = jnp.maximum(1., jnp.maximum(maximum(divD*volume, dm), maximum(4*jnp.pi*charge*volume, dm)))
+    areas = (dynamic.dy*dynamic.dz, dynamic.dx*dynamic.dz, dynamic.dx*dynamic.dy)
     bscale = jnp.maximum(1., jnp.max(jnp.array([
-        maximum(b*a, bm) for b, a in zip(fields[1], geometry.B_area)])))
-    return dict(gauss=jnp.where(jnp.any(dm), maximum(divD-charge, dm)/dscale, jnp.nan),
-                magnetic_divergence=jnp.where(jnp.any(bm), maximum(divB, bm)/bscale, jnp.nan),
+        maximum(b*m.sqrt_gamma*a, bm) for b, m, a in zip(fields[1], metric.B, areas)])))
+    return dict(gauss=jnp.where(jnp.any(dm), gauss_abs*volume/dscale, jnp.nan),
+                magnetic_divergence=jnp.where(jnp.any(bm), magnetic_abs*volume/bscale, jnp.nan),
+                gauss_absolute=gauss_abs, magnetic_divergence_absolute=magnetic_abs,
                 gauss_cells=jnp.sum(dm), magnetic_divergence_cells=jnp.sum(bm))
 
 
@@ -282,18 +276,18 @@ def diagnostics(particles, species, fields, p, static, dynamic, *, current_filte
     r = np.asarray(dynamic.grids.center[0][1:-1])
     theta = np.asarray(dynamic.grids.center[1][1:])
     # Uniform quadrature over one physical meridian, never both theta copies.
-    sector = (theta>=0)&(theta<=np.pi)
+    sector = (theta>=p.theta_start-1e-12)&(theta<=p.theta_end+1e-12)
     flux = assemble((E[1]*H[2]-E[2]*H[1])/(4*jnp.pi))
     luminosity = 2*np.pi*np.trapezoid(flux[:,sector],theta[sector],axis=1)
-    divD = divergence(D, metric.geometry, static)
-    divB = divergence(B, metric.geometry, static, True)
-    rho = compute_rho(particles, species, fields[3], static, dynamic)*dynamic.dx*dynamic.dy*dynamic.dz
+    divD = divergence(D, metric.D, dynamic)
+    divB = divergence(B, metric.B, dynamic, forward=True)
+    rho = compute_rho(particles, species, fields[3], static, dynamic)
     if current_filter_passes:
         if __package__:
-            from .current_filter import smooth_integrated
+            from .current_filter import smooth_conformal
         else:
-            from current_filter import smooth_integrated
-        rho = smooth_integrated(rho, static, current_filter_passes)
+            from current_filter import smooth_conformal
+        rho = smooth_conformal(rho, static, current_filter_passes)
     constraints = assemble(divD-4*jnp.pi*rho)
     residuals = constraint_residuals(particles, species, fields, static, dynamic, p,
                                      current_filter_passes=current_filter_passes)
@@ -305,6 +299,8 @@ def diagnostics(particles, species, fields, p, static, dynamic, *, current_filte
                 luminosity=luminosity, gauss=constraints, divB=assemble(divB,theta_base=False),
                 gauss_relative=np.asarray(residuals['gauss']),
                 divB_relative=np.asarray(residuals['magnetic_divergence']),
+                gauss_absolute=np.asarray(residuals['gauss_absolute']),
+                divB_absolute=np.asarray(residuals['magnetic_divergence_absolute']),
                 active_per_tile=np.asarray(jnp.sum(particles.active, axis=(-1, -2))).reshape(-1))
 
 
@@ -336,7 +332,9 @@ def output_metadata(p, static, dynamic):
                 omega_h=np.asarray(p.omega_h), horizon=np.asarray(p.horizon),
                 n0_total=np.asarray(p.n0),
                 particle_batch_size=np.asarray(static.particle_batch_size),
-                horizon_field_cells=np.asarray(static.horizon_field_cells))
+                horizon_field_cells=np.asarray(static.horizon_field_cells),
+                field_discretization=np.asarray('metric_finite_difference'),
+                constraint_form=np.asarray('conformal_density'))
     return data
 
 
