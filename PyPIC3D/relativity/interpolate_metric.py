@@ -30,6 +30,12 @@ RECONSTRUCTION = "cardinal_cubic_hermite_consistent_v1"
 SPHERICAL_METRICS = ("flat_spherical", "kerr_schild_spherical")
 
 
+def on_spherical_axis(position):
+    """Recognize the singular theta endpoints, including floating-point pi."""
+    theta = position[..., 1]
+    return (jnp.abs(theta) < 1e-14) | (jnp.abs(jnp.abs(theta) - jnp.pi) < 1e-14)
+
+
 class ParticleMetric(NamedTuple):
     """
     3+1 metric at particle positions.
@@ -228,9 +234,7 @@ def particle_metric_valid(metric, position, metric_name):
         )
 
     if metric_name in SPHERICAL_METRICS:
-        from PyPIC3D.boundary_conditions.polar import axes
-
-        valid &= ~axes(position) & (position[..., 0] != 0)
+        valid &= ~on_spherical_axis(position) & (position[..., 0] != 0)
     elif metric_name == "flat_cylindrical":
         valid &= position[..., 0] != 0
     return valid

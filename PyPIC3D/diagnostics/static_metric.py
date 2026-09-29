@@ -35,6 +35,12 @@ def node_weights(static, template):
 
 
 class BoundaryDiagnostics(NamedTuple):
+    """Axis-0 absorption budget and global push validity.
+
+    Counts and charges are indexed by (lower/upper radial side, species).
+    The budget deliberately measures radial absorbers only; it is not a
+    surface budget for every absorbing axis of a general simulation.
+    """
     absorbed_count: object
     absorbed_charge: object
     removed_grid_charge: object
@@ -43,6 +49,11 @@ class BoundaryDiagnostics(NamedTuple):
 
 
 def step_diagnostics(old, new, current, species, metric, static, dynamic):
+    """Measure radial particle loss, removed cloud charge, and face flux.
+
+    The radial coordinate is axis 0. Keep particle removal separate from
+    current outflow: a lost particle's shape may still overlap the grid.
+    """
     from PyPIC3D.deposition.rho import compute_rho
     g = static.guard_cells
     lower, upper = grid_domain_bounds(dynamic)[0]

@@ -1,5 +1,8 @@
-import jax
+from functools import partial
+
 from PyPIC3D.boundary_conditions.grid_and_stencil import BC_CONDUCTING
+from PyPIC3D.boundary_conditions.staggered import refresh_fields
+from PyPIC3D.relativity.core import D_FIELD_LOCATIONS, B_FIELD_LOCATIONS
 
 from PyPIC3D.deposition.GR_direct_deposition import GR_direct_deposition
 from PyPIC3D.deposition.GR_Esirkepov import GR_Esirkepov_current
@@ -44,21 +47,14 @@ def time_loop_static_metric(
     D_n_minusone, B_n_minusthreehalves = previous_fields
     # unpack the previous fixed-metric field state
 
-    refresh_required = (metric.geometry is not None or
-                        BC_CONDUCTING in static_parameters.boundary_conditions or
+    refresh_required = (BC_CONDUCTING in static_parameters.boundary_conditions or
                         static_parameters.horizon_field_cells > 0)
     if refresh_required:
-        if metric.geometry is not None:
-            from PyPIC3D.boundary_conditions.polar import refresh_vector
-        else:
-            from functools import partial
-            from PyPIC3D.boundary_conditions.staggered import refresh_fields
-            refresh_vector = partial(refresh_fields, metric=metric)
-        from PyPIC3D.relativity.core import D_FIELD_LOCATIONS, B_FIELD_LOCATIONS
-        D_n=refresh_vector(D_n,static_parameters,D_FIELD_LOCATIONS,'D')
-        B_n_minushalf=refresh_vector(B_n_minushalf,static_parameters,B_FIELD_LOCATIONS,'B')
-        D_n_minusone=refresh_vector(D_n_minusone,static_parameters,D_FIELD_LOCATIONS,'D')
-        B_n_minusthreehalves=refresh_vector(B_n_minusthreehalves,static_parameters,B_FIELD_LOCATIONS,'B')
+        refresh_vector = partial(refresh_fields, metric=metric)
+        D_n = refresh_vector(D_n, static_parameters, D_FIELD_LOCATIONS, 'D')
+        B_n_minushalf = refresh_vector(B_n_minushalf, static_parameters, B_FIELD_LOCATIONS, 'B')
+        D_n_minusone = refresh_vector(D_n_minusone, static_parameters, D_FIELD_LOCATIONS, 'D')
+        B_n_minusthreehalves = refresh_vector(B_n_minusthreehalves, static_parameters, B_FIELD_LOCATIONS, 'B')
 
     D_n_minushalf = tuple( 0.5 * (D_n[i] + D_n_minusone[i]) for i in range(3) )
     B_n_minusone = tuple( 0.5 * (B_n_minushalf[i] + B_n_minusthreehalves[i]) for i in range(3) )
@@ -73,8 +69,8 @@ def time_loop_static_metric(
     push_D, push_B = add_external_fields(D_n, B_n, external_fields)
     # particles see evolved fields plus prescribed external fields
     if refresh_required:
-        push_D=refresh_vector(push_D,static_parameters,D_FIELD_LOCATIONS,'D')
-        push_B=refresh_vector(push_B,static_parameters,B_FIELD_LOCATIONS,'B')
+        push_D = refresh_vector(push_D, static_parameters, D_FIELD_LOCATIONS, 'D')
+        push_B = refresh_vector(push_B, static_parameters, B_FIELD_LOCATIONS, 'B')
 
     particles_n = particles
     # keep the time level n positions for the charge-conserving deposition.  The
@@ -82,12 +78,12 @@ def time_loop_static_metric(
     # particles share one tile frame and differencing their positions gives the
     # true displacement.
 
-    push_args=(particles, species_config, push_D, push_B, metric,
+    push_args = (particles, species_config, push_D, push_B, metric,
                static_parameters, dynamic_parameters)
     if return_errors:
         from jax.experimental import checkify
         push_errors, (particles, centered_particles) = checkify.checkify(
-            lambda pts: hybrid_boris_geodesic_push(pts,*push_args[1:]))(particles)
+            lambda pts: hybrid_boris_geodesic_push(pts, *push_args[1:]))(particles)
     else:
         particles, centered_particles = hybrid_boris_geodesic_push(*push_args)
     # advance full-step particles and keep the intermediate particles (x_n_plushalf, v_n_plushalf) for the centered current deposition
@@ -111,12 +107,8 @@ def time_loop_static_metric(
     if current_transform is not None:
         J_n_plushalf = current_transform(J_n_plushalf)
 
-    boundary_diagnostics=None
-    if metric.geometry is not None and return_diagnostics:
-        from PyPIC3D.boundary_conditions.polar import step_diagnostics
-        boundary_diagnostics=step_diagnostics(particles_n,particles,J_n_plushalf,species_config,
-                                              metric,static_parameters,dynamic_parameters)
-    if metric.geometry is None and return_diagnostics:
+    boundary_diagnostics = None
+    if return_diagnostics:
         from PyPIC3D.diagnostics.static_metric import step_diagnostics
         boundary_diagnostics = step_diagnostics(particles_n, particles, J_n_plushalf,
                                                 species_config, metric, static_parameters,
@@ -168,4 +160,4 @@ def time_loop_static_metric(
     # pack the fixed-metric field state
 
     result = (particles, fields, boundary_diagnostics) if return_diagnostics else (particles, fields)
-    return (push_errors,result) if return_errors else result
+    return (push_errors, result) if return_errors else result

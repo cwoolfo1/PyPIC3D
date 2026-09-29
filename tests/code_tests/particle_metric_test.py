@@ -189,21 +189,21 @@ class TestParticleMetric(unittest.TestCase):
         np.testing.assert_array_equal(a.grad_shift[..., 1:], 0.)
         np.testing.assert_array_equal(a.grad_gamma_inv[..., 1:, :, :], 0.)
 
-    def test_polar_masks_do_not_enter_particle_geometry(self):
+    def test_stored_inverse_and_determinant_do_not_enter_particle_geometry(self):
         s, d, m, D, B = make_runtime("spherical", 16, 32)
         q = jnp.array(
             [
-                [2.37, 0.05 * d.dy, 0.1],
-                [2.37, 0.5 * d.dy, 0.1],
-                [2.37, jnp.pi - 0.05 * d.dy, 0.1],
-                [2.37, jnp.pi - 0.5 * d.dy, 0.1],
+                [2.37, .4 + 0.05 * d.dy, 0.1],
+                [2.37, .4 + 0.5 * d.dy, 0.1],
+                [2.37, jnp.pi - .4 - 0.05 * d.dy, 0.1],
+                [2.37, jnp.pi - .4 - 0.5 * d.dy, 0.1],
             ]
         )
         a = sample_metric(q, m, s, d)
         np.testing.assert_allclose(a.gamma_inv[:, 0, 0], 1.0, atol=1e-12)
         np.testing.assert_allclose(a.grad_gamma_inv[:, :, 0, 0], 0.0, atol=1e-12)
         # Only lapse, shift and gamma are interpolated; the grid inverse and
-        # determinant (masked at the axes) never enter the particle metric.
+        # determinant never enter the particle metric, even when poisoned.
         poisoned = m._replace(
             center=m.center._replace(
                 gamma_inv=jnp.full_like(m.center.gamma_inv, jnp.nan),

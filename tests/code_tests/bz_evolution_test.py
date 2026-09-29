@@ -11,6 +11,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from demos.static_metric_relativity.bz_monopole import run_bz_monopole as runner
+from demos.static_metric_relativity.bz_monopole.diagnostics import _constraint_residuals
 from demos.static_metric_relativity.bz_monopole.simulation_parameters import SimulationParameters,build_runtime
 from demos.static_metric_relativity.bz_monopole.plasma_injector import empty_particles
 
@@ -106,10 +107,8 @@ class TestEvolution(unittest.TestCase):
         outside_d=jnp.where(dm,0.,1e12)
         outside_b=jnp.where(bm,0.,1e12)
         def measure(dd,bb):
-            with patch.object(runner,'divergence',side_effect=[dd,bb]), \
-                 patch.object(runner,'compute_rho',return_value=zero):
-                return {k:float(v) for k,v in runner.constraint_residuals(
-                    self.pts,self.sp,fields,self.s,self.d,p).items()}
+            return {k:float(v) for k,v in _constraint_residuals(
+                dd, bb, zero, fields[1], self.m, self.s, self.d, p).items()}
         runner.check_constraints(measure(outside_d,outside_b))
         seam=(1,0,0,g,g+5,g)
         r=measure(outside_d.at[seam].set(1e-5),outside_b)

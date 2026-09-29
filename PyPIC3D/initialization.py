@@ -46,7 +46,6 @@ from PyPIC3D.boundary_conditions.grid_and_stencil import (
     BC_CONDUCTING,
     BC_CONSTANT,
     BC_PERIODIC,
-    BC_POLAR,
 )
 from PyPIC3D.boundary_conditions.PML import initialize_tiled_pml_state, load_pml_from_toml
 from PyPIC3D.boundary_conditions.supergaussian import load_supergaussian_from_toml
@@ -68,10 +67,15 @@ def _encode_field_bc(bc_name):
     """
     bc_codes = {
         "periodic": BC_PERIODIC,
-        "polar": BC_POLAR,
         "conducting": BC_CONDUCTING,
         "constant": BC_CONSTANT,
     }
+    if bc_name in ("polar", 4):
+        raise ValueError(
+            "Polar boundaries have been removed. Use conducting fields and "
+            "reflecting particles on a regular domain with guard nodes away "
+            "from the axes."
+        )
     if bc_name not in bc_codes:
         raise ValueError(f"Unsupported field boundary condition: {bc_name}")
     return bc_codes[bc_name]
@@ -83,10 +87,15 @@ def _encode_particle_bc(bc_name):
     """
     bc_codes = {
         "periodic": BC_PERIODIC,
-        "polar": BC_POLAR,
         "reflecting": BC_CONDUCTING,
         "absorbing": BC_ABSORBING,
     }
+    if bc_name in ("polar", 4):
+        raise ValueError(
+            "Polar boundaries have been removed. Use conducting fields and "
+            "reflecting particles on a regular domain with guard nodes away "
+            "from the axes."
+        )
     if bc_name not in bc_codes:
         raise ValueError(f"Unsupported particle boundary condition: {bc_name}")
     return bc_codes[bc_name]
@@ -678,7 +687,7 @@ def initialize_simulation(toml_file):
     E, B, J = field_components[:3], field_components[3:6], field_components[6:9]
 
     from PyPIC3D.relativity.core import D_FIELD_LOCATIONS, B_FIELD_LOCATIONS
-    if static_metric and metric.geometry is None:
+    if static_metric:
         from functools import partial
         from PyPIC3D.boundary_conditions.staggered import refresh_fields
         refresh_vector = partial(refresh_fields, metric=metric)
@@ -707,12 +716,8 @@ def initialize_simulation(toml_file):
             dynamic_parameters,
         )
         D_previous, B_previous = static_metric_state
-        if metric.geometry is None:
-            D_previous = refresh_vector(D_previous, static_parameters, D_FIELD_LOCATIONS, 'D')
-            B_previous = refresh_vector(B_previous, static_parameters, B_FIELD_LOCATIONS, 'B')
-        else:
-            D_previous = update_tiled_vector_ghost_cells(D_previous, static_parameters, num_guard_cells=guard_cells)
-            B_previous = update_tiled_vector_ghost_cells(B_previous, static_parameters, num_guard_cells=guard_cells)
+        D_previous = refresh_vector(D_previous, static_parameters, D_FIELD_LOCATIONS, 'D')
+        B_previous = refresh_vector(B_previous, static_parameters, B_FIELD_LOCATIONS, 'B')
         static_metric_state = D_previous, B_previous
         print("Skipping flat-space energy diagnostics for static_metric fields and covariant particle u_i\n")
     else:

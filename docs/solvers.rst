@@ -139,6 +139,11 @@ a selectable numerical mode.
 Boundary Conditions and PML
 ---------------------------
 
+The former ``polar`` boundary implementation and numeric boundary code 4 have
+been removed. Spherical runs use explicit angular bounds, conducting fields,
+and reflecting particles on a regular chart. Metric guard nodes must stay
+away from the axes; the former exact-axis finite-volume mode is unsupported.
+
 Field boundaries are set with ``x_bc``, ``y_bc``, and ``z_bc``:
 
 - ``periodic``
@@ -182,8 +187,7 @@ computed exterior values are preserved during internal halo exchange. The
 FIDO constraints apply even with normal shift, where auxiliary tangential E
 can be nonzero. Projection can change magnetic divergence and Gauss residuals
 for incompatible fields; it does not model conductor surface charges or
-currents. The legacy polar finite-volume solver retains its existing cap and
-axis treatment.
+currents.
 
 The electrostatic solver extends potential constantly through conducting
 exterior guards before taking its gradient.

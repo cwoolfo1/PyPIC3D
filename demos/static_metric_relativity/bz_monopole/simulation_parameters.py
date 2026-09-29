@@ -135,15 +135,10 @@ def build_runtime(parameters=SimulationParameters()):
     metric = jax.tree.map(lambda a: shard_array(a, static), metric)
     interior = (slice(None),)*3 + (slice(p.guard_cells, -p.guard_cells),)*3
     m = metric.center
-    # Directional characteristic bounds in the regular spherical chart.
-    rr=dynamic.grids.tiled_center_grid[0][..., :,None,None]
-    tt=dynamic.grids.tiled_center_grid[1][...,None,:,None]
-    sig=rr**2+p.spin**2*jnp.cos(tt)**2
-    xi=1+2*rr/sig
-    inv_rr=1/xi+p.spin**2*jnp.sin(tt)**2/sig
-    sr=jnp.abs(m.shift[...,0])+m.lapse*jnp.sqrt(inv_rr)
-    st=m.lapse/jnp.sqrt(sig)
-    speed=jnp.stack((sr,st,jnp.zeros_like(sr)),axis=-1)
+    # Directional characteristic bounds from the supplied regular metric.
+    sr = jnp.abs(m.shift[..., 0]) + m.lapse*jnp.sqrt(m.gamma_inv[..., 0, 0])
+    st = jnp.abs(m.shift[..., 1]) + m.lapse*jnp.sqrt(m.gamma_inv[..., 1, 1])
+    speed = jnp.stack((sr, st, jnp.zeros_like(sr)), axis=-1)
     cfl_dt = p.courant / float(jnp.max((speed[..., 0]/p.dr + speed[..., 1]/p.dtheta)[interior]))
     limits=[cfl_dt]
     if p.maximum_timestep is not None:limits.append(p.maximum_timestep)

@@ -1,9 +1,19 @@
-"""Small standard-metric BZ runtimes, independent of polar geometry tests."""
+"""Small BZ runtimes and particles on regular metric domains."""
 from functools import lru_cache
 import math
 from demos.static_metric_relativity.bz_monopole.simulation_parameters import SimulationParameters, build_runtime
 from PyPIC3D.relativity.metrics.flat import initialize_flat_spherical_metric
-from tests.support.polar_fixtures import particle
+import jax.numpy as jnp
+from PyPIC3D.particles.particle_class import TiledParticles, SpeciesConfig
+
+
+def particle(s,d,theta,r=2.1,charge=1.):
+    x=jnp.broadcast_to(jnp.array([r,theta,0.]),s.field_mesh.devices.shape+(1,1,3))
+    active=jnp.zeros(x.shape[:-1],bool)
+    tx=min(int((r-float(d.grids.center[0][1]))/float(d.dx))//s.tile_shape[0],x.shape[0]-1)
+    active=active.at[tx,0,0,0,0].set(True)
+    return TiledParticles(x,jnp.zeros_like(x),active),SpeciesConfig(jnp.array([charge]),jnp.ones(1),jnp.ones(1),jnp.ones((1,3),bool))
+
 
 
 @lru_cache(None)

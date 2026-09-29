@@ -41,6 +41,14 @@ from Maxwell evolution. ``pml_state`` is ``None`` unless PML is active, and
 
 See :doc:`tiling` for the array shapes, guard ownership, and sharding structure.
 
+Boundary code separates mesh transport from physical policy.
+``boundary_conditions.halo_exchange`` implements distributed refresh/folding,
+and ``ownership`` defines staggered endpoints and reflected indices.
+``ghost_cells`` retains the public field/particle adapters; ``sources`` supplies
+staggered source parity. ``staggered`` stages horizon extrapolation and field
+refresh, while ``pec`` handles metric-aware wall projections. Transport and
+ownership do not depend on the solver or PEC implementation.
+
 Execution Flow
 --------------
 

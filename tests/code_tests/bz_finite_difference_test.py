@@ -1,5 +1,4 @@
 """Independent finite-difference BZ wall, conservation, and solver checks."""
-from contextlib import ExitStack
 from dataclasses import replace
 import math
 import unittest
@@ -9,7 +8,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from PyPIC3D.boundary_conditions.staggered import refresh_fields, scalar_boundaries
+from PyPIC3D.boundary_conditions.staggered import refresh_fields
 from PyPIC3D.diagnostics.static_metric import divergence, node_weights, step_diagnostics
 from PyPIC3D.deposition.rho import compute_rho
 from PyPIC3D.deposition.GR_Esirkepov import GR_Esirkepov_current
@@ -30,7 +29,6 @@ class TestFiniteDifferenceBZ(unittest.TestCase):
         p = SimulationParameters(nr=16, ntheta=32, r_max=4., horizon_field_cells=0,
                                  theta_start=.4, theta_end=2.5)
         s, d, m, _ = build_runtime(p)
-        self.assertIsNone(m.geometry)
         self.assertEqual(s.boundary_conditions, (3, 1, 0))
         self.assertEqual(s.particle_boundary_conditions, (2, 1, 0))
         self.assertAlmostEqual(float(d.grids.center[1][1]), p.theta_start)
@@ -175,25 +173,20 @@ class TestFiniteDifferenceBZ(unittest.TestCase):
                 self.assertEqual(int(report.absorbed_count.sum()),1)
                 self.assertLess(abs(float(rate+report.radial_current_outflow.sum()+report.removed_grid_charge.sum()/d.dt)),1e-10)
 
-    def test_monopole_and_pic_step_do_not_use_polar_helpers(self):
+    def test_monopole_and_pic_step_preserve_constraints(self):
         p, s, d, m = bz_runtime()
         p = replace(p, maximum_timestep=.004)
         d = d._replace(dt=jnp.asarray(.004))
         particles, species = empty_particles(p,s)
-        names = ('build_geometry','safe_grid_provider','refresh_vector','update_fields','physical_current')
-        with ExitStack() as stack:
-            for name in names:
-                stack.enter_context(patch('PyPIC3D.boundary_conditions.polar.'+name, side_effect=AssertionError(name)))
-            stack.enter_context(patch('PyPIC3D.deposition.GR_Esirkepov.physical_current', side_effect=AssertionError('polar current')))
-            fields, background = runner.initialize_fields(p,s,d,m)
-            error = divergence(background,m.B,d,forward=True)
-            g=s.guard_cells
-            self.assertLess(float(jnp.max(jnp.abs(error[:,:, :,g+2:-g-2,g+2:-g-2,g]))),1e-10)
-            execute = runner.make_step(p,species,s,d,background,current_filter_passes=0)
-            for step in range(4):
-                particles,fields,_,_ = execute(particles,fields,jax.random.PRNGKey(p.seed+step),step)
-                self.assertTrue(bool(runner.finite_state(particles,fields)))
-                runner.check_constraints(runner.constraint_residuals(particles,species,fields,s,d,p))
+        fields, background = runner.initialize_fields(p,s,d,m)
+        error = divergence(background,m.B,d,forward=True)
+        g=s.guard_cells
+        self.assertLess(float(jnp.max(jnp.abs(error[:,:, :,g+2:-g-2,g+2:-g-2,g]))),1e-10)
+        execute = runner.make_step(p,species,s,d,background,current_filter_passes=0)
+        for step in range(4):
+            particles,fields,_,_ = execute(particles,fields,jax.random.PRNGKey(p.seed+step),step)
+            self.assertTrue(bool(runner.finite_state(particles,fields)))
+            runner.check_constraints(runner.constraint_residuals(particles,species,fields,s,d,p))
 
     def test_manufactured_curved_metric_curl_is_second_order(self):
         errors=[]

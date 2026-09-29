@@ -36,6 +36,7 @@ def _mesh(mesh_shape):
 def _static_parameters(mesh_shape, tile_shape, g=2):
     periodic = (BC_PERIODIC, BC_PERIODIC, BC_PERIODIC)
     return SimpleNamespace(
+        solver="electrodynamic_yee",
         tile_shape=tuple(int(width) for width in tile_shape),
         guard_cells=int(g),
         boundary_conditions=periodic,

@@ -63,133 +63,68 @@ def Esirkepov_current(
     the caller after deposition.
     """
 
-    tile_shape = tuple(int(width) for width in static_parameters.tile_shape)
-    # get the tile shape
-    g = int(static_parameters.guard_cells)
-    # get the number of guard cells on the tiles
-    tiled_grid = dynamic_parameters.grids.tiled_center_grid
-    # get the tile grid for the current deposition
+    return _deposit_esirkepov_tiles(
+        particles.x, particles.u, particles.active, species_config, J,
+        static_parameters, dynamic_parameters, trajectory=_flat_trajectory,
+    )
 
-    dx = dynamic_parameters.dx
-    dy = dynamic_parameters.dy
-    dz = dynamic_parameters.dz
-    # get spatial resolution
-    dt = dynamic_parameters.dt
-    # get temporal resolution
-    shape_factor = static_parameters.shape_factor
-    # get shape factor
 
-    Jx, Jy, Jz = J
-    # unpack current density
-    ntx, nty, ntz = Jx.shape[:3]
-    # get the number of tiles
-    tile_nx, tile_ny, tile_nz = [int(width) for width in tile_shape]
-    # unpack the tile shapes
-    local_Nx = tile_nx + 2 * g
-    local_Ny = tile_ny + 2 * g
-    local_Nz = tile_nz + 2 * g
-    # compute the local shape including guard cells
+def _flat_trajectory(old_position, velocity, update_axes, dt):
+    """Predict flat-space endpoints; retain velocity for unresolved axes."""
+    new_position = tuple(
+        old + jnp.where(update, speed * dt, 0.0)
+        for old, speed, update in zip(old_position, velocity, update_axes)
+    )
+    return new_position, velocity
 
-    x_active = ntx * tile_nx > 1
-    y_active = nty * tile_ny > 1
-    z_active = ntz * tile_nz > 1
-    # determine which axes are actually active and which ones are redundant
 
-    Jx_template = jnp.zeros_like(Jx[0, 0, 0])
-    Jy_template = jnp.zeros_like(Jy[0, 0, 0])
-    Jz_template = jnp.zeros_like(Jz[0, 0, 0])
-    # build a template array for the local J tiles
+def _deposit_esirkepov_tiles(
+    old_positions, endpoint_data, active, species, current_template,
+    static, dynamic, *, trajectory,
+):
+    """Map a trajectory adapter and the metric-free kernel over owned tiles.
 
-    species_weighted_charge = species_config.charge * species_config.weight
-    # compute the species weighted charge
+    The adapter receives flattened old positions, endpoint data, species axis
+    masks, and dt. It returns endpoints and unresolved-axis velocities. Tile
+    setup, species broadcasting, additive folding, and halo refresh are shared
+    by the flat and GR entry points.
+    """
+    guard = int(static.guard_cells)
+    tile_shape = tuple(int(width) for width in static.tile_shape)
+    tile_counts = current_template[0].shape[:3]
+    local_shape = tuple(width + 2 * guard for width in tile_shape)
+    active_axes = tuple(count * width > 1 for count, width in zip(tile_counts, tile_shape))
+    templates = tuple(jnp.zeros_like(component[0, 0, 0]) for component in current_template)
+    grids = dynamic.grids.tiled_center_grid
+    weighted_charge = species.charge * species.weight
 
-    def deposit_one_tile(x_tile, u_tile, active_tile, tx, ty, tz):
-        old_x = x_tile[..., 0].reshape(-1)
-        old_y = x_tile[..., 1].reshape(-1)
-        old_z = x_tile[..., 2].reshape(-1)
-        # get the old positions and reshape them as 1D arrays
-        vx = u_tile[..., 0].reshape(-1)
-        vy = u_tile[..., 1].reshape(-1)
-        vz = u_tile[..., 2].reshape(-1)
-        # get the velocities and reshape them as 1D arrays
-        active = active_tile.reshape(-1).astype(old_x.dtype)
-        # get the active mask and reshape it as a 1D array
-        q = jnp.broadcast_to(species_weighted_charge[:, jnp.newaxis], active_tile.shape).reshape(-1)
-        # broadcast the species weighted charge to the shape of the active tile and reshape it as a 1D array
-        update_x1 = jnp.broadcast_to(species_config.update_x[:, 0, jnp.newaxis], active_tile.shape).reshape(-1)
-        update_x2 = jnp.broadcast_to(species_config.update_x[:, 1, jnp.newaxis], active_tile.shape).reshape(-1)
-        update_x3 = jnp.broadcast_to(species_config.update_x[:, 2, jnp.newaxis], active_tile.shape).reshape(-1)
-        # determine which axes are updated for each particle and reshape them as 1D arrays
-
-        x = old_x + jnp.where(update_x1, vx * dt, 0.0)
-        y = old_y + jnp.where(update_x2, vy * dt, 0.0)
-        z = old_z + jnp.where(update_x3, vz * dt, 0.0)
-        # step the particle positions forward in time using the velocity and dt, but only for the axes that are updated
-
-        return esirkepov_tile_currents(
-            (x, y, z),
-            (old_x, old_y, old_z),
-            (vx, vy, vz),
-            q,
-            active,
-            (update_x1, update_x2, update_x3),
-            (
-                tiled_grid[0][tx, ty, tz],
-                tiled_grid[1][tx, ty, tz],
-                tiled_grid[2][tx, ty, tz],
-            ),
-            (x_active, y_active, z_active),
-            (local_Nx, local_Ny, local_Nz),
-            (Jx_template, Jy_template, Jz_template),
-            shape_factor,
-            dx,
-            dy,
-            dz,
-            dt,
+    def deposit_one_tile(old_tile, endpoint_tile, active_tile, tx, ty, tz):
+        old_position = tuple(old_tile[..., axis].reshape(-1) for axis in range(3))
+        endpoint = tuple(endpoint_tile[..., axis].reshape(-1) for axis in range(3))
+        charge = jnp.broadcast_to(weighted_charge[:, None], active_tile.shape).reshape(-1)
+        update_axes = tuple(
+            jnp.broadcast_to(species.update_x[:, axis, None], active_tile.shape).reshape(-1)
+            for axis in range(3)
         )
-        # hand the tile-local particles to the shared metric-free decomposition
+        new_position, velocity = trajectory(old_position, endpoint, update_axes, dynamic.dt)
+        return esirkepov_tile_currents(
+            new_position, old_position, velocity, charge,
+            active_tile.reshape(-1).astype(old_position[0].dtype), update_axes,
+            tuple(grid[tx, ty, tz] for grid in grids), active_axes, local_shape,
+            templates, static.shape_factor, dynamic.dx, dynamic.dy, dynamic.dz, dynamic.dt,
+        )
 
-
-    tx, ty, tz = jnp.meshgrid(
-        jnp.arange(ntx),
-        jnp.arange(nty),
-        jnp.arange(ntz),
-        indexing="ij",
-    )
-    # build a meshgrid of tile indices for the x, y, and z axes to pass to the deposit function
-
+    tile_indices = jnp.meshgrid(*(jnp.arange(count) for count in tile_counts), indexing="ij")
     deposit_tiles = deposit_one_tile
-    deposit_tiles = jax.vmap(deposit_tiles, in_axes=(0, 0, 0, 0, 0, 0), out_axes=0)
-    deposit_tiles = jax.vmap(deposit_tiles, in_axes=(0, 0, 0, 0, 0, 0), out_axes=0)
-    deposit_tiles = jax.vmap(deposit_tiles, in_axes=(0, 0, 0, 0, 0, 0), out_axes=0)
-    # nested vmap to vectorize the deposit function over the tile indices for x, y, and z axes
-
-    Jx, Jy, Jz = deposit_tiles(
-        particles.x,
-        particles.u,
-        particles.active,
-        tx,
-        ty,
-        tz,
+    for _ in range(3):
+        deposit_tiles = jax.vmap(deposit_tiles, in_axes=(0, 0, 0, 0, 0, 0), out_axes=0)
+    current = deposit_tiles(old_positions, endpoint_data, active, *tile_indices)
+    current = fold_tiled_vector_ghost_cells(
+        current, static, num_guard_cells=guard, bc_type=BC_TYPE_PARTICLE,
     )
-    # deposit the currents for all tiles in parallel using the vectorized deposit function
-
-    J = fold_tiled_vector_ghost_cells(
-        (Jx, Jy, Jz),
-        static_parameters,
-        num_guard_cells=g,
-        bc_type=BC_TYPE_PARTICLE,
+    return update_tiled_vector_ghost_cells(
+        current, static, num_guard_cells=guard, bc_type=BC_TYPE_PARTICLE,
     )
-    # fold the deposited currents across tile boundaries, applying the appropriate boundary conditions for ghost cells
-    J = update_tiled_vector_ghost_cells(
-        J,
-        static_parameters,
-        num_guard_cells=g,
-        bc_type=BC_TYPE_PARTICLE,
-    )
-    # update the ghost cells of the folded currents to ensure consistency across tile boundaries
-
-    return J
 
 
 def esirkepov_tile_currents(

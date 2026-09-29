@@ -3,7 +3,6 @@ from numbers import Integral
 from typing import NamedTuple
 
 from PyPIC3D.boundary_conditions.ghost_cells import make_field_mesh
-from PyPIC3D.boundary_conditions.grid_and_stencil import BC_POLAR
 
 
 class GridParameters(NamedTuple):
@@ -45,7 +44,6 @@ class StaticParameters(NamedTuple):
     particle_boundary_conditions: tuple
     field_mesh: object
     horizon_field_cells: int = 0
-    polar_cap_angle: float = 0.0
 
 
 class DynamicParameters(NamedTuple):
@@ -131,23 +129,13 @@ def build_static_parameters(static_config):
 
     bc = _axis_tuple(static_config['boundary_conditions'])
     pbc = _axis_tuple(static_config.get('particle_boundary_conditions', (0,0,0)))
-    if 4 in bc or 4 in pbc:
-        if (bc[1] != BC_POLAR or pbc[1] != BC_POLAR or BC_POLAR in (bc[0],bc[2],pbc[0],pbc[2])
-            or static_config.get('metric') not in ('flat_spherical','kerr_schild_spherical')
-            or static_config.get('solver') != 'static_metric'
-            or int(static_config['Nz']) != 1 or tile_shape[1] != int(static_config['Ny'])
-            or static_config.get('current_filter','none') != 'none'
-            or int(static_config['guard_cells']) < 3):
-            raise ValueError('BC_POLAR requires spherical static_metric, one theta tile, Nz=1, and no current filter')
-        cap = float(static_config.get('polar_cap_angle', 0.0))
-        if not 0 <= cap < 3.141592653589793/2:
-            raise ValueError('polar_cap_angle must be in [0, pi/2)')
-        if abs(float(static_config.get('y_min',0))-cap) > 1e-14 or abs(float(static_config['y_wind'])-(3.141592653589793-2*cap))>1e-14:
-            raise ValueError('BC_POLAR requires theta in [cap, pi-cap] (default [0, pi])')
-        if cap and cap <= int(static_config['guard_cells'])*float(static_config['dy']):
-            raise ValueError('Excised caps must keep metric guard nodes away from the axes: cap > guard_cells*dy')
+    if 4 in bc or 4 in pbc or 'polar_cap_angle' in static_config:
+        raise ValueError(
+            "Polar boundaries have been removed. Use conducting field boundaries "
+            "and reflecting particles on a regular domain with metric guard nodes "
+            "away from the axes; set the angular bounds explicitly."
+        )
     return StaticParameters(
-        polar_cap_angle=float(static_config.get('polar_cap_angle', 0.0)),
         name=static_config.get("name", "Default Simulation"),
         output_dir=static_config.get("output_dir", "."),
         Nt=int(static_config.get("Nt", 0)),

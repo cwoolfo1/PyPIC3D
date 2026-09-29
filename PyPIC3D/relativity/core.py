@@ -38,7 +38,6 @@ class YeeMetric(NamedTuple):
     B: tuple
     center: Metric
     vertex: Metric
-    geometry: object = None
 
 
 def covariant_lorentz_factor(u_cov, gamma_inv):

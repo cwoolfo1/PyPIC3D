@@ -19,6 +19,24 @@ from tests.kernel_fixtures import kernel_parameters
 
 
 class TestKernelParameters(unittest.TestCase):
+    def test_removed_polar_configuration_has_migration_guidance(self):
+        from PyPIC3D.initialization import _encode_field_bc, _encode_particle_bc
+        from PyPIC3D.utilities.parameters import build_static_parameters
+
+        for encoder in (_encode_field_bc, _encode_particle_bc):
+            for boundary in ("polar", 4):
+                with self.assertRaisesRegex(ValueError, "removed.*conducting.*reflecting"):
+                    encoder(boundary)
+        static, _ = kernel_parameters()
+        for name in ("boundary_conditions", "particle_boundary_conditions"):
+            for axis in range(3):
+                boundaries = [0, 0, 0]
+                boundaries[axis] = 4
+                with self.assertRaisesRegex(ValueError, "removed.*regular domain"):
+                    build_static_parameters(dict(static._asdict(), **{name: tuple(boundaries)}))
+        with self.assertRaisesRegex(ValueError, "removed"):
+            build_static_parameters(dict(static._asdict(), polar_cap_angle=0.0))
+
     def test_static_and_dynamic_parameters_split_kernel_contract(self):
         static_parameters, dynamic_parameters = kernel_parameters(
             dt=0.1,

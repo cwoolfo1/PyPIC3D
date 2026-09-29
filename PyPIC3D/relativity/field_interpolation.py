@@ -25,6 +25,22 @@ def metric_weighted_interpolate(field, source_metric, target_metric, source_loca
     return weighted / target_metric.sqrt_gamma
 
 
+def reconstruct_vector(vector, locations, metric, target, *, preserve_native=True):
+    """Transfer vector components to one C/V location using metric densities.
+
+    PEC reconstruction retains native values exactly. Constitutive operators
+    pass ``preserve_native=False`` to retain their density multiply/divide
+    even for a component already at the target location.
+    """
+    target_metric = metric_at_location(metric, target)
+    return tuple(
+        value if preserve_native and source == target else metric_weighted_interpolate(
+            value, metric_at_location(metric, source), target_metric, source, target
+        )
+        for value, source in zip(vector, locations)
+    )
+
+
 def metric_at_location(metric, location):
     if location == ('C', 'C', 'C'):
         return metric.center

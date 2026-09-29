@@ -3,13 +3,7 @@ from functools import partial
 import jax
 import jax.numpy as jnp
 
-from PyPIC3D.boundary_conditions.ghost_cells import (
-    BC_TYPE_PARTICLE,
-    fold_tiled_vector_ghost_cells,
-    update_tiled_vector_ghost_cells,
-)
-from PyPIC3D.boundary_conditions.polar import physical_current
-from PyPIC3D.deposition.Esirkepov import esirkepov_tile_currents
+from PyPIC3D.deposition.Esirkepov import _deposit_esirkepov_tiles
 from PyPIC3D.particles.particle_class import SpeciesConfig, TiledParticles
 
 
@@ -65,140 +59,24 @@ def GR_Esirkepov_current(
     operators that commute with the discrete divergence.
     """
 
-    tile_shape = tuple(int(width) for width in static_parameters.tile_shape)
-    g = int(static_parameters.guard_cells)
-    tiled_grid = dynamic_parameters.grids.tiled_center_grid
-
-    dx = dynamic_parameters.dx
-    dy = dynamic_parameters.dy
-    dz = dynamic_parameters.dz
-    dt = dynamic_parameters.dt
-    shape_factor = static_parameters.shape_factor
-
-    Jx, Jy, Jz = J
-    ntx, nty, ntz = Jx.shape[:3]
-    tile_nx, tile_ny, tile_nz = tile_shape
-    local_Nx = tile_nx + 2 * g
-    local_Ny = tile_ny + 2 * g
-    local_Nz = tile_nz + 2 * g
-
-    x_active = ntx * tile_nx > 1
-    y_active = nty * tile_ny > 1
-    z_active = ntz * tile_nz > 1
-    # determine which axes are actually active and which ones are redundant
-
-    Jx_template = jnp.zeros_like(Jx[0, 0, 0])
-    Jy_template = jnp.zeros_like(Jy[0, 0, 0])
-    Jz_template = jnp.zeros_like(Jz[0, 0, 0])
-    # build a template array for the local J tiles
-
-    species_weighted_charge = species_config.charge * species_config.weight
-    # compute the species weighted charge
-
-    def deposit_one_tile(x_old_tile, x_new_tile, active_tile, tx, ty, tz):
-        old_x = x_old_tile[..., 0].reshape(-1)
-        old_y = x_old_tile[..., 1].reshape(-1)
-        old_z = x_old_tile[..., 2].reshape(-1)
-        # positions at time level n, before the geodesic position update
-
-        new_x = x_new_tile[..., 0].reshape(-1)
-        new_y = x_new_tile[..., 1].reshape(-1)
-        new_z = x_new_tile[..., 2].reshape(-1)
-        # positions at time level n+1, after the push but before the retile
-
-        active = active_tile.reshape(-1).astype(old_x.dtype)
-        q = jnp.broadcast_to(species_weighted_charge[:, jnp.newaxis], active_tile.shape).reshape(-1)
-        update_x1 = jnp.broadcast_to(species_config.update_x[:, 0, jnp.newaxis], active_tile.shape).reshape(-1)
-        update_x2 = jnp.broadcast_to(species_config.update_x[:, 1, jnp.newaxis], active_tile.shape).reshape(-1)
-        update_x3 = jnp.broadcast_to(species_config.update_x[:, 2, jnp.newaxis], active_tile.shape).reshape(-1)
-        # determine which axes are updated for each particle
-
-        x = jnp.where(update_x1, new_x, old_x)
-        y = jnp.where(update_x2, new_y, old_y)
-        z = jnp.where(update_x3, new_z, old_z)
-        # hold frozen axes fixed, so a species pinned on an axis deposits no
-        # displacement there even if the pusher wrote one
-
-        vx = (x - old_x) / dt
-        vy = (y - old_y) / dt
-        vz = (z - old_z) / dt
-        # coordinate velocity dx^i/dt taken straight from the displacement the
-        # position update actually produced.  Only the inactive axes read this,
-        # where the component takes no part in the continuity equation.  Using
-        # the displacement rather than alpha v^i - beta^i keeps the whole kernel
-        # free of metric interpolation at particle positions, and reduces to
-        # u^i identically in flat space.
-
-        return esirkepov_tile_currents(
-            (x, y, z),
-            (old_x, old_y, old_z),
-            (vx, vy, vz),
-            q,
-            active,
-            (update_x1, update_x2, update_x3),
-            (
-                tiled_grid[0][tx, ty, tz],
-                tiled_grid[1][tx, ty, tz],
-                tiled_grid[2][tx, ty, tz],
-            ),
-            (x_active, y_active, z_active),
-            (local_Nx, local_Ny, local_Nz),
-            (Jx_template, Jy_template, Jz_template),
-            shape_factor,
-            dx,
-            dy,
-            dz,
-            dt,
-        )
-        # the decomposition itself is metric-free and shared with the flat solver
-
-    tx, ty, tz = jnp.meshgrid(
-        jnp.arange(ntx),
-        jnp.arange(nty),
-        jnp.arange(ntz),
-        indexing="ij",
+    conformal_current = _deposit_esirkepov_tiles(
+        particles_old.x, particles_new.x, particles_new.active, species_config, J,
+        static_parameters, dynamic_parameters, trajectory=_gr_trajectory,
     )
-    # build a meshgrid of tile indices to pass to the deposit function
+    # Divide by the same Yee density that the field update differences.
+    return tuple(value / sample.sqrt_gamma for value, sample in zip(conformal_current, metric.D))
 
-    deposit_tiles = deposit_one_tile
-    deposit_tiles = jax.vmap(deposit_tiles, in_axes=(0, 0, 0, 0, 0, 0), out_axes=0)
-    deposit_tiles = jax.vmap(deposit_tiles, in_axes=(0, 0, 0, 0, 0, 0), out_axes=0)
-    deposit_tiles = jax.vmap(deposit_tiles, in_axes=(0, 0, 0, 0, 0, 0), out_axes=0)
-    # nested vmap to vectorize the deposit function over the tile indices
 
-    Jx, Jy, Jz = deposit_tiles(
-        particles_old.x,
-        particles_new.x,
-        particles_new.active,
-        tx,
-        ty,
-        tz,
+def _gr_trajectory(old_position, endpoint, update_axes, dt):
+    """Use actual pre-retile endpoints and their coordinate displacement.
+
+    Covariant particle momentum cannot predict these endpoints. Frozen axes
+    stay fixed; unresolved axes deposit the velocity produced by the position
+    update without an additional particle-metric sample.
+    """
+    new_position = tuple(
+        jnp.where(update, new, old)
+        for old, new, update in zip(old_position, endpoint, update_axes)
     )
-    # the push does not change particle activity, so either set's mask will do
-
-    conformal_J = fold_tiled_vector_ghost_cells(
-        (Jx, Jy, Jz),
-        static_parameters,
-        num_guard_cells=g,
-        bc_type=BC_TYPE_PARTICLE,
-    )
-    # fold charge deposited into tile ghost cells back into the owner interiors
-
-    conformal_J = update_tiled_vector_ghost_cells(
-        conformal_J,
-        static_parameters,
-        num_guard_cells=g,
-        bc_type=BC_TYPE_PARTICLE,
-    )
-    # refresh the halos so the folded current is consistent across tiles
-
-    if metric.geometry is not None:
-        return physical_current(Jx, conformal_J, metric.geometry, dynamic_parameters, g, tile_ny)
-    return tuple(
-        conformal_J[i] / metric.D[i].sqrt_gamma
-        for i in range(3)
-    )
-    # convert the conformal current to the physical contravariant current.  This
-    # divides by the same sqrt(gamma) array that update_D_relativity multiplies
-    # back in, so the round trip is exact and the quantity Esirkepov conserved is
-    # precisely the one the D update differences.
+    velocity = tuple((new - old) / dt for new, old in zip(new_position, old_position))
+    return new_position, velocity

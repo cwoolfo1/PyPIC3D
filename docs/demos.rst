@@ -107,8 +107,10 @@ guard nodes must remain above r=0. These checks precede metric initialization.
 
 The particle metric uses Hermite reconstruction. Source filtering acts on
 conformal charge/current and is checked with the same finite-difference
-divergence as the field solver. The existing polar finite-volume solver
-remains available independently and is not selected by this demo.
+divergence as the field solver. The former polar finite-volume runtime has
+been removed. Legacy ``polar`` boundaries and numeric boundary code 4 are
+rejected; use conducting field boundaries and reflecting particles with
+explicit regular angular bounds.
 
 The historical ``STANDARD_200M_REPORT.md`` records a 200 M run using standard constitutive
 interpolation **and polar finite-volume evolution**; it is not evidence for

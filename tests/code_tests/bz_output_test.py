@@ -24,6 +24,39 @@ def snapshot(p, time):
 
 
 class TestBZOutput(unittest.TestCase):
+    def test_radial_budget_retains_saved_order_and_accumulates(self):
+        from types import SimpleNamespace
+        from demos.static_metric_relativity.bz_monopole.output import RadialBoundaryBudget
+
+        budget = RadialBoundaryBudget()
+        report = SimpleNamespace(
+            absorbed_count=np.array([[1, 2], [3, 4]]),
+            absorbed_charge=np.array([[-2., 3.], [-4., 5.]]),
+            removed_grid_charge=np.array([.25, -.125]),
+            radial_current_outflow=np.array([-6., 7.]),
+        )
+        for _ in range(2):
+            budget.accumulate(report, .5)
+        np.testing.assert_array_equal(
+            budget.as_array(), [2., 4., 6., 8., -4., 6., -8., 10., .25, -6., 7.]
+        )
+
+    def test_diagnostics_respects_configured_guard_depth(self):
+        from demos.static_metric_relativity.bz_monopole.simulation_parameters import build_runtime
+        from demos.static_metric_relativity.bz_monopole.plasma_injector import empty_particles
+        from demos.static_metric_relativity.bz_monopole.run_bz_monopole import initialize_fields, diagnostics
+
+        p = SimulationParameters(nr=16, ntheta=24, r_max=4., sponge_start=3.,
+                                 guard_cells=4, horizon_field_cells=0,
+                                 theta_start=np.pi/6, theta_end=5*np.pi/6, backend='cpu')
+        static, dynamic, metric, _ = build_runtime(p)
+        particles, species = empty_particles(p, static)
+        fields, _ = initialize_fields(p, static, dynamic, metric)
+        data = diagnostics(particles, species, fields, p, static, dynamic)
+        self.assertEqual(data['gauss'].shape, (p.nr, p.ntheta + 1))
+        self.assertEqual(data['divB'].shape, (p.nr, p.ntheta))
+        self.assertEqual(data['Br'].shape, (len(data['r']), len(data['theta'])))
+
     def test_plots_and_animation_need_only_numpy_files(self):
         with TemporaryDirectory() as directory:
             tmp_path=Path(directory)
