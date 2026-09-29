@@ -100,7 +100,7 @@ standard metric-weighted E/H interpolation. Set ``theta_start`` and
 cells. Field and particle boundaries are independent directional tuples:
 ``boundary_conditions=(3, 1, 0)`` and
 ``particle_boundary_conditions=(2, 1, 0)``. These retain the radial treatment,
-use conducting fields and reflecting particles in theta, and periodic phi
+use metric-projector conducting fields and reflecting particles in theta, and periodic phi
 with one cell. Reflections retain azimuth. Both angular endpoints must leave
 space for all metric guard nodes inside the regular spherical chart; radial
 guard nodes must remain above r=0. These checks precede metric initialization.
@@ -112,8 +112,10 @@ remains available independently and is not selected by this demo.
 
 The historical ``STANDARD_200M_REPORT.md`` records a 200 M run using standard constitutive
 interpolation **and polar finite-volume evolution**; it is not evidence for
-a 200 M finite-difference run. The finite-difference demo has passed a short
-four-step production-grid check; long-run validation remains to be performed.
+a 200 M finite-difference run. The metric-projector boundaries are checked by
+a four-step 16-by-16 CPU BZ regression at ``dt=0.004``, with the existing
+finite-state and constraint tolerances. Long production runs with these
+boundaries remain to be validated.
 
 For a short CPU diagnostic, call the runner from the repository root with
 an unused output directory:

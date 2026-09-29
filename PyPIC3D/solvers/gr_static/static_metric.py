@@ -1,32 +1,12 @@
 import jax.numpy as jnp
 
-from PyPIC3D.boundary_conditions import ghost_cells
 from PyPIC3D.boundary_conditions.supergaussian import apply_tiled_supergaussian_absorber
 from PyPIC3D.relativity.core import B_FIELD_LOCATIONS, D_FIELD_LOCATIONS
 from PyPIC3D.boundary_conditions.staggered import refresh_fields
 from PyPIC3D.boundary_conditions.grid_and_stencil import BC_CONDUCTING
-
-
-def _location_interpolate_axis(field, source_location, target_location, axis):
-    array_axis = axis + 3
-    if source_location[axis] == target_location[axis]:
-        return field
-    if source_location[axis] == "C":
-        return 0.5 * (field + jnp.roll(field, -1, axis=array_axis))
-    return 0.5 * (field + jnp.roll(field, 1, axis=array_axis))
-
-
-def _location_interpolate(field, source_location, target_location):
-    interpolated = field
-    for axis in range(3):
-        interpolated = _location_interpolate_axis(interpolated, source_location, target_location, axis)
-    return interpolated
-
-
-def _metric_weighted_interpolate(field, source_metric, target_metric, source_location, target_location):
-    weighted = source_metric.sqrt_gamma * field
-    weighted = _location_interpolate(weighted, source_location, target_location)
-    return weighted / target_metric.sqrt_gamma
+from PyPIC3D.relativity.field_interpolation import (
+    metric_weighted_interpolate as _metric_weighted_interpolate,
+)
 
 
 def _shift_cross_component(beta, vector_components, component):
@@ -134,114 +114,45 @@ def compute_covariant_H(D_tiles, B_tiles, metric):
     return tuple(H_cov)
 
 
-def update_D_relativity(D_tiles, H_tiles, J_tiles, metric, static_parameters, dynamic_parameters, dt):
-    """
-    Update contravariant displacement field D^i in a fixed 3+1 metric.
-    """
+def _update_field(fields, auxiliary, current, metric, static, dynamic, dt, *, magnetic):
+    """Yee curl on owned nodes, including physical upper C endpoints."""
+    from PyPIC3D.boundary_conditions.pec import owned_nodes
+    locations = B_FIELD_LOCATIONS if magnetic else D_FIELD_LOCATIONS
+    samples = metric.B if magnetic else metric.D
+    if BC_CONDUCTING in static.boundary_conditions:
+        auxiliary = refresh_fields(auxiliary, static,
+                                   D_FIELD_LOCATIONS if magnetic else B_FIELD_LOCATIONS)
+    spacing = (dynamic.dx, dynamic.dy, dynamic.dz)
+    result = []
+    for i, location in enumerate(locations):
+        j, k = (i+1) % 3, (i+2) % 3
+        def derivative(value, axis):
+            if magnetic:
+                return (jnp.roll(value, -1, axis+3)-value)/spacing[axis]
+            return (value-jnp.roll(value, 1, axis+3))/spacing[axis]
+        curl = derivative(auxiliary[k], j)-derivative(auxiliary[j], k)
+        rate = -curl/samples[i].sqrt_gamma if magnetic else (
+            curl/samples[i].sqrt_gamma - 4*jnp.pi*current[i])
+        result.append(jnp.where(owned_nodes(fields[i].shape, location, static),
+                                fields[i]+dt*rate, fields[i]))
+    result = apply_tiled_supergaussian_absorber(
+        tuple(result), static, dynamic, dt, locations=locations)
+    return refresh_fields(result, static, locations, 'B' if magnetic else 'D', metric)
 
+
+def update_D_relativity(D_tiles, H_tiles, J_tiles, metric, static_parameters, dynamic_parameters, dt):
+    """Advance contravariant D and enforce its FIDO surface projection."""
     if metric.geometry is not None:
         from PyPIC3D.boundary_conditions.polar import update_fields
         return update_fields(D_tiles,H_tiles,J_tiles,metric,static_parameters,dynamic_parameters,dt)
-    Dx, Dy, Dz = D_tiles
-    Jx, Jy, Jz = J_tiles
-    if BC_CONDUCTING in static_parameters.boundary_conditions:
-        H_tiles = refresh_fields(H_tiles, static_parameters, B_FIELD_LOCATIONS)
-    Hx, Hy, Hz = H_tiles
-
-    g = int(static_parameters.guard_cells)
-    active = slice(g, -g)
-    backward = slice(g - 1, -g - 1)
-    dx, dy, dz = dynamic_parameters.dx, dynamic_parameters.dy, dynamic_parameters.dz
-
-    dHz_dy = (Hz[:, :, :, active, active, active] - Hz[:, :, :, active, backward, active]) / dy
-    dHy_dz = (Hy[:, :, :, active, active, active] - Hy[:, :, :, active, active, backward]) / dz
-    dHx_dz = (Hx[:, :, :, active, active, active] - Hx[:, :, :, active, active, backward]) / dz
-    dHz_dx = (Hz[:, :, :, active, active, active] - Hz[:, :, :, backward, active, active]) / dx
-    dHy_dx = (Hy[:, :, :, active, active, active] - Hy[:, :, :, backward, active, active]) / dx
-    dHx_dy = (Hx[:, :, :, active, active, active] - Hx[:, :, :, active, backward, active]) / dy
-
-    sqrt_Dx = metric.D[0].sqrt_gamma[:, :, :, active, active, active]
-    sqrt_Dy = metric.D[1].sqrt_gamma[:, :, :, active, active, active]
-    sqrt_Dz = metric.D[2].sqrt_gamma[:, :, :, active, active, active]
-    current = slice(g, -g)
-
-    Dx = Dx.at[:, :, :, active, active, active].set(
-        Dx[:, :, :, active, active, active]
-        + dt * ((dHz_dy - dHy_dz) / sqrt_Dx - 4.0 * jnp.pi * Jx[:, :, :, current, current, current])
-    )
-    Dy = Dy.at[:, :, :, active, active, active].set(
-        Dy[:, :, :, active, active, active]
-        + dt * ((dHx_dz - dHz_dx) / sqrt_Dy - 4.0 * jnp.pi * Jy[:, :, :, current, current, current])
-    )
-    Dz = Dz.at[:, :, :, active, active, active].set(
-        Dz[:, :, :, active, active, active]
-        + dt * ((dHy_dx - dHx_dy) / sqrt_Dz - 4.0 * jnp.pi * Jz[:, :, :, current, current, current])
-    )
-
-    D_tiles = (Dx, Dy, Dz)
-    if static_parameters.supergaussian_active:
-        return apply_tiled_supergaussian_absorber(
-            D_tiles,
-            static_parameters,
-            dynamic_parameters,
-            dt,
-        )
-
-    if (BC_CONDUCTING in static_parameters.boundary_conditions
-            or static_parameters.horizon_field_cells):
-        return refresh_fields(D_tiles, static_parameters, D_FIELD_LOCATIONS, 'D')
-    return ghost_cells.update_tiled_vector_ghost_cells(D_tiles, static_parameters, g)
+    return _update_field(D_tiles, H_tiles, J_tiles, metric, static_parameters,
+                         dynamic_parameters, dt, magnetic=False)
 
 
 def update_B_relativity(E_tiles, B_tiles, metric, static_parameters, dynamic_parameters, dt):
-    """
-    Update contravariant magnetic field B^i in a fixed 3+1 metric.
-    """
-
+    """Advance contravariant B and remove its normal surface component."""
     if metric.geometry is not None:
         from PyPIC3D.boundary_conditions.polar import update_fields
         return update_fields(B_tiles,E_tiles,None,metric,static_parameters,dynamic_parameters,dt,magnetic=True)
-    Bx, By, Bz = B_tiles
-    if BC_CONDUCTING in static_parameters.boundary_conditions:
-        E_tiles = refresh_fields(E_tiles, static_parameters, D_FIELD_LOCATIONS)
-    Ex, Ey, Ez = E_tiles
-
-    g = int(static_parameters.guard_cells)
-    active = slice(g, -g)
-    forward = slice(g + 1, None if g == 1 else -g + 1)
-    dx, dy, dz = dynamic_parameters.dx, dynamic_parameters.dy, dynamic_parameters.dz
-
-    dEz_dy = (Ez[:, :, :, active, forward, active] - Ez[:, :, :, active, active, active]) / dy
-    dEy_dz = (Ey[:, :, :, active, active, forward] - Ey[:, :, :, active, active, active]) / dz
-    dEx_dz = (Ex[:, :, :, active, active, forward] - Ex[:, :, :, active, active, active]) / dz
-    dEz_dx = (Ez[:, :, :, forward, active, active] - Ez[:, :, :, active, active, active]) / dx
-    dEy_dx = (Ey[:, :, :, forward, active, active] - Ey[:, :, :, active, active, active]) / dx
-    dEx_dy = (Ex[:, :, :, active, forward, active] - Ex[:, :, :, active, active, active]) / dy
-
-    sqrt_Bx = metric.B[0].sqrt_gamma[:, :, :, active, active, active]
-    sqrt_By = metric.B[1].sqrt_gamma[:, :, :, active, active, active]
-    sqrt_Bz = metric.B[2].sqrt_gamma[:, :, :, active, active, active]
-
-    Bx = Bx.at[:, :, :, active, active, active].set(
-        Bx[:, :, :, active, active, active] - dt * (dEz_dy - dEy_dz) / sqrt_Bx
-    )
-    By = By.at[:, :, :, active, active, active].set(
-        By[:, :, :, active, active, active] - dt * (dEx_dz - dEz_dx) / sqrt_By
-    )
-    Bz = Bz.at[:, :, :, active, active, active].set(
-        Bz[:, :, :, active, active, active] - dt * (dEy_dx - dEx_dy) / sqrt_Bz
-    )
-
-    B_tiles = (Bx, By, Bz)
-    if static_parameters.supergaussian_active:
-        return apply_tiled_supergaussian_absorber(
-            B_tiles,
-            static_parameters,
-            dynamic_parameters,
-            dt,
-        )
-
-    if (BC_CONDUCTING in static_parameters.boundary_conditions
-            or static_parameters.horizon_field_cells):
-        return refresh_fields(B_tiles, static_parameters, B_FIELD_LOCATIONS, 'B')
-    return ghost_cells.update_tiled_vector_ghost_cells(B_tiles, static_parameters, g)
+    return _update_field(B_tiles, E_tiles, None, metric, static_parameters,
+                         dynamic_parameters, dt, magnetic=True)

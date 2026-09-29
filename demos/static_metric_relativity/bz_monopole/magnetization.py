@@ -5,7 +5,7 @@ import jax.numpy as jnp
 
 from PyPIC3D.deposition.rho import compute_rho
 from PyPIC3D.relativity.core import B_FIELD_LOCATIONS
-from PyPIC3D.solvers.gr_static.static_metric import _location_interpolate
+from PyPIC3D.relativity.field_interpolation import location_interpolate as _location_interpolate
 
 
 class Magnetization(NamedTuple):

@@ -29,34 +29,28 @@ def source_boundaries(value, static, *, fold=False, vector=False, reflecting_par
     return jnp.stack(result) if hasattr(value, 'ndim') and value.ndim == 7 else result
 
 
-@partial(jax.jit, static_argnums=(1, 2, 3))
-def refresh_fields(vector, static, locations, field_kind=None):
-    """Enforce conducting component parity and the configured inner layers.
+@partial(jax.jit, static_argnames=('static', 'locations', 'field_kind'))
+def refresh_fields(vector, static, locations, field_kind=None, metric=None):
+    """Refresh fields; conducting D/B require the local spatial metric.
 
-    D/E use odd tangential, even normal parity; B/H use the opposite.
-    The BZ spherical metric has no theta cross terms or theta shift, making
-    the D/B wall conditions equivalent to tangential E=0 and normal B=0.
+    Auxiliary E/H retain their computed physical exterior values. Only D/B
+    receive horizon treatment and the FIDO projector boundary contract.
     """
-    electric = locations == D_FIELD_LOCATIONS
-    g = static.guard_cells
-    result = []
-    for i, (value, loc) in enumerate(zip(vector, locations)):
-        cells = static.horizon_field_cells
-        if cells and field_kind in ('D', 'B'):
+    from .ghost_cells import update_tiled_vector_ghost_cells
+    if field_kind not in (None, 'D', 'B'):
+        raise ValueError("field_kind must be D, B, or None for auxiliary fields")
+    if field_kind is not None:
+        cells, g = static.horizon_field_cells, static.guard_cells
+        if cells:
             if cells >= static.tile_shape[0]:
                 raise ValueError('Horizon boundary reference must lie in the first radial tile')
-            value = value.at[0, :, :, :g+cells].set(value[0, :, :, g+cells:g+cells+1])
-        parity = tuple((1 if i == axis else -1) if electric else
-                       (-1 if i == axis else 1) for axis in range(3))
-        for axis, bc in enumerate(static.boundary_conditions):
-            if bc != BC_CONDUCTING or loc[axis] != 'C' or parity[axis] != -1:
-                continue
-            low = [slice(None)] * 6
-            high = low.copy()
-            low[axis] = 0
-            high[axis] = -1
-            low[axis+3] = g
-            high[axis+3] = g+static.tile_shape[axis]
-            value = value.at[tuple(low)].set(0.).at[tuple(high)].set(0.)
-        result.append(scalar_boundaries(value, static, loc, parity))
-    return tuple(result)
+            vector = tuple(value.at[0, :, :, :g+cells].set(value[0, :, :, g+cells:g+cells+1])
+                           for value in vector)
+        if BC_CONDUCTING in static.boundary_conditions:
+            if metric is None:
+                raise ValueError('Conducting D/B boundaries require a Yee metric')
+            from .pec import project_fields
+            return project_fields(vector, static, locations, field_kind, metric)
+    return update_tiled_vector_ghost_cells(
+        vector, static, static.guard_cells, locations=locations,
+        preserve_exterior=field_kind is None)

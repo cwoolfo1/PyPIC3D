@@ -34,6 +34,7 @@ class TestGhostCells(unittest.TestCase):
         except ValueError as exc:
             self.skipTest(str(exc))
         return SimpleNamespace(
+            solver="electrodynamic_yee",
             tile_shape=tuple(int(width) for width in parameter_set["tile_shape"]),
             guard_cells=self.g,
             boundary_conditions=(
@@ -69,6 +70,7 @@ class TestGhostCells(unittest.TestCase):
         field_tiles = jnp.zeros((1, 1, 1, 4, 4, 4))
 
         incomplete_parameters = SimpleNamespace(
+            solver="electrodynamic_yee",
             tile_shape=self.tile_shape,
             guard_cells=self.g,
             boundary_conditions=(BC_PERIODIC, BC_PERIODIC, BC_PERIODIC),
@@ -104,6 +106,7 @@ class TestGhostCells(unittest.TestCase):
         # this tests the application of axis-wise conducting boundary conditions to a tiled electric field
 
         parameter_set = SimpleNamespace(
+            solver="electrodynamic_yee",
             tile_shape=self.tile_shape,
             guard_cells=self.g,
             field_mesh=ghost_cells.make_field_mesh((1, 1, 1)),
@@ -144,6 +147,7 @@ class TestGhostCells(unittest.TestCase):
 
     def test_apply_tiled_constant_boundary_copies_adjacent_interior_to_global_ghosts(self):
         parameter_set = SimpleNamespace(
+            solver="electrodynamic_yee",
             tile_shape=self.tile_shape,
             guard_cells=self.g,
             field_mesh=ghost_cells.make_field_mesh((1, 1, 1)),
@@ -168,6 +172,7 @@ class TestGhostCells(unittest.TestCase):
 
     def test_update_tiled_ghost_cells_constant_copies_adjacent_global_interiors(self):
         parameter_set = SimpleNamespace(
+            solver="electrodynamic_yee",
             tile_shape=self.tile_shape,
             guard_cells=self.g,
             field_mesh=ghost_cells.make_field_mesh((1, 1, 1)),
@@ -187,6 +192,7 @@ class TestGhostCells(unittest.TestCase):
     def test_particle_scalar_fold_and_refresh_mirror_both_reflecting_walls(self):
         g = 2
         parameters = SimpleNamespace(
+            solver="electrodynamic_yee",
             tile_shape=(2, 2, 4),
             guard_cells=g,
             field_mesh=ghost_cells.make_field_mesh((1, 1, 1)),
@@ -242,6 +248,7 @@ class TestGhostCells(unittest.TestCase):
     def test_particle_vector_has_tangential_even_and_normal_odd_wall_parity(self):
         g = 2
         parameters = SimpleNamespace(
+            solver="electrodynamic_yee",
             tile_shape=(2, 2, 4),
             guard_cells=g,
             field_mesh=ghost_cells.make_field_mesh((1, 1, 1)),
@@ -292,6 +299,7 @@ class TestGhostCells(unittest.TestCase):
             particle_boundaries = [BC_PERIODIC, BC_PERIODIC, BC_PERIODIC]
             particle_boundaries[wall_axis] = BC_CONDUCTING
             parameters = SimpleNamespace(
+            solver="electrodynamic_yee",
                 tile_shape=tile_shape,
                 guard_cells=g,
                 field_mesh=ghost_cells.make_field_mesh((1, 1, 1)),
@@ -316,6 +324,7 @@ class TestGhostCells(unittest.TestCase):
     def test_reduced_reflecting_axis_uses_scalar_parity(self):
         g = 1
         parameters = SimpleNamespace(
+            solver="electrodynamic_yee",
             tile_shape=(1, 2, 2),
             guard_cells=g,
             field_mesh=ghost_cells.make_field_mesh((1, 1, 1)),
@@ -361,6 +370,7 @@ class TestGhostCells(unittest.TestCase):
     def test_reflecting_corner_composes_axis_parity(self):
         g = 1
         parameters = SimpleNamespace(
+            solver="electrodynamic_yee",
             tile_shape=(2, 2, 2),
             guard_cells=g,
             field_mesh=ghost_cells.make_field_mesh((1, 1, 1)),
@@ -393,6 +403,7 @@ class TestGhostCells(unittest.TestCase):
 
     def test_reflecting_parity_is_rejected_for_field_boundaries(self):
         parameters = SimpleNamespace(
+            solver="electrodynamic_yee",
             tile_shape=(2, 2, 2),
             guard_cells=1,
             field_mesh=ghost_cells.make_field_mesh((1, 1, 1)),

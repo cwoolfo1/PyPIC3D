@@ -51,7 +51,7 @@ class TestMagnetization(unittest.TestCase):
             tv=d.grids.tiled_vertex_grid[1][...,None,:,None]
             rc=d.grids.tiled_center_grid[0][..., :,None,None]
             B=(jnp.broadcast_to(jnp.cos(2*tv),shape),jnp.broadcast_to(jnp.sin(tc),shape),jnp.zeros(shape))
-            B=refresh_vector(B,s,B_FIELD_LOCATIONS,'B')
+            B=refresh_vector(B,s,B_FIELD_LOCATIONS,'B',m)
             n=jnp.ones((2,)+shape)
             result=mag.magnetization_from_density(B,n,jnp.ones(2),m)
             exact=jnp.cos(2*tc)**2+rc**2*jnp.sin(tc)**2

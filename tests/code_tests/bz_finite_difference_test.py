@@ -60,7 +60,7 @@ class TestFiniteDifferenceBZ(unittest.TestCase):
         def plane(i): return (0, 0, 0, slice(None), i, slice(None))
         for locs, kind in ((D_FIELD_LOCATIONS, 'D'), (B_FIELD_LOCATIONS, 'B')):
             vector = tuple(jnp.ones_like(m.center.lapse)*(i+1) for i in range(3))
-            result = refresh_fields(vector, s, locs, kind)
+            result = refresh_fields(vector, s, locs, kind, m)
             for i, (value, loc) in enumerate(zip(result, locs)):
                 parity = (1 if i == 1 else -1) if kind == 'D' else (-1 if i == 1 else 1)
                 if loc[1] == 'C' and parity == -1:
@@ -87,7 +87,11 @@ class TestFiniteDifferenceBZ(unittest.TestCase):
             # nodal quadrature, independently of the coordinate metric.
             self.assertAlmostEqual(float(jnp.sum(folded*node_weights(s,source))),float(source.sum()),places=10)
             for locs,kind in ((D_FIELD_LOCATIONS,'D'),(B_FIELD_LOCATIONS,'B')):
-                result=refresh_fields((jnp.ones(shape),)*3,s,locs,kind)
+                from PyPIC3D.relativity.core import Metric, YeeMetric
+                tensor=jnp.broadcast_to(jnp.eye(3),shape+(3,3))
+                sample=Metric(jnp.ones(shape),jnp.zeros(shape+(3,)),tensor,tensor,jnp.ones(shape))
+                metric=YeeMetric((sample,)*3,(sample,)*3,sample,sample)
+                result=refresh_fields((jnp.ones(shape),)*3,s,locs,kind,metric)
                 for axis in range(3):
                     for i,loc in enumerate(locs):
                         odd=(i!=axis) if kind=='D' else (i==axis)
@@ -102,7 +106,7 @@ class TestFiniteDifferenceBZ(unittest.TestCase):
         g=s.guard_cells
         value=jnp.broadcast_to(jnp.arange(m.center.lapse.shape[3])[None,None,None,:,None,None],m.center.lapse.shape).astype(float)
         for locs,kind in ((D_FIELD_LOCATIONS,'D'),(B_FIELD_LOCATIONS,'B')):
-            fields=refresh_fields((value,)*3,s,locs,kind)
+            fields=refresh_fields((value,)*3,s,locs,kind,m)
             auxiliary=refresh_fields((value,)*3,s,locs)
             for a,b in zip(fields,auxiliary):
                 np.testing.assert_array_equal(np.asarray(a)[0,0,0,:g+3,g+5,g],g+3)
@@ -186,9 +190,10 @@ class TestFiniteDifferenceBZ(unittest.TestCase):
             g=s.guard_cells
             self.assertLess(float(jnp.max(jnp.abs(error[:,:, :,g+2:-g-2,g+2:-g-2,g]))),1e-10)
             execute = runner.make_step(p,species,s,d,background,current_filter_passes=0)
-            particles,fields,_,_ = execute(particles,fields,jax.random.PRNGKey(p.seed),0)
-            self.assertTrue(bool(runner.finite_state(particles,fields)))
-            runner.check_constraints(runner.constraint_residuals(particles,species,fields,s,d,p))
+            for step in range(4):
+                particles,fields,_,_ = execute(particles,fields,jax.random.PRNGKey(p.seed+step),step)
+                self.assertTrue(bool(runner.finite_state(particles,fields)))
+                runner.check_constraints(runner.constraint_residuals(particles,species,fields,s,d,p))
 
     def test_manufactured_curved_metric_curl_is_second_order(self):
         errors=[]

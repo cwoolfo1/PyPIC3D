@@ -51,7 +51,9 @@ def time_loop_static_metric(
         if metric.geometry is not None:
             from PyPIC3D.boundary_conditions.polar import refresh_vector
         else:
-            from PyPIC3D.boundary_conditions.staggered import refresh_fields as refresh_vector
+            from functools import partial
+            from PyPIC3D.boundary_conditions.staggered import refresh_fields
+            refresh_vector = partial(refresh_fields, metric=metric)
         from PyPIC3D.relativity.core import D_FIELD_LOCATIONS, B_FIELD_LOCATIONS
         D_n=refresh_vector(D_n,static_parameters,D_FIELD_LOCATIONS,'D')
         B_n_minushalf=refresh_vector(B_n_minushalf,static_parameters,B_FIELD_LOCATIONS,'B')

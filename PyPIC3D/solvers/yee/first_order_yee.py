@@ -1,10 +1,10 @@
+from PyPIC3D.relativity.core import D_FIELD_LOCATIONS, B_FIELD_LOCATIONS
 from PyPIC3D.boundary_conditions.PML import (
     stretch_tiled_pml_b_derivatives,
     stretch_tiled_pml_e_derivatives,
 )
 from PyPIC3D.boundary_conditions.supergaussian import apply_tiled_supergaussian_absorber
 from PyPIC3D.boundary_conditions import ghost_cells
-from PyPIC3D.boundary_conditions.grid_and_stencil import BC_CONDUCTING
 
 
 def yee_derivatives_e_to_b(E_tiles, static_parameters, dynamic_parameters):
@@ -19,7 +19,7 @@ def yee_derivatives_e_to_b(E_tiles, static_parameters, dynamic_parameters):
     active = slice(g, -g)
     forward = slice(g + 1, None if g == 1 else -g + 1)
 
-    Ex, Ey, Ez = ghost_cells.update_tiled_vector_ghost_cells(E_tiles, static_parameters, g)
+    Ex, Ey, Ez = ghost_cells.update_tiled_vector_ghost_cells(E_tiles, static_parameters, g, locations=D_FIELD_LOCATIONS)
     dx, dy, dz = dynamic_parameters.dx, dynamic_parameters.dy, dynamic_parameters.dz
 
     dEz_dy = (Ez[:, :, :, active, forward, active] - Ez[:, :, :, active, active, active]) / dy
@@ -44,7 +44,7 @@ def yee_derivatives_b_to_e(B_tiles, static_parameters, dynamic_parameters):
     active = slice(g, -g)
     backward = slice(g - 1, -g - 1)
 
-    Bx, By, Bz = ghost_cells.update_tiled_vector_ghost_cells(B_tiles, static_parameters, g)
+    Bx, By, Bz = ghost_cells.update_tiled_vector_ghost_cells(B_tiles, static_parameters, g, locations=B_FIELD_LOCATIONS)
     dx, dy, dz = dynamic_parameters.dx, dynamic_parameters.dy, dynamic_parameters.dz
 
     dBz_dy = (Bz[:, :, :, active, active, active] - Bz[:, :, :, active, backward, active]) / dy
@@ -127,29 +127,19 @@ def update_E(E_tiles, B_tiles, J_tiles, static_parameters, dynamic_parameters, p
         + (C**2 * curl_z - Jz[:, :, :, active, active, active] / eps) * dt
     )
 
-    bc_x, bc_y, bc_z = static_parameters.boundary_conditions
-    if int(bc_x) == BC_CONDUCTING:
-        Ey = ghost_cells.apply_tiled_zero_boundary(Ey, static_parameters, axis=0, num_guard_cells=g)
-        Ez = ghost_cells.apply_tiled_zero_boundary(Ez, static_parameters, axis=0, num_guard_cells=g)
-    if int(bc_y) == BC_CONDUCTING:
-        Ex = ghost_cells.apply_tiled_zero_boundary(Ex, static_parameters, axis=1, num_guard_cells=g)
-        Ez = ghost_cells.apply_tiled_zero_boundary(Ez, static_parameters, axis=1, num_guard_cells=g)
-    if int(bc_z) == BC_CONDUCTING:
-        Ex = ghost_cells.apply_tiled_zero_boundary(Ex, static_parameters, axis=2, num_guard_cells=g)
-        Ey = ghost_cells.apply_tiled_zero_boundary(Ey, static_parameters, axis=2, num_guard_cells=g)
-    # conducting walls zero tangential E components on the physical boundary
-    # planes; the shared scalar helper refreshes halos through ppermute.
+    Ex, Ey, Ez = ghost_cells.apply_tiled_pec_boundary((Ex, Ey, Ez), static_parameters)
 
     E_tiles = apply_tiled_supergaussian_absorber(
         (Ex, Ey, Ez),
         static_parameters,
         dynamic_parameters,
         dynamic_parameters.dt,
+        locations=D_FIELD_LOCATIONS,
     )
     # A supergaussian layer is a field-only sponge: it damps the evolved fields
     # after the Maxwell update without changing the deposited current.
 
-    return ghost_cells.update_tiled_vector_ghost_cells(E_tiles, static_parameters, g), pml_state
+    return ghost_cells.update_tiled_vector_ghost_cells(E_tiles, static_parameters, g, locations=D_FIELD_LOCATIONS), pml_state
 
 
 def update_B(E_tiles, B_tiles, static_parameters, dynamic_parameters, pml_state=None):
@@ -189,8 +179,9 @@ def update_B(E_tiles, B_tiles, static_parameters, dynamic_parameters, pml_state=
         static_parameters,
         dynamic_parameters,
         dt,
+        locations=B_FIELD_LOCATIONS,
     )
     # The B update is split into half steps, so the sponge uses the same half
     # timestep as Faraday's-law update here.
 
-    return ghost_cells.update_tiled_vector_ghost_cells((Bx, By, Bz), static_parameters, g), pml_state
+    return ghost_cells.update_tiled_vector_ghost_cells((Bx, By, Bz), static_parameters, g, locations=B_FIELD_LOCATIONS), pml_state

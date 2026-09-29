@@ -45,6 +45,7 @@ def _static_parameters(boundary_conditions, tile_shape, mesh_shape, g=1, particl
     if particle_boundary_conditions is None:
         particle_boundary_conditions = boundary_conditions
     return SimpleNamespace(
+            solver="electrodynamic_yee",
         tile_shape=tuple(int(width) for width in tile_shape),
         guard_cells=int(g),
         boundary_conditions=tuple(int(bc) for bc in boundary_conditions),
@@ -333,7 +334,7 @@ class TestDistributedGhostCells(unittest.TestCase):
 
         self.assertEqual(actual.sharding, sharding)
         self.assert_allclose(actual[0, 0, 0, 1, :, :], 0.0)
-        self.assert_allclose(actual[0, 0, 0, -2, :, :], 0.0)
+        self.assert_allclose(actual[0, 0, 0, -1, :, :], 0.0)
         self.assert_allclose(actual[0, 0, 0, 2, :, :], 1.0)
 
     def test_public_axis_constant_boundary_on_one_device_runs_inside_mapped_path(self):
@@ -633,9 +634,9 @@ class TestDistributedGhostCells(unittest.TestCase):
         Ex, Ey, Ez = jax.jit(apply_electric_bc)(*E)
 
         self.assert_allclose(Ey[0, :, :, 1, :, :], 0.0)
-        self.assert_allclose(Ez[-1, :, :, -2, :, :], 0.0)
+        self.assert_allclose(Ez[-1, :, :, -1, :, :], 0.0)
         self.assert_allclose(Ex[:, 0, :, :, 1, :], 0.0)
-        self.assert_allclose(Ez[:, -1, :, :, -2, :], 0.0)
+        self.assert_allclose(Ez[:, -1, :, :, -1, :], 0.0)
         self.assert_allclose(Ey[0, :, :, 2, 1:-1, 1:-1], 2.0)
         self.assert_allclose(Ex[:, 0, :, 1:-1, 2, 1:-1], 1.0)
 

@@ -677,8 +677,21 @@ def initialize_simulation(toml_file):
     )
     E, B, J = field_components[:3], field_components[3:6], field_components[6:9]
 
-    E = update_tiled_vector_ghost_cells(E, static_parameters, num_guard_cells=guard_cells)
-    B = update_tiled_vector_ghost_cells(B, static_parameters, num_guard_cells=guard_cells)
+    from PyPIC3D.relativity.core import D_FIELD_LOCATIONS, B_FIELD_LOCATIONS
+    if static_metric and metric.geometry is None:
+        from functools import partial
+        from PyPIC3D.boundary_conditions.staggered import refresh_fields
+        refresh_vector = partial(refresh_fields, metric=metric)
+        E = refresh_vector(E, static_parameters, D_FIELD_LOCATIONS, 'D')
+        B = refresh_vector(B, static_parameters, B_FIELD_LOCATIONS, 'B')
+    elif solver == "electrodynamic_yee":
+        from PyPIC3D.boundary_conditions.ghost_cells import apply_tiled_pec_boundary
+        E = apply_tiled_pec_boundary(E, static_parameters)
+        E = update_tiled_vector_ghost_cells(E, static_parameters, guard_cells, locations=D_FIELD_LOCATIONS)
+        B = update_tiled_vector_ghost_cells(B, static_parameters, guard_cells, locations=B_FIELD_LOCATIONS)
+    else:
+        E = update_tiled_vector_ghost_cells(E, static_parameters, num_guard_cells=guard_cells)
+        B = update_tiled_vector_ghost_cells(B, static_parameters, num_guard_cells=guard_cells)
     external_E, external_B = external_fields
     external_E = update_tiled_vector_ghost_cells(external_E, static_parameters, num_guard_cells=guard_cells)
     external_B = update_tiled_vector_ghost_cells(external_B, static_parameters, num_guard_cells=guard_cells)
@@ -694,8 +707,12 @@ def initialize_simulation(toml_file):
             dynamic_parameters,
         )
         D_previous, B_previous = static_metric_state
-        D_previous = update_tiled_vector_ghost_cells(D_previous, static_parameters, num_guard_cells=guard_cells)
-        B_previous = update_tiled_vector_ghost_cells(B_previous, static_parameters, num_guard_cells=guard_cells)
+        if metric.geometry is None:
+            D_previous = refresh_vector(D_previous, static_parameters, D_FIELD_LOCATIONS, 'D')
+            B_previous = refresh_vector(B_previous, static_parameters, B_FIELD_LOCATIONS, 'B')
+        else:
+            D_previous = update_tiled_vector_ghost_cells(D_previous, static_parameters, num_guard_cells=guard_cells)
+            B_previous = update_tiled_vector_ghost_cells(B_previous, static_parameters, num_guard_cells=guard_cells)
         static_metric_state = D_previous, B_previous
         print("Skipping flat-space energy diagnostics for static_metric fields and covariant particle u_i\n")
     else:

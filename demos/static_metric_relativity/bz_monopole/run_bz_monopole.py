@@ -24,7 +24,8 @@ from PyPIC3D.deposition.rho import compute_rho
 from PyPIC3D.relativity.core import B_FIELD_LOCATIONS, D_FIELD_LOCATIONS
 from PyPIC3D.solvers.gr_static.static_metric import (
     compute_covariant_E, compute_covariant_H, update_B_relativity,
-    update_D_relativity, _location_interpolate)
+    update_D_relativity)
+from PyPIC3D.relativity.field_interpolation import location_interpolate as _location_interpolate
 from PyPIC3D.solvers.gr_static.time_loop import time_loop_static_metric
 if __package__:
     from .simulation_parameters import SimulationParameters, build_runtime, shard_array
@@ -42,14 +43,14 @@ def monopole_field(p, metric, dynamic):
     return (Br, jnp.zeros_like(Br), jnp.zeros_like(Br))
 
 
-def refresh_fields(vector, locations, static):
+def refresh_fields(vector, locations, static, metric):
     """Refresh D or B halos, including the frozen horizon layers."""
-    return refresh_vector(vector, static, locations, 'B' if locations == B_FIELD_LOCATIONS else 'D')
+    return refresh_vector(vector, static, locations, 'B' if locations == B_FIELD_LOCATIONS else 'D', metric)
 
 
 def initialize_fields(p, static, dynamic, metric):
     B0 = tuple(shard_array(x, static) for x in monopole_field(p, metric, dynamic))
-    B0=refresh_fields(B0, B_FIELD_LOCATIONS, static)
+    B0=refresh_fields(B0, B_FIELD_LOCATIONS, static, metric)
     zero = jnp.zeros_like(B0[0])
     D0 = (zero,)*3
     def rhs(D, B):
@@ -57,8 +58,8 @@ def initialize_fields(p, static, dynamic, metric):
         H = compute_covariant_H(D, B, metric)
         db = update_B_relativity(E, (zero,)*3, metric, static, dynamic, 1.)
         dd = update_D_relativity((zero,)*3, H, (zero,)*3, metric, static, dynamic, 1.)
-        return (refresh_fields(dd, D_FIELD_LOCATIONS, static),
-                refresh_fields(db, B_FIELD_LOCATIONS, static))
+        return (refresh_fields(dd, D_FIELD_LOCATIONS, static, metric),
+                refresh_fields(db, B_FIELD_LOCATIONS, static, metric))
     dD, dB = rhs(D0, B0)
     ddD, ddB = rhs(dD, dB)
     def at(initial, first, second, t):
@@ -86,7 +87,7 @@ def apply_sponge(fields, background, p, static, dynamic):
             ramp = jnp.clip((r-p.sponge_start)/(p.r_max-p.sponge_start), 0., 1.)**4
             factor = jnp.exp(-p.sponge_rate*dynamic.dt*ramp)
             result.append(baseline[i]+factor*(vector[i]-baseline[i]))
-        return refresh_fields(tuple(result), locations, static)
+        return refresh_fields(tuple(result), locations, static, fields[6])
     zero = tuple(jnp.zeros_like(x) for x in D)
     return (damp(D, zero, D_FIELD_LOCATIONS), damp(B, background, B_FIELD_LOCATIONS))+fields[2:]
 
@@ -258,7 +259,7 @@ def diagnostics(particles, species, fields, p, static, dynamic, *, current_filte
     Bminus = tuple((B[i]+previous[1][i])/2 for i in range(3))
     B = update_B_relativity(compute_covariant_E(Dhalf, B, metric), Bminus,
                             metric, static, dynamic, dynamic.dt)
-    B = refresh_fields(B, B_FIELD_LOCATIONS, static)
+    B = refresh_fields(B, B_FIELD_LOCATIONS, static, metric)
     E = compute_covariant_E(D, B, metric)
     H = compute_covariant_H(D, B, metric)
     E = tuple(_location_interpolate(E[i], D_FIELD_LOCATIONS[i], ("C",)*3) for i in range(3))

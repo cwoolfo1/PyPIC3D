@@ -381,6 +381,9 @@ class TestYeeTiled(unittest.TestCase):
                     static_parameters, dynamic_parameters = self._split_parameters(parameter_set, {})
                     E_tiles = self._random_tiled_vector_field(parameter_set, tile_shape, seed=14)
                     B_tiles = self._random_tiled_vector_field(parameter_set, tile_shape, seed=15)
+                    # The upper C plane is now a physical endpoint. Random
+                    # fields must satisfy PEC there before applying adjoint curls.
+                    E_tiles = ghost_cells.apply_tiled_pec_boundary(E_tiles, static_parameters)
                     forward = yee_derivatives_e_to_b(E_tiles, static_parameters, dynamic_parameters)
                     backward = yee_derivatives_b_to_e(
                         B_tiles,
@@ -413,6 +416,9 @@ class TestYeeTiled(unittest.TestCase):
                     static_parameters, dynamic_parameters = self._split_parameters(tiled_parameters, {})
                     E_tiles = self._random_tiled_vector_field(tiled_parameters, tile_shape, seed=31)
                     B_tiles = self._random_tiled_vector_field(tiled_parameters, tile_shape, seed=32)
+                    # The upper C plane is now a physical endpoint. Random
+                    # fields must satisfy PEC there before applying adjoint curls.
+                    E_tiles = ghost_cells.apply_tiled_pec_boundary(E_tiles, static_parameters)
 
                     curl_E = yee_curl_e_to_b(E_tiles, static_parameters, dynamic_parameters)
                     curl_B = yee_curl_b_to_e(

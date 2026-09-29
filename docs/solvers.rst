@@ -144,7 +144,47 @@ Field boundaries are set with ``x_bc``, ``y_bc``, and ``z_bc``:
 - ``periodic``
 - ``conducting``
 
-Conducting boundaries zero tangential electric components at the global wall.
+Standard Yee conducting boundaries zero tangential electric components at
+``g`` and ``g+n`` on the first and last tiles. The upper wall used to occupy
+``g+n-1``; the effective cavity width is now ``N*dx`` instead of ``(N-1)*dx``.
+Upper C endpoints are owned physical nodes even though stored in a halo slot;
+neighbor exchange preserves them, including transverse communication.
+
+For the static-metric finite-difference solver, ``conducting`` instead imposes
+FIDO-field constraints on the evolved contravariant vectors:
+
+.. math::
+
+   G^i{}_j=n^i n_j, \qquad F^i{}_j=\delta^i{}_j-G^i{}_j,
+   \qquad D^i\leftarrow G^i{}_jD^j,
+   \qquad B^i\leftarrow F^i{}_jB^j.
+
+At a coordinate face ``x^a=constant``, the spatial-metric unit normal is
+``n_i=delta_i^a/sqrt(gamma^{aa})`` and
+``n^i=gamma^{ia}/sqrt(gamma^{aa})``. A physically normal D can therefore have
+nonzero coordinate-tangential components. Surface tensors are taken from the
+existing C/V metric samples, with density-weighted component transfers to a
+common location before projection. Reflections use ``2G-I`` for D and
+``2F-I`` for B. At independent intersections D vanishes and B lies in the
+common tangent space, defined by the metric Gram matrix. Exterior corner
+reflections compose in x, y, z order.
+
+These are local explicit projections: projector algebra is exact at the
+reconstruction points; interpolating the stored staggered fields back to a
+common surface introduces truncation error. There is no coupled boundary
+solve. ``staggered.refresh_fields`` requires ``metric`` when applying a D/B
+conducting boundary. Initialization, previous time levels, updated stages,
+horizon/sponge processing, and temporary total fields for particle gathering
+all use this adapter. Particle reflection and source folding are unchanged.
+
+The auxiliary E/H routines remain pure constitutive calculations. Their
+computed exterior values are preserved during internal halo exchange. The
+FIDO constraints apply even with normal shift, where auxiliary tangential E
+can be nonzero. Projection can change magnetic divergence and Gauss residuals
+for incompatible fields; it does not model conductor surface charges or
+currents. The legacy polar finite-volume solver retains its existing cap and
+axis treatment.
+
 The electrostatic solver extends potential constantly through conducting
 exterior guards before taking its gradient.
 

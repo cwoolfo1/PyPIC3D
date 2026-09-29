@@ -273,6 +273,18 @@ def _apply_local_reflecting_boundary_axis(
     return tile
 
 
+def staggered_mirror(node, width, location):
+    """Return the owner and ordered wall encounters for a C/V image node."""
+    vertex = location == 'V'
+    last = width-1 if vertex else width
+    walls = []
+    while node < 0 or node > last:
+        wall = 0 if node < 0 else width
+        walls.append(wall)
+        node = 2*wall-node-int(vertex)
+    return node, tuple(walls)
+
+
 def _staggered_conducting_axis(tile, axis, g, axis_name, axis_size,
                                 positive, negative, location, parity, *, fold):
     """Reflect about actual endpoint nodes, preserving the owned upper C plane.
@@ -300,11 +312,8 @@ def _staggered_conducting_axis(tile, axis, g, axis_name, axis_size,
             # A narrow single-tile direction can fit fewer cells than halos.
             # Continue reflecting until the owner is inside the domain.
             if axis_size == 1:
-                last = n-1 if staggered else n
-                while owner < 0 or owner > last:
-                    owner = ((-owner-1 if staggered else -owner) if owner < 0 else
-                             (2*n-1-owner if staggered else 2*n-owner))
-                    sign *= parity
+                owner, walls = staggered_mirror(owner, n, location)
+                sign *= parity**len(walls)
             if fold:
                 a = a.at[plane(g+owner)].add(sign*original[plane(i)])
                 a = a.at[plane(i)].set(0.)
@@ -345,6 +354,7 @@ def _local_refresh_scalar_tile(
     send_negative,
     reflecting_parity=None,
     location=None,
+    preserve_exterior=False,
 ):
     axis_parities = (None, None, None) if reflecting_parity is None else reflecting_parity
     for axis, axis_name, boundary_condition, reduced_axis, positive, negative, parity in zip(
@@ -358,16 +368,37 @@ def _local_refresh_scalar_tile(
     ):
         if boundary_condition == BC_POLAR:
             continue  # polar theta is handled with explicit C/V ownership
-        if boundary_condition == BC_CONDUCTING and location is not None:
+        if boundary_condition == BC_CONDUCTING and location is not None and parity is not None:
             tile = _staggered_conducting_axis(
                 tile, axis, g, axis_name, mesh_shape[axis], positive, negative,
                 location[axis], parity, fold=False)
+            continue
+        keep_exterior = (preserve_exterior[axis] if isinstance(preserve_exterior, tuple)
+                         else preserve_exterior)
+        if (keep_exterior and boundary_condition != BC_PERIODIC or
+                boundary_condition == BC_CONDUCTING and location is not None):
+            # C endpoints are owned by the final tile. Restore them before
+            # transverse exchange, along with computed exterior values when
+            # requested by the metric constitutive/projector operators.
+            lower, upper, _, _ = _axis_slices(axis, g)
+            before = tile
+            tile = _refresh_axis(tile, axis, g, axis_name, positive, negative)
+            index = jax.lax.axis_index(axis_name)
+            if keep_exterior:
+                tile = jax.lax.cond(index == 0,
+                    lambda a: a.at[lower].set(before[lower]), lambda a: a, tile)
+                tile = jax.lax.cond(index == mesh_shape[axis]-1,
+                    lambda a: a.at[upper].set(before[upper]), lambda a: a, tile)
+            elif location[axis] == 'C':
+                face = _axis_boundary_plane(axis, -g)
+                tile = jax.lax.cond(index == mesh_shape[axis]-1,
+                    lambda a: a.at[face].set(before[face]), lambda a: a, tile)
             continue
         # A normal staggered source owns the lower absorbing face even though
         # it is stored in a halo. Preserve it before the transverse directions
         # are processed, so corner sources receive their transverse folding.
         keep_face = (boundary_condition == BC_ABSORBING and location is not None
-                     and location[axis] == 'V')
+                     and parity is not None and location[axis] == 'V')
         if keep_face:
             face = _axis_boundary_plane(axis, g-1)
             lower_flux = tile[face]
@@ -545,7 +576,7 @@ def _local_fold_scalar_tile(
                 location[axis], parity, fold=True)
             continue
         keep_face = (boundary_condition == BC_ABSORBING and location is not None
-                     and location[axis] == 'V')
+                     and parity is not None and location[axis] == 'V')
         if keep_face:
             face = _axis_boundary_plane(axis, g-1)
             lower_flux = tile[face]
@@ -603,7 +634,7 @@ def _axis_constant_boundary_slices(axis, g):
 
 def _apply_local_zero_boundary_axis(tile, axis, g, axis_name, axis_size):
     lower_plane = _axis_boundary_plane(axis, g)
-    upper_plane = _axis_boundary_plane(axis, -g - 1)
+    upper_plane = _axis_boundary_plane(axis, -g)
     tile_index = jax.lax.axis_index(axis_name)
 
     tile = jax.lax.cond(
@@ -654,6 +685,7 @@ def make_distributed_ghost_updater(
     *,
     reflecting_parity=None,
     location=None,
+    preserve_exterior=False,
 ):
     """
     Build a shard-mapped scalar halo refresher.
@@ -684,6 +716,7 @@ def make_distributed_ghost_updater(
             send_negative,
             reflecting_parity=reflecting_parity,
             location=location,
+            preserve_exterior=preserve_exterior,
         )
         return tile[jnp.newaxis, jnp.newaxis, jnp.newaxis, :, :, :]
 
@@ -969,6 +1002,8 @@ def update_tiled_ghost_cells(
     bc_type=BC_TYPE_FIELD,
     *,
     reflecting_parity=None,
+    location=None,
+    preserve_exterior=False,
 ):
     """
     Refresh scalar tile halos with one logical tile per JAX device.
@@ -979,7 +1014,9 @@ def update_tiled_ghost_cells(
     ``jax.shard_map`` over the named mesh axes ``tile_x``, ``tile_y``, and
     ``tile_z``. The leading tile topology must match the device mesh. Particle
     boundaries mirror exterior halos using ``reflecting_parity``; scalar
-    particle deposits are even by default.
+    particle deposits are even by default. ``location`` preserves owned upper
+    C endpoints at conducting walls. ``preserve_exterior`` keeps computed
+    nonperiodic exterior slabs (a bool, or an x/y/z tuple of bools).
     """
 
     if (bc_type == BC_TYPE_PARTICLE and static_parameters.solver == 'static_metric'
@@ -997,6 +1034,8 @@ def update_tiled_ghost_cells(
         _boundary_conditions_for_type(static_parameters, bc_type),
         num_guard_cells,
         reflecting_parity=reflecting_parity,
+        location=location,
+        preserve_exterior=preserve_exterior,
     )
     result = updater(field_tiles)
     if bc_type == BC_TYPE_PARTICLE and static_parameters.particle_boundary_conditions[1] == BC_POLAR:
@@ -1012,6 +1051,8 @@ def update_tiled_vector_ghost_cells(
     bc_type=BC_TYPE_FIELD,
     *,
     reflecting_parity=None,
+    locations=None,
+    preserve_exterior=False,
 ):
     """
     Refresh tiled multi-component field halos, preserving stacked or tuple layout.
@@ -1027,6 +1068,17 @@ def update_tiled_vector_ghost_cells(
         from .staggered import source_boundaries
         return source_boundaries(field_tiles, static_parameters._replace(guard_cells=int(num_guard_cells)),
                                  fold=False, vector=True, reflecting_parity=reflecting_parity)
+
+    preserve_any = any(preserve_exterior) if isinstance(preserve_exterior, tuple) else preserve_exterior
+    if (preserve_any or locations is not None and
+            BC_CONDUCTING in _boundary_conditions_for_type(static_parameters, bc_type)):
+        locations = (None,) * len(field_tiles) if locations is None else locations
+        result = tuple(update_tiled_ghost_cells(
+            value, static_parameters, num_guard_cells, bc_type,
+            reflecting_parity=None if reflecting_parity is None else reflecting_parity[i],
+            location=location, preserve_exterior=preserve_exterior)
+            for i, (value, location) in enumerate(zip(field_tiles, locations)))
+        return jnp.stack(result) if _is_stacked_tiled_vector_field(field_tiles) else result
 
     tile_shape = tuple(int(width) for width in static_parameters.tile_shape)
     mesh = static_parameters.field_mesh
@@ -1046,7 +1098,7 @@ def update_tiled_vector_ghost_cells(
     return result
 
 
-def apply_tiled_zero_boundary(field_tiles, static_parameters, axis, num_guard_cells=2):
+def apply_tiled_zero_boundary(field_tiles, static_parameters, axis, num_guard_cells=2, *, location=None):
     """
     Zero scalar values on the global conducting wall for one spatial axis.
     """
@@ -1054,7 +1106,7 @@ def apply_tiled_zero_boundary(field_tiles, static_parameters, axis, num_guard_ce
     axis = int(axis)
     boundary_conditions = _boundary_tuple(static_parameters.boundary_conditions)
     if boundary_conditions[axis] != BC_CONDUCTING:
-        return update_tiled_ghost_cells(field_tiles, static_parameters, num_guard_cells)
+        return update_tiled_ghost_cells(field_tiles, static_parameters, num_guard_cells, location=location)
 
     tile_shape = tuple(int(width) for width in static_parameters.tile_shape)
     mesh = static_parameters.field_mesh
@@ -1065,7 +1117,21 @@ def apply_tiled_zero_boundary(field_tiles, static_parameters, axis, num_guard_ce
         num_guard_cells,
     )
     field_tiles = apply_bc(field_tiles)
-    return update_tiled_ghost_cells(field_tiles, static_parameters, num_guard_cells)
+    return update_tiled_ghost_cells(field_tiles, static_parameters, num_guard_cells, location=location)
+
+
+def apply_tiled_pec_boundary(fields, static_parameters):
+    """Yee tangential electric clamp at the physical endpoints, g and g+n."""
+    from PyPIC3D.relativity.core import D_FIELD_LOCATIONS
+    result = list(fields)
+    for axis, bc in enumerate(static_parameters.boundary_conditions):
+        if bc == BC_CONDUCTING:
+            for i in range(3):
+                if i != axis:
+                    result[i] = apply_tiled_zero_boundary(
+                        result[i], static_parameters, axis, static_parameters.guard_cells,
+                        location=D_FIELD_LOCATIONS[i])
+    return tuple(result)
 
 
 def apply_tiled_constant_boundary(field_tiles, static_parameters, axis, num_guard_cells=2):
