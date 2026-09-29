@@ -80,38 +80,90 @@ def compute_covariant_H(D_tiles, B_tiles, metric):
     return tuple(H_cov)
 
 
-def _update_field(fields, auxiliary, current, metric, static, dynamic, dt, *, magnetic):
-    """Yee curl on owned nodes, including physical upper C endpoints."""
-    locations = B_FIELD_LOCATIONS if magnetic else D_FIELD_LOCATIONS
-    samples = metric.B if magnetic else metric.D
-    if BC_CONDUCTING in static.boundary_conditions:
-        auxiliary = refresh_fields(auxiliary, static,
-                                   D_FIELD_LOCATIONS if magnetic else B_FIELD_LOCATIONS)
-    spacing = (dynamic.dx, dynamic.dy, dynamic.dz)
-    result = []
-    for i, location in enumerate(locations):
-        j, k = (i+1) % 3, (i+2) % 3
-        def derivative(value, axis):
-            if magnetic:
-                return (jnp.roll(value, -1, axis+3)-value)/spacing[axis]
-            return (value-jnp.roll(value, 1, axis+3))/spacing[axis]
-        curl = derivative(auxiliary[k], j)-derivative(auxiliary[j], k)
-        rate = -curl/samples[i].sqrt_gamma if magnetic else (
-            curl/samples[i].sqrt_gamma - 4*jnp.pi*current[i])
-        result.append(jnp.where(owned_nodes(fields[i].shape, location, static),
-                                fields[i]+dt*rate, fields[i]))
-    result = apply_tiled_supergaussian_absorber(
-        tuple(result), static, dynamic, dt, locations=locations)
-    return refresh_fields(result, static, locations, 'B' if magnetic else 'D', metric)
-
-
 def update_D_relativity(D_tiles, H_tiles, J_tiles, metric, static_parameters, dynamic_parameters, dt):
     """Advance contravariant D and enforce its FIDO surface projection."""
-    return _update_field(D_tiles, H_tiles, J_tiles, metric, static_parameters,
-                         dynamic_parameters, dt, magnetic=False)
+    Dx, Dy, Dz = D_tiles
+    Jx, Jy, Jz = J_tiles
+    if BC_CONDUCTING in static_parameters.boundary_conditions:
+        H_tiles = refresh_fields(H_tiles, static_parameters, B_FIELD_LOCATIONS)
+    Hx, Hy, Hz = H_tiles
+    dx, dy, dz = dynamic_parameters.dx, dynamic_parameters.dy, dynamic_parameters.dz
+
+    # Backward differences: spatial x/y/z are array axes 3/4/5 after tile axes.
+    dHz_dy = (Hz - jnp.roll(Hz, 1, axis=4)) / dy
+    dHy_dz = (Hy - jnp.roll(Hy, 1, axis=5)) / dz
+    dHx_dz = (Hx - jnp.roll(Hx, 1, axis=5)) / dz
+    dHz_dx = (Hz - jnp.roll(Hz, 1, axis=3)) / dx
+    dHy_dx = (Hy - jnp.roll(Hy, 1, axis=3)) / dx
+    dHx_dy = (Hx - jnp.roll(Hx, 1, axis=4)) / dy
+
+    sqrt_Dx = metric.D[0].sqrt_gamma
+    sqrt_Dy = metric.D[1].sqrt_gamma
+    sqrt_Dz = metric.D[2].sqrt_gamma
+
+    # Update owned nodes, including conducting upper C endpoints.
+    Dx = jnp.where(
+        owned_nodes(Dx.shape, D_FIELD_LOCATIONS[0], static_parameters),
+        Dx + dt * ((dHz_dy - dHy_dz) / sqrt_Dx - 4.0 * jnp.pi * Jx),
+        Dx,
+    )
+    Dy = jnp.where(
+        owned_nodes(Dy.shape, D_FIELD_LOCATIONS[1], static_parameters),
+        Dy + dt * ((dHx_dz - dHz_dx) / sqrt_Dy - 4.0 * jnp.pi * Jy),
+        Dy,
+    )
+    Dz = jnp.where(
+        owned_nodes(Dz.shape, D_FIELD_LOCATIONS[2], static_parameters),
+        Dz + dt * ((dHy_dx - dHx_dy) / sqrt_Dz - 4.0 * jnp.pi * Jz),
+        Dz,
+    )
+
+    D_tiles = apply_tiled_supergaussian_absorber(
+        (Dx, Dy, Dz), static_parameters, dynamic_parameters, dt,
+        locations=D_FIELD_LOCATIONS,
+    )
+    return refresh_fields(D_tiles, static_parameters, D_FIELD_LOCATIONS, 'D', metric)
 
 
 def update_B_relativity(E_tiles, B_tiles, metric, static_parameters, dynamic_parameters, dt):
     """Advance contravariant B and remove its normal surface component."""
-    return _update_field(B_tiles, E_tiles, None, metric, static_parameters,
-                         dynamic_parameters, dt, magnetic=True)
+    Bx, By, Bz = B_tiles
+    if BC_CONDUCTING in static_parameters.boundary_conditions:
+        E_tiles = refresh_fields(E_tiles, static_parameters, D_FIELD_LOCATIONS)
+    Ex, Ey, Ez = E_tiles
+    dx, dy, dz = dynamic_parameters.dx, dynamic_parameters.dy, dynamic_parameters.dz
+
+    # Forward differences: spatial x/y/z are array axes 3/4/5 after tile axes.
+    dEz_dy = (jnp.roll(Ez, -1, axis=4) - Ez) / dy
+    dEy_dz = (jnp.roll(Ey, -1, axis=5) - Ey) / dz
+    dEx_dz = (jnp.roll(Ex, -1, axis=5) - Ex) / dz
+    dEz_dx = (jnp.roll(Ez, -1, axis=3) - Ez) / dx
+    dEy_dx = (jnp.roll(Ey, -1, axis=3) - Ey) / dx
+    dEx_dy = (jnp.roll(Ex, -1, axis=4) - Ex) / dy
+
+    sqrt_Bx = metric.B[0].sqrt_gamma
+    sqrt_By = metric.B[1].sqrt_gamma
+    sqrt_Bz = metric.B[2].sqrt_gamma
+
+    # Update owned nodes, including conducting upper C endpoints.
+    Bx = jnp.where(
+        owned_nodes(Bx.shape, B_FIELD_LOCATIONS[0], static_parameters),
+        Bx + dt * (-(dEz_dy - dEy_dz) / sqrt_Bx),
+        Bx,
+    )
+    By = jnp.where(
+        owned_nodes(By.shape, B_FIELD_LOCATIONS[1], static_parameters),
+        By + dt * (-(dEx_dz - dEz_dx) / sqrt_By),
+        By,
+    )
+    Bz = jnp.where(
+        owned_nodes(Bz.shape, B_FIELD_LOCATIONS[2], static_parameters),
+        Bz + dt * (-(dEy_dx - dEx_dy) / sqrt_Bz),
+        Bz,
+    )
+
+    B_tiles = apply_tiled_supergaussian_absorber(
+        (Bx, By, Bz), static_parameters, dynamic_parameters, dt,
+        locations=B_FIELD_LOCATIONS,
+    )
+    return refresh_fields(B_tiles, static_parameters, B_FIELD_LOCATIONS, 'B', metric)
