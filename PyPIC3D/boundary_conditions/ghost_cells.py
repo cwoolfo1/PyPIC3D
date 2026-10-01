@@ -90,7 +90,7 @@ def update_tiled_ghost_cells(
     nonperiodic exterior slabs (a bool, or an x/y/z tuple of bools).
     """
 
-    if bc_type == BC_TYPE_PARTICLE and static_parameters.solver == 'static_metric':
+    if bc_type == BC_TYPE_PARTICLE:
         return source_boundaries(field_tiles, static_parameters._replace(guard_cells=int(num_guard_cells)),
                                  fold=False, vector=False, reflecting_parity=reflecting_parity)
 
@@ -129,10 +129,12 @@ def update_tiled_vector_ghost_cells(
     odd normal and even tangential reflection parity.
     """
 
-    if bc_type == BC_TYPE_PARTICLE and static_parameters.solver == 'static_metric':
+    if bc_type == BC_TYPE_PARTICLE:
         return source_boundaries(field_tiles, static_parameters._replace(guard_cells=int(num_guard_cells)),
                                  fold=False, vector=True, reflecting_parity=reflecting_parity)
 
+    reflecting_parity = _particle_reflecting_parity(bc_type, reflecting_parity, vector=True)
+    # resolved before the per-component route so a normal component keeps its odd parity
     preserve_any = any(preserve_exterior) if isinstance(preserve_exterior, tuple) else preserve_exterior
     if (preserve_any or locations is not None and
             BC_CONDUCTING in _boundary_conditions_for_type(static_parameters, bc_type)):
@@ -146,7 +148,6 @@ def update_tiled_vector_ghost_cells(
 
     tile_shape = tuple(int(width) for width in static_parameters.tile_shape)
     mesh = static_parameters.field_mesh
-    reflecting_parity = _particle_reflecting_parity(bc_type, reflecting_parity, vector=True)
     updater = make_distributed_vector_ghost_updater(
         mesh,
         tile_shape,
@@ -236,10 +237,12 @@ def fold_tiled_ghost_cells(
     Folding uses the same x -> y -> z order as halo refresh. A ghost deposit
     is sent back to the neighboring interior that owns it; conducting exterior
     deposits reflect only on devices touching the true global walls. Particle
-    deposits use parity-aware nearest-to-nearest reflection.
+    deposits use the nodal method of images about the wall nodes, the same
+    for every solver: charge sits on collocated (C) nodes and currents on the
+    Yee E-component locations.
     """
 
-    if bc_type == BC_TYPE_PARTICLE and static_parameters.solver == 'static_metric':
+    if bc_type == BC_TYPE_PARTICLE:
         return source_boundaries(field_tiles, static_parameters._replace(guard_cells=int(num_guard_cells)),
                                  fold=True, vector=False, reflecting_parity=reflecting_parity)
 
@@ -266,9 +269,12 @@ def fold_tiled_vector_ghost_cells(
 ):
     """
     Fold tile-ghost deposits for a tiled vector field.
+
+    Particle currents fold at the Yee E-component locations with odd normal
+    and even tangential parity (see ``fold_tiled_ghost_cells``).
     """
 
-    if bc_type == BC_TYPE_PARTICLE and static_parameters.solver == 'static_metric':
+    if bc_type == BC_TYPE_PARTICLE:
         return source_boundaries(field_tiles, static_parameters._replace(guard_cells=int(num_guard_cells)),
                                  fold=True, vector=True, reflecting_parity=reflecting_parity)
 

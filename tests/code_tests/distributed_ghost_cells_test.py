@@ -1,5 +1,4 @@
 import unittest
-from types import SimpleNamespace
 
 import jax
 import jax.numpy as jnp
@@ -11,6 +10,7 @@ from PyPIC3D.boundary_conditions.grid_and_stencil import (
     BC_PERIODIC,
 )
 from PyPIC3D.boundary_conditions import ghost_cells
+from tests.kernel_fixtures import kernel_parameters
 
 
 jax.config.update("jax_enable_x64", True)
@@ -44,14 +44,14 @@ def _parameter_values(boundary_conditions, tile_shape):
 def _static_parameters(boundary_conditions, tile_shape, mesh_shape, g=1, particle_boundary_conditions=None):
     if particle_boundary_conditions is None:
         particle_boundary_conditions = boundary_conditions
-    return SimpleNamespace(
-            solver="electrodynamic_yee",
+    n = tuple(int(width) * int(count) for width, count in zip(tile_shape, mesh_shape))
+    return kernel_parameters(
+        Nx=n[0], Ny=n[1], Nz=n[2],
         tile_shape=tuple(int(width) for width in tile_shape),
         guard_cells=int(g),
         boundary_conditions=tuple(int(bc) for bc in boundary_conditions),
         particle_boundary_conditions=tuple(int(bc) for bc in particle_boundary_conditions),
-        field_mesh=_mesh(mesh_shape),
-    )
+    )[0]
 
 
 def _coordinate_tiles(mesh_shape, tile_shape, g=1):
@@ -563,10 +563,12 @@ class TestDistributedGhostCells(unittest.TestCase):
             g,
             bc_type=ghost_cells.BC_TYPE_PARTICLE,
         )
+        # Collocated scalars mirror about the wall nodes; the last tile owns
+        # the upper wall node, which keeps its (empty) value.
         self.assert_allclose(refreshed[0, 0, 0, 0, g:-g, g:-g], 1.0)
         self.assert_allclose(refreshed[0, 0, 0, -1, g:-g, g:-g], 2.0)
         self.assert_allclose(refreshed[1, 0, 0, 0, g:-g, g:-g], 1.0)
-        self.assert_allclose(refreshed[1, 0, 0, -1, g:-g, g:-g], 2.0)
+        self.assert_allclose(refreshed[1, 0, 0, -1, g:-g, g:-g], 0.0)
 
         stacked = jnp.stack((tiles, tiles, tiles), axis=0)
         vector = ghost_cells.update_tiled_vector_ghost_cells(
@@ -575,12 +577,14 @@ class TestDistributedGhostCells(unittest.TestCase):
             g,
             bc_type=ghost_cells.BC_TYPE_PARTICLE,
         )
+        # Jx is normal and staggered in x (odd images about the wall faces);
+        # Jy and Jz are tangential and collocated in x (even nodal images).
         self.assert_allclose(vector[0, 0, 0, 0, 0, g:-g, g:-g], -1.0)
         self.assert_allclose(vector[1:, 0, 0, 0, 0, g:-g, g:-g], 1.0)
         self.assert_allclose(vector[:, 0, 0, 0, -1, g:-g, g:-g], 2.0)
         self.assert_allclose(vector[:, 1, 0, 0, 0, g:-g, g:-g], 1.0)
         self.assert_allclose(vector[0, 1, 0, 0, -1, g:-g, g:-g], -2.0)
-        self.assert_allclose(vector[1:, 1, 0, 0, -1, g:-g, g:-g], 2.0)
+        self.assert_allclose(vector[1:, 1, 0, 0, -1, g:-g, g:-g], 0.0)
 
         deposits = jnp.zeros_like(tiles)
         deposits = deposits.at[0, 0, 0, 0, g, g].set(3.0)
@@ -593,12 +597,16 @@ class TestDistributedGhostCells(unittest.TestCase):
             g,
             bc_type=ghost_cells.BC_TYPE_PARTICLE,
         )
-        self.assertEqual(float(folded[0, 0, 0, g, g, g]), 3.0)
-        self.assertEqual(float(folded[0, 0, 0, -g - 1, g, g]), 7.0)
+        # The lower ghost C-1 folds onto C1 beside the internal deposit from
+        # tile 1; the empty lower wall node stays zero after doubling; the
+        # internal halo moves to tile 1; the last tile's upper wall node is
+        # owned and receives its coincident image (doubled).
+        self.assertEqual(float(folded[0, 0, 0, g, g, g]), 0.0)
+        self.assertEqual(float(folded[0, 0, 0, g + 1, g, g]), 10.0)
         self.assertEqual(float(folded[1, 0, 0, g, g, g]), 5.0)
-        self.assertEqual(float(folded[1, 0, 0, -g - 1, g, g]), 11.0)
+        self.assertEqual(float(folded[1, 0, 0, g + 2, g, g]), 22.0)
         self.assert_allclose(folded[:, :, :, 0, :, :], 0.0)
-        self.assert_allclose(folded[:, :, :, -1, :, :], 0.0)
+        self.assert_allclose(folded[0, :, :, -1, :, :], 0.0)
 
     def test_stacked_and_tuple_vector_halo_refresh_preserve_layouts(self):
         mesh_shape = (2, 1, 1)

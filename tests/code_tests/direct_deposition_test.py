@@ -904,26 +904,24 @@ class TestDirectDeposition(unittest.TestCase):
             {"C": 1.0, "alpha": 1.0},
         )
         g = int(parameter_set["guard_cells"])
+        n = simulation_parameters["particle_tile_nz"]
 
-        for component, parity in enumerate((1.0, 1.0, -1.0)):
+        # Jx and Jy are tangential to the z-walls and collocated in z: even
+        # images about the wall nodes g and g+n, so ghost g-k mirrors g+k.
+        for component in (0, 1):
             current = current_tiles[component][0, 0, 0]
             self.assertGreater(float(jnp.max(jnp.abs(current[g:-g, g:-g, g:-g]))), 0.0)
-            self.assertTrue(
-                jnp.allclose(
-                    current[g:-g, g:-g, :g],
-                    parity * jnp.flip(current[g:-g, g:-g, g:2 * g], axis=-1),
-                    rtol=1.0e-12,
-                    atol=1.0e-12,
-                )
-            )
-            self.assertTrue(
-                jnp.allclose(
-                    current[g:-g, g:-g, -g:],
-                    parity * jnp.flip(current[g:-g, g:-g, -2 * g:-g], axis=-1),
-                    rtol=1.0e-12,
-                    atol=1.0e-12,
-                )
-            )
+            for k in range(1, g + 1):
+                self.assertTrue(jnp.allclose(current[g:-g, g:-g, g - k], current[g:-g, g:-g, g + k], atol=1.0e-12))
+            for k in range(1, g):
+                self.assertTrue(jnp.allclose(current[g:-g, g:-g, g + n + k], current[g:-g, g:-g, g + n - k], atol=1.0e-12))
+        # Jz is normal and staggered in z: odd images about the wall faces
+        current = current_tiles[2][0, 0, 0]
+        self.assertGreater(float(jnp.max(jnp.abs(current[g:-g, g:-g, g:-g]))), 0.0)
+        self.assertTrue(jnp.allclose(current[g:-g, g:-g, :g],
+                                     -jnp.flip(current[g:-g, g:-g, g:2 * g], axis=-1), atol=1.0e-12))
+        self.assertTrue(jnp.allclose(current[g:-g, g:-g, -g:],
+                                     -jnp.flip(current[g:-g, g:-g, -2 * g:-g], axis=-1), atol=1.0e-12))
 
     def test_tiled_direct_deposition_matches_J_from_rhov_for_mixed_boundaries(self):
         parameter_set = self._build_parameter_values(

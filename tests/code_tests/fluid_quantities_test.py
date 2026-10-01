@@ -397,14 +397,17 @@ class TestTiledFluidQuantities(unittest.TestCase):
             ),
         )
         g = int(reflecting_static.guard_cells)
+        n = int(reflecting_static.tile_shape[2])
         deposited = self._scalar_tiles(reflecting_static, dynamic_parameters)
 
-        # Number weight and a tangential moment add mirrored exterior deposits;
-        # a wall-normal moment subtracts the mirrored values.
-        owned = (0, 0, 0, g, g, slice(-2 * g, -g))
-        upper_ghost = (0, 0, 0, g, g, slice(-g, None))
-        deposited = deposited.at[owned].set(jnp.array([2.0, 3.0]))
-        deposited = deposited.at[upper_ghost].set(jnp.array([5.0, 7.0]))
+        # Moments sit on collocated nodes, and the upper wall node g+n is owned.
+        # Number weight and a tangential moment add the nodal images (the wall
+        # node receives its coincident image); a wall-normal moment subtracts
+        # them and vanishes on the wall.
+        self.assertEqual(g, 2)
+        owned = (0, 0, 0, g, g, slice(g + n - 2, g + n + 1))
+        deposited = deposited.at[owned].set(jnp.array([2.0, 3.0, 5.0]))
+        deposited = deposited.at[0, 0, 0, g, g, g + n + 1].set(7.0)
 
         even_fold = fold_tiled_ghost_cells(
             deposited,
@@ -427,9 +430,9 @@ class TestTiledFluidQuantities(unittest.TestCase):
             reflecting_parity=particle_vector_reflecting_parity(2),
         )
 
-        self.assertTrue(bool(jnp.allclose(even_fold[owned], jnp.array([9.0, 8.0]))))
-        self.assertTrue(bool(jnp.allclose(tangential_fold[owned], jnp.array([9.0, 8.0]))))
-        self.assertTrue(bool(jnp.allclose(normal_fold[owned], jnp.array([-5.0, -2.0]))))
+        self.assertTrue(bool(jnp.allclose(even_fold[owned], jnp.array([2.0, 10.0, 10.0]))))
+        self.assertTrue(bool(jnp.allclose(tangential_fold[owned], jnp.array([2.0, 10.0, 10.0]))))
+        self.assertTrue(bool(jnp.allclose(normal_fold[owned], jnp.array([2.0, -4.0, 0.0]))))
 
     def test_reflecting_wall_fluid_velocity_remains_a_bounded_particle_average(self):
         periodic_static, dynamic_parameters = self._build_parameters(shape_factor=2)
@@ -481,22 +484,10 @@ class TestTiledFluidQuantities(unittest.TestCase):
         self.assertLessEqual(float(jnp.max(jnp.abs(uz[:, :, :, g:-g, g:-g, g:-g]))), 0.25 + 1.0e-12)
         self.assertFalse(bool(jnp.any(jnp.isnan(ux))))
         self.assertFalse(bool(jnp.any(jnp.isnan(uz))))
-        self.assertTrue(
-            bool(
-                jnp.allclose(
-                    ux[0, 0, 0, g:-g, g:-g, :g],
-                    jnp.flip(ux[0, 0, 0, g:-g, g:-g, g:2 * g], axis=-1),
-                )
-            )
-        )
-        self.assertTrue(
-            bool(
-                jnp.allclose(
-                    uz[0, 0, 0, g:-g, g:-g, :g],
-                    -jnp.flip(uz[0, 0, 0, g:-g, g:-g, g:2 * g], axis=-1),
-                )
-            )
-        )
+        # nodal images about the lower wall node g: ghost g-k mirrors g+k
+        for k in range(1, g + 1):
+            self.assertTrue(bool(jnp.allclose(ux[0, 0, 0, g:-g, g:-g, g - k], ux[0, 0, 0, g:-g, g:-g, g + k])))
+            self.assertTrue(bool(jnp.allclose(uz[0, 0, 0, g:-g, g:-g, g - k], -uz[0, 0, 0, g:-g, g:-g, g + k])))
 
     def test_tile_major_velocity_runs_on_multi_tile_kernel_storage_when_devices_are_available(self):
         tile_shape = (4, 3, 2)

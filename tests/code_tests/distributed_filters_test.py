@@ -1,11 +1,11 @@
 import unittest
-from types import SimpleNamespace
 
 import jax
 import jax.numpy as jnp
 from jax.sharding import NamedSharding
 
 from PyPIC3D.boundary_conditions import ghost_cells
+from tests.kernel_fixtures import kernel_parameters
 from PyPIC3D.boundary_conditions.grid_and_stencil import BC_CONDUCTING, BC_PERIODIC
 from PyPIC3D.utilities.filters import (
     bilinear_filter,
@@ -33,16 +33,14 @@ def _mesh(mesh_shape):
     )
 
 
-def _static_parameters(mesh_shape, tile_shape, g=2):
-    periodic = (BC_PERIODIC, BC_PERIODIC, BC_PERIODIC)
-    return SimpleNamespace(
-        solver="electrodynamic_yee",
+def _static_parameters(mesh_shape, tile_shape, g=2, particle_boundary_conditions=(BC_PERIODIC,) * 3):
+    n = tuple(int(width) * int(count) for width, count in zip(tile_shape, mesh_shape))
+    return kernel_parameters(
+        Nx=n[0], Ny=n[1], Nz=n[2],
         tile_shape=tuple(int(width) for width in tile_shape),
         guard_cells=int(g),
-        boundary_conditions=periodic,
-        particle_boundary_conditions=periodic,
-        field_mesh=_mesh(mesh_shape),
-    )
+        particle_boundary_conditions=particle_boundary_conditions,
+    )[0]
 
 
 def _tile_interior(interior, mesh_shape, tile_shape, g):
@@ -204,12 +202,9 @@ class TestDistributedFilters(unittest.TestCase):
         mesh_shape = (1, 1, 1)
         tile_shape = (4, 1, 4)
         g = 2
-        static_parameters = _static_parameters(mesh_shape, tile_shape, g)
-        static_parameters.particle_boundary_conditions = (
-            BC_PERIODIC,
-            BC_PERIODIC,
-            BC_CONDUCTING,
-        )
+        static_parameters = _static_parameters(
+            mesh_shape, tile_shape, g, particle_boundary_conditions=(BC_PERIODIC, BC_PERIODIC, BC_CONDUCTING))
+        n = tile_shape[2]
 
         interior = jnp.arange(16, dtype=jnp.float64).reshape((4, 1, 4)) + 1.0
         tiles = _tile_interior(interior, mesh_shape, tile_shape, g)
@@ -219,37 +214,28 @@ class TestDistributedFilters(unittest.TestCase):
             static_parameters,
             bc_type=ghost_cells.BC_TYPE_PARTICLE,
         )
-        self.assert_allclose(
-            scalar[0, 0, 0, g:-g, g, :g],
-            jnp.flip(scalar[0, 0, 0, g:-g, g, g:2 * g], axis=-1),
-        )
-        self.assert_allclose(
-            scalar[0, 0, 0, g:-g, g, -g:],
-            jnp.flip(scalar[0, 0, 0, g:-g, g, -2 * g:-g], axis=-1),
-        )
+        # collocated scalars: nodal images about the wall nodes g and g+n
+        for k in range(1, g + 1):
+            self.assert_allclose(scalar[0, 0, 0, g:-g, g, g - k], scalar[0, 0, 0, g:-g, g, g + k])
+        for k in range(1, g):
+            self.assert_allclose(scalar[0, 0, 0, g:-g, g, g + n + k], scalar[0, 0, 0, g:-g, g, g + n - k])
 
         vector = tiled_bilinear_filter_vector(
             (tiles, 2.0 * tiles, 3.0 * tiles),
             static_parameters,
             bc_type=ghost_cells.BC_TYPE_PARTICLE,
         )
-        for component, parity in enumerate((1.0, 1.0, -1.0)):
-            self.assert_allclose(
-                vector[component][0, 0, 0, g:-g, g, :g],
-                parity
-                * jnp.flip(
-                    vector[component][0, 0, 0, g:-g, g, g:2 * g],
-                    axis=-1,
-                ),
-            )
-            self.assert_allclose(
-                vector[component][0, 0, 0, g:-g, g, -g:],
-                parity
-                * jnp.flip(
-                    vector[component][0, 0, 0, g:-g, g, -2 * g:-g],
-                    axis=-1,
-                ),
-            )
+        # tangential components are collocated in z: even nodal images
+        for component in (0, 1):
+            current = vector[component][0, 0, 0, g:-g, g]
+            for k in range(1, g + 1):
+                self.assert_allclose(current[:, g - k], current[:, g + k])
+            for k in range(1, g):
+                self.assert_allclose(current[:, g + n + k], current[:, g + n - k])
+        # the normal component is staggered in z: odd images about the wall faces
+        current = vector[2][0, 0, 0, g:-g, g]
+        self.assert_allclose(current[:, :g], -jnp.flip(current[:, g:2 * g], axis=-1))
+        self.assert_allclose(current[:, -g:], -jnp.flip(current[:, -2 * g:-g], axis=-1))
 
 
 if __name__ == "__main__":

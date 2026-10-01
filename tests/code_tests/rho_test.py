@@ -9,6 +9,7 @@ from PyPIC3D.boundary_conditions import ghost_cells
 from PyPIC3D.boundary_conditions.grid_and_stencil import BC_ABSORBING, BC_CONDUCTING, BC_PERIODIC
 from PyPIC3D.deposition.rho import compute_rho
 from PyPIC3D.diagnostics.output_adapters import assemble_tiled_scalar_field
+from PyPIC3D.diagnostics.static_metric import node_weights
 from tests.kernel_fixtures import build_tiled_particles, particle_parameters_from_tile_values, particle_species
 from tests.kernel_fixtures import kernel_parameters_from_values
 from PyPIC3D.utilities.grids import build_tiled_yee_grids, build_yee_grid
@@ -343,9 +344,9 @@ class TestTiledRho(unittest.TestCase):
                 weight=macro_weight,
                 x1=jnp.array([-0.3, 0.3, -0.3, 0.3]),
                 x2=jnp.zeros(4),
-                # Each wall receives two TSC stencils that cross the physical
-                # boundary and therefore exercise the reflected ghost fold.
-                x3=jnp.array([-0.99, -0.76, 0.76, 0.99]),
+                # TSC stencils cross both physical walls, unevenly, so the two
+                # wall nodes receive different reflected charge.
+                x3=jnp.array([-0.99, -0.76, 0.6, 0.9]),
             )
         ]
 
@@ -356,8 +357,15 @@ class TestTiledRho(unittest.TestCase):
             {"alpha": 1.0},
         )
         g = int(parameter_set["guard_cells"])
+        static_parameters, _ = kernel_parameters_from_values(
+            self._parameters_with_tiled_grids(parameter_set, self._one_tile_parameters(parameter_set)),
+            {"alpha": 1.0},
+        )
+        # reflected nodal charge integrates with endpoint trapezoid weights,
+        # including the owned upper wall node
+        weights = node_weights(static_parameters, rho_tiles)
         deposited_charge = (
-            jnp.sum(rho_tiles[:, :, :, g:-g, g:-g, g:-g])
+            jnp.sum(weights * rho_tiles)
             * parameter_set["dx"]
             * parameter_set["dy"]
             * parameter_set["dz"]
@@ -365,7 +373,7 @@ class TestTiledRho(unittest.TestCase):
         expected_charge = len(particles[0]["x"]) * charge * macro_weight
 
         self.assertAlmostEqual(float(deposited_charge), expected_charge, places=12)
-        self.assertGreaterEqual(float(jnp.min(rho_tiles[:, :, :, g:-g, g:-g, g:-g])), -1.0e-14)
+        self.assertGreaterEqual(float(jnp.min(rho_tiles[:, :, :, g:-g, g:-g, g:-g+1])), -1.0e-14)
 
     def test_compute_rho_uses_current_positions_not_half_step_back_positions(self):
         parameter_set = self._build_parameter_values(shape_factor=2)
