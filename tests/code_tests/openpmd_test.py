@@ -11,6 +11,9 @@ import jax.numpy as jnp
 from PyPIC3D.diagnostics import async_writer
 from PyPIC3D.diagnostics import openPMD
 from PyPIC3D.diagnostics.openPMD import _ensure_openpmd_array
+from PyPIC3D.particles.particle_class import SpeciesConfig, TiledParticles
+from PyPIC3D.relativity.core import build_yee_metric
+from PyPIC3D.relativity.interpolate_metric import particle_lorentz_factor
 from tests.kernel_fixtures import (
     build_tiled_particles,
     field_tiles_from_global,
@@ -763,6 +766,47 @@ class OpenPMDDiagnosticsTests(unittest.TestCase):
         expected_gamma = 1.0 / jnp.sqrt(1.0 - 0.1**2 / 10.0**2)
         expected_momentum_x = expected_electron_mass * 0.1 * expected_gamma
         self.assertTrue(jnp.allclose(electron_group["momentum"]["x"].data, expected_momentum_x))
+
+
+    def test_static_metric_snapshot_writes_covariant_gamma_momentum_and_stored_position(self):
+        static, dynamic = kernel_parameters(
+            Nx=8, Ny=8, Nz=1, x_min=1., y_min=.5, z_min=0.,
+            x_wind=1., y_wind=1., z_wind=1., dt=.005,
+            solver='static_metric', particle_pusher='hybrid_boris_geodesic',
+            metric='numerical', tile_shape=(4, 8, 1),
+        )
+        gamma_metric = jnp.array([[2., .2, .1], [.2, 3., -.1], [.1, -.1, 1.5]])
+        # a uniform metric is reproduced exactly by the Hermite interpolant
+
+        def provider(position):
+            return 1., jnp.zeros(3), gamma_metric, jnp.linalg.inv(gamma_metric), jnp.sqrt(jnp.linalg.det(gamma_metric))
+
+        metric = build_yee_metric(dynamic, provider)
+        # one live particle in each of the two x tiles, plus an inactive slot
+        x = jnp.array([[[1.2, .8, 0.], [1.3, .9, 0.]], [[1.7, 1.1, 0.], [0., 0., 0.]]]).reshape(2, 1, 1, 1, 2, 3)
+        u = jnp.array([[[.6, .2, -.1], [0., 0., 0.]], [[-2., 1., 3.], [5., 5., 5.]]]).reshape(2, 1, 1, 1, 2, 3)
+        active = jnp.array([[True, False], [True, False]]).reshape(2, 1, 1, 1, 2)
+        particles = TiledParticles(x, u, active)
+        species = SpeciesConfig(jnp.array([-1.]), jnp.array([2.]), jnp.array([3.]), jnp.ones((1, 3), bool))
+
+        gamma = particle_lorentz_factor(particles, metric, static, dynamic)
+        snapshot = async_writer.make_tiled_particle_snapshot(
+            particles, step=0, time=0., species_names=('electrons',), species_config=species, gamma=gamma)
+        iteration = FakeIteration()
+        openPMD.write_tiled_particle_snapshot_to_iteration(iteration, snapshot, static, dynamic)
+
+        group = iteration.particles['electrons']
+        x_live = np.array([[1.2, .8, 0.], [1.7, 1.1, 0.]])
+        u_live = np.array([[.6, .2, -.1], [-2., 1., 3.]])
+        expected_gamma = np.sqrt(1. + np.einsum('ni,ij,nj->n', u_live, np.linalg.inv(gamma_metric), u_live))
+        written_gamma = np.concatenate([data for _, _, data in group['gamma'].chunks])
+        np.testing.assert_allclose(written_gamma, expected_gamma, rtol=1e-6)
+        self.assertTrue(np.all(written_gamma > 1.))
+        for axis, component in enumerate(('x', 'y', 'z')):
+            momentum = np.concatenate([data for _, _, data in group['momentum'][component].chunks])
+            position = np.concatenate([data for _, _, data in group['position'][component].chunks])
+            np.testing.assert_allclose(momentum, 2. * u_live[:, axis], rtol=1e-6)
+            np.testing.assert_allclose(position, x_live[:, axis], rtol=1e-6)
 
 
 if __name__ == "__main__":

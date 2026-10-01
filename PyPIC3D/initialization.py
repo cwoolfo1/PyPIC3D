@@ -668,6 +668,7 @@ def initialize_simulation(toml_file):
             static_parameters.output_dir,
             species_config=species_config,
             species_names=particle_species_names,
+            metric=metric,
         )
 
     E, B, J, phi, rho = initialize_fields(static_parameters, dynamic_parameters)

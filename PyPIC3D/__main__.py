@@ -27,6 +27,7 @@ from PyPIC3D.utilities.toml_helpers import (
     load_config_file,
 )
 from PyPIC3D.initialization import initialize_simulation
+from PyPIC3D.relativity.interpolate_metric import particle_lorentz_factor
 
 
 def _raise_if_tiled_particles_overflowed(fields):
@@ -141,6 +142,11 @@ def run_PyPIC3D(config_file):
                     write_data(f"{output_dir}/data/total_momentum.txt", t * dt, total_momentum)
 
                 if particle_writer is not None:
+                    gamma = None
+                    if static_metric:
+                        metric = fields[6]
+                        gamma = particle_lorentz_factor(particles, metric, static_parameters, dynamic_parameters)
+                        # particle u holds covariant u_i, so Gamma needs the metric at each particle
                     enqueue_openpmd_particle_output(
                         particle_writer,
                         particles,
@@ -149,6 +155,7 @@ def run_PyPIC3D(config_file):
                         t,
                         species_config=species_config,
                         species_names=particle_species_names,
+                        gamma=gamma,
                     )
 
                 if field_writer is not None:

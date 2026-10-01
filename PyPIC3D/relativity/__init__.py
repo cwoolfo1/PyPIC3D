@@ -8,6 +8,7 @@ from PyPIC3D.relativity.core import (
     lower_vector,
     location_grid,
 )
+from PyPIC3D.relativity.interpolate_metric import particle_lorentz_factor
 from PyPIC3D.relativity.metrics.flat import (
     initialize_flat_cartesian_metric,
     initialize_flat_cylindrical_metric,
@@ -27,6 +28,7 @@ __all__ = [
     "contravariant_three_velocity",
     "lower_vector",
     "location_grid",
+    "particle_lorentz_factor",
     "initialize_flat_cartesian_metric",
     "initialize_flat_cylindrical_metric",
     "initialize_flat_spherical_metric",

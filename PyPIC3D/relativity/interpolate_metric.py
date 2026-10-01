@@ -25,6 +25,8 @@ import jax
 import jax.numpy as jnp
 from jax.experimental import checkify
 
+from PyPIC3D.relativity.core import covariant_lorentz_factor
+
 RECONSTRUCTION = "cardinal_cubic_hermite_consistent_v1"
 
 SPHERICAL_METRICS = ("flat_spherical", "kerr_schild_spherical")
@@ -254,3 +256,44 @@ def check_particle_samples(valid, position, stage, tile=None):
         slot=slot,
         position=position.reshape(-1, 3)[slot],
     )
+
+
+def particle_lorentz_factor(particles, metric, static_parameters, dynamic_parameters):
+    """
+    Gamma = sqrt(1 + gamma^ij u_i u_j) for every tiled particle slot.
+
+    ``particles.u`` holds covariant u_i, and the inverse metric is the same
+    Hermite sample the pusher uses.  Inactive slots return 1.
+    """
+
+    g = int(static_parameters.guard_cells)
+    ntx, nty, ntz = particles.active.shape[:3]
+    tile_nx, tile_ny, tile_nz = (int(width) for width in static_parameters.tile_shape)
+    active_axes = (
+        int(ntx) * tile_nx > 1,
+        int(nty) * tile_ny > 1,
+        int(ntz) * tile_nz > 1,
+    )
+
+    def one_tile(x_tile, u_tile, active_tile, tx, ty, tz):
+        x = x_tile.reshape(-1, 3)
+        u = u_tile.reshape(-1, 3)
+        active = active_tile.reshape(-1)
+        center_grid = tuple(axis[tx, ty, tz] for axis in dynamic_parameters.grids.tiled_center_grid)
+        x = safe_inactive_positions(x, active, center_grid, active_axes, g)
+        sampled = interpolate_metric(
+            jax.tree.map(lambda array: array[tx, ty, tz], metric.center),
+            x,
+            center_grid,
+            static_parameters.metric,
+            active_axes,
+            (g, g, g),
+            derivatives=False,
+        )
+        Gamma = covariant_lorentz_factor(jnp.where(active[:, None], u, 0.0), sampled.gamma_inv)
+        return jnp.where(active, Gamma, 1.0).reshape(active_tile.shape)
+
+    for _ in range(3):
+        one_tile = jax.vmap(one_tile)
+    tx, ty, tz = jnp.meshgrid(jnp.arange(ntx), jnp.arange(nty), jnp.arange(ntz), indexing="ij")
+    return one_tile(particles.x, particles.u, particles.active, tx, ty, tz)

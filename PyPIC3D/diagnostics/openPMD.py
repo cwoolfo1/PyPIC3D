@@ -12,6 +12,7 @@ import numpy as np
 import openpmd_api as io
 
 from PyPIC3D.diagnostics.output_adapters import field_map_for_output, particles_for_output
+from PyPIC3D.relativity.interpolate_metric import particle_lorentz_factor
 from PyPIC3D.utilities.grids import grid_domain_bounds
 
 
@@ -507,10 +508,15 @@ def _iter_snapshot_particle_chunks(snapshot, static_parameters, dynamic_paramete
     species_mass = np.asarray(snapshot.species_mass, dtype=np.float64)
     species_weight = np.asarray(snapshot.species_weight, dtype=np.float64)
 
-    for (x_index, x_chunk), (_u_index, u_chunk), (_active_index, active_chunk) in zip(
+    static_metric = getattr(snapshot, "gamma_shards", None) is not None
+    # static-metric snapshots carry Gamma computed from covariant u_i and the metric
+    gamma_shards = snapshot.gamma_shards if static_metric else [(None, None)] * len(snapshot.x_shards)
+
+    for (x_index, x_chunk), (_u_index, u_chunk), (_active_index, active_chunk), (_gamma_index, gamma_chunk) in zip(
         snapshot.x_shards,
         snapshot.u_shards,
         snapshot.active_shards,
+        gamma_shards,
     ):
         if x_chunk.ndim != 6:
             raise ValueError(
@@ -538,15 +544,21 @@ def _iter_snapshot_particle_chunks(snapshot, static_parameters, dynamic_paramete
 
                         x_live = np.asarray(x_chunk[tx, ty, tz, local_s], dtype=np.float64)[active]
                         u_live = np.asarray(u_chunk[tx, ty, tz, local_s], dtype=np.float64)[active]
-                        x_diagnostic = _diagnostic_position_array(x_live, u_live, static_parameters, dynamic_parameters)
 
                         charge = np.full(n_active, float(species_charge[species_index]), dtype=np.float64)
                         mass = np.full(n_active, float(species_mass[species_index]), dtype=np.float64)
                         weight = np.full(n_active, float(species_weight[species_index]), dtype=np.float64)
 
-                        gamma = 1.0 / np.sqrt(1.0 - np.sum(u_live * u_live, axis=1) / C**2)
-
-                        yield species_index, x_diagnostic, u_live, charge, mass, weight, gamma
+                        if static_metric:
+                            gamma = np.asarray(gamma_chunk[tx, ty, tz, local_s], dtype=np.float64)[active]
+                            momentum = u_live * mass[:, None]
+                            # covariant u_i already includes Gamma; positions are written as stored
+                            yield species_index, x_live, momentum, charge, mass, weight, gamma
+                        else:
+                            x_diagnostic = _diagnostic_position_array(x_live, u_live, static_parameters, dynamic_parameters)
+                            gamma = 1.0 / np.sqrt(1.0 - np.sum(u_live * u_live, axis=1) / C**2)
+                            momentum = u_live * (mass * gamma)[:, None]
+                            yield species_index, x_diagnostic, momentum, charge, mass, weight, gamma
 
 
 def _reset_particle_species_records(species_group, dtype, num_particles):
@@ -560,13 +572,13 @@ def _reset_particle_species_records(species_group, dtype, num_particles):
             record_component.reset_dataset(io.Dataset(dtype, shape))
             record_component.unit_SI = 1.0
 
-    for record_name in ("weighting", "charge", "mass"):
+    for record_name in ("weighting", "charge", "mass", "gamma"):
         record_component = species_group[record_name]
         record_component.reset_dataset(io.Dataset(dtype, shape))
         record_component.unit_SI = 1.0
 
 
-def _store_particle_record_chunk(species_group, offset, x, u, charge, mass, weight, gamma, dtype=np.float64):
+def _store_particle_record_chunk(species_group, offset, x, momentum, charge, mass, weight, gamma, dtype=np.float64):
     num_particles = int(x.shape[0])
     if num_particles == 0:
         return int(offset)
@@ -575,7 +587,7 @@ def _store_particle_record_chunk(species_group, offset, x, u, charge, mass, weig
     extent = [num_particles]
 
     x = _ensure_openpmd_array(x, dtype=dtype)
-    u = _ensure_openpmd_array(u, dtype=dtype)
+    momentum = _ensure_openpmd_array(momentum, dtype=dtype)
     charge = _ensure_openpmd_array(charge, dtype=dtype)
     mass = _ensure_openpmd_array(mass, dtype=dtype)
     weight = _ensure_openpmd_array(weight, dtype=dtype)
@@ -588,13 +600,13 @@ def _store_particle_record_chunk(species_group, offset, x, u, charge, mass, weig
     for component in ("x", "y", "z"):
         species_group["positionOffset"][component].store_chunk(zeros, start, extent)
 
-    momentum = u * (mass * gamma)[:, None]
     for component, data in zip(("x", "y", "z"), (momentum[:, 0], momentum[:, 1], momentum[:, 2])):
         species_group["momentum"][component].store_chunk(_ensure_openpmd_array(data, dtype=dtype), start, extent)
 
     species_group["weighting"].store_chunk(weight, start, extent)
     species_group["charge"].store_chunk(charge, start, extent)
     species_group["mass"].store_chunk(mass, start, extent)
+    species_group["gamma"].store_chunk(gamma, start, extent)
 
     return int(offset) + num_particles
 
@@ -612,13 +624,13 @@ def write_tiled_particle_snapshot_to_iteration(iteration, snapshot, static_param
 
     offsets = [0] * len(snapshot.species_names)
 
-    for species_index, x, u, charge, mass, weight, gamma in _iter_snapshot_particle_chunks(snapshot, static_parameters, dynamic_parameters):
+    for species_index, x, momentum, charge, mass, weight, gamma in _iter_snapshot_particle_chunks(snapshot, static_parameters, dynamic_parameters):
         species_group = iteration.particles[snapshot.species_names[species_index].replace(" ", "_")]
         offsets[species_index] = _store_particle_record_chunk(
             species_group,
             int(offsets[species_index]),
             x,
-            u,
+            momentum,
             charge,
             mass,
             weight,
@@ -764,6 +776,7 @@ def write_openpmd_initial_particles(
     filename="initial_particles.h5",
     species_config=None,
     species_names=None,
+    metric=None,
 ):
     """
     Write the initial particle states to separate openPMD files, one per species.
@@ -774,8 +787,15 @@ def write_openpmd_initial_particles(
         dynamic_parameters (dict): Scalar/grid parameters.
         output_dir (str): Base output directory for the simulation.
         filename (str): Base name of the openPMD output file (species name is prepended).
+        metric (YeeMetric): Static-metric runs pass the grid metric; particle u is then covariant u_i.
     """
     static_parameters, dynamic_parameters = _split_output_parameters(static_parameters, dynamic_parameters)
+
+    static_metric_gamma = None
+    if metric is not None:
+        static_metric_gamma = particle_lorentz_factor(particles, metric, static_parameters, dynamic_parameters)
+        # flattened per species below with the same active mask as particles_for_output
+        active_tiles = particles.active
 
     particles = particles_for_output(
         particles,
@@ -818,16 +838,20 @@ def write_openpmd_initial_particles(
         positions = _ensure_openpmd_array(species.x)
         velocities = _ensure_openpmd_array(species.u)
         x, y, z = positions.T
-        vx, vy, vz = velocities.T
-        gamma = 1 / np.sqrt(1.0 - (vx**2 + vy**2 + vz**2) / C**2)
-        # compute the Lorentz factor
+        if static_metric_gamma is None:
+            gamma = 1 / np.sqrt(1.0 - np.sum(velocities**2, axis=1) / C**2)
+            # compute the Lorentz factor
+            momentum_per_mass = velocities * gamma[:, None]
+        else:
+            s = species.species_index
+            active = np.asarray(active_tiles[:, :, :, s, :]).reshape(-1)
+            gamma = np.asarray(static_metric_gamma[:, :, :, s, :]).reshape(-1)[active]
+            momentum_per_mass = velocities
+            # covariant u_i already includes the Lorentz factor
 
         x = make_array_writable(x)
         y = make_array_writable(y)
         z = make_array_writable(z)
-        vx = make_array_writable(vx)
-        vy = make_array_writable(vy)
-        vz = make_array_writable(vz)
         gamma = make_array_writable(gamma)
 
         num_particles = x.shape[0]
@@ -867,11 +891,17 @@ def write_openpmd_initial_particles(
             rc.unit_SI = 1.0
 
         momentum = species_group["momentum"]
-        for component, data in zip(("x", "y", "z"), (vx, vy, vz)):
+        for component, data in zip(("x", "y", "z"), momentum_per_mass.T):
+            data = make_array_writable(data * masses)
             record_component = momentum[component]
             record_component.reset_dataset(io.Dataset(data.dtype, [num_particles]))
-            record_component.store_chunk(data * masses * gamma, [0], [num_particles])
+            record_component.store_chunk(data, [0], [num_particles])
             record_component.unit_SI = 1.0
+
+        gamma_record = species_group["gamma"]
+        gamma_record.reset_dataset(io.Dataset(gamma.dtype, [num_particles]))
+        gamma_record.store_chunk(gamma, [0], [num_particles])
+        gamma_record.unit_SI = 1.0
 
         weighting = species_group["weighting"]
         weighting.reset_dataset(io.Dataset(weights.dtype, [num_particles]))
