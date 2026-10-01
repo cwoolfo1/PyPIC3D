@@ -12,7 +12,7 @@ class TestHybridBatching(unittest.TestCase):
     def test_explicit_single_tile_matches_vmapped_tiles(self):
         s,d,m,D,B=make_runtime('spherical',16,32)
         s=s._replace(particle_batch_size=2)
-        particles=TiledParticles(jnp.array([2.,.02,.2]).reshape(1,1,1,1,1,3),
+        particles=TiledParticles(jnp.array([2.,.42,.2]).reshape(1,1,1,1,1,3),
                                 jnp.array([.01,.02,.003]).reshape(1,1,1,1,1,3),
                                 jnp.ones((1,1,1,1,1),bool))
         species=SpeciesConfig(jnp.ones(1),jnp.ones(1),jnp.ones(1),jnp.ones((1,3),bool))
@@ -38,7 +38,7 @@ class TestHybridBatching(unittest.TestCase):
                 s,d,m,D,B=make_runtime('spherical',16,32)
                 s=s._replace(shape_factor=shape)
                 x=np.tile([2.,.7,.2],(1,1,1,2,9,1))
-                x[...,1,1]=.02; x[...,7,1]=np.pi-.02
+                x[...,1,1]=.42; x[...,7,1]=np.pi-.42
                 u=np.tile([.01,.02,.003],(1,1,1,2,9,1))
                 active=np.zeros((1,1,1,2,9),bool)
                 active[...,0,[1,5,7]]=True; active[...,1,[0,6]]=True
