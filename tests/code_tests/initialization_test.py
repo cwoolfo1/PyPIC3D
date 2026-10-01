@@ -33,6 +33,25 @@ from PyPIC3D.utilities.grids import build_yee_grid
 jax.config.update("jax_enable_x64", True)
 
 class TestInitializationFunctions(unittest.TestCase):
+
+    def test_static_metric_rejects_conducting_axes_no_wider_than_the_halo(self):
+        from PyPIC3D.initialization import _validate_static_metric_conducting_widths
+        from tests.kernel_fixtures import kernel_parameters
+
+        def static(solver, boundary_conditions):
+            return kernel_parameters(Nx=8, Ny=8, Nz=1, tile_shape=(8, 8, 1), guard_cells=3,
+                                     solver=solver, boundary_conditions=boundary_conditions)[0]
+
+        conducting_x = static("static_metric", (BC_CONDUCTING, BC_PERIODIC, BC_PERIODIC))
+        for cells in (1, 3):
+            with self.subTest(cells=cells):
+                with self.assertRaisesRegex(ValueError, "at least guard_cells"):
+                    _validate_static_metric_conducting_widths(conducting_x, (cells, 8, 1))
+        _validate_static_metric_conducting_widths(conducting_x, (4, 8, 1))
+        # a one-cell periodic axis and the flat Yee solver are not affected
+        _validate_static_metric_conducting_widths(static("static_metric", (BC_PERIODIC,) * 3), (8, 8, 1))
+        _validate_static_metric_conducting_widths(
+            static("electrodynamic_yee", (BC_CONDUCTING, BC_PERIODIC, BC_PERIODIC)), (2, 8, 1))
     def setUp(self):
         self.plotting_parameters, self.simulation_parameters, self.dynamic_values = default_parameters()
         self.simulation_parameters['output_dir'] = 'test_output'

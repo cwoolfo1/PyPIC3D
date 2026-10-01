@@ -345,114 +345,6 @@ def write_openpmd_fields_to_iteration(iteration, field_map, dynamic_parameters, 
             _write_openpmd_scalar_mesh(iteration, name, data, dynamic_parameters, active_dims)
 
 
-def write_openpmd_particles_to_iteration(
-    iteration,
-    particles,
-    static_parameters,
-    dynamic_parameters,
-    species_config=None,
-    species_names=None,
-):
-    particles = particles_for_output(
-        particles,
-        species_config=species_config,
-        species_names=species_names,
-        static_parameters=static_parameters,
-        dynamic_parameters=dynamic_parameters,
-    )
-    # Tiled particles carry inactive capacity slots; openPMD should see the
-    # active physical particles by species, matching the ordinary output path.
-
-    if not particles:
-        return
-
-    C = float(dynamic_parameters.C)
-
-    for species in particles:
-        species_name = species.name.replace(" ", "_")
-        species_group = iteration.particles[species_name]
-
-        positions = _ensure_openpmd_array(species.x_diagnostic)
-        velocities = _ensure_openpmd_array(species.u)
-        x, y, z = positions.T
-        vx, vy, vz = velocities.T
-        gamma = 1 / np.sqrt(1.0 - (vx**2 + vy**2 + vz**2) / C**2)
-
-        x = _ensure_openpmd_array(x, squeeze=True)
-        y = _ensure_openpmd_array(y, squeeze=True)
-        z = _ensure_openpmd_array(z, squeeze=True)
-        vx = _ensure_openpmd_array(vx, squeeze=True)
-        vy = _ensure_openpmd_array(vy, squeeze=True)
-        vz = _ensure_openpmd_array(vz, squeeze=True)
-        gamma = _ensure_openpmd_array(gamma, squeeze=True)
-
-        num_particles = x.shape[0]
-        # number of particles in this species
-
-        particle_mass = species.mass
-        particle_charge = species.charge
-        weights = species.weight
-        # get the particle mass, charge, and weight for this species
-
-
-        if np.ndim(weights) == 0:
-            weights = _ensure_openpmd_array(np.full(num_particles, float(weights), dtype=np.float64))
-        else:
-            weights = _ensure_openpmd_array(weights, squeeze=True)
-
-        if np.ndim(particle_mass) == 0:
-            masses = _ensure_openpmd_array(np.full(num_particles, float(particle_mass), dtype=np.float64))
-        else:
-            masses = _ensure_openpmd_array(particle_mass, squeeze=True)
-        
-        if np.ndim(particle_charge) == 0:
-            charges = _ensure_openpmd_array(np.full(num_particles, float(particle_charge), dtype=np.float64))
-        else:
-            charges = _ensure_openpmd_array(particle_charge, squeeze=True)
-        # ensure weights, masses, and charges are 1D arrays of the correct length for openPMD output
-
-        position = species_group["position"]
-        for component, data in zip(("x", "y", "z"), (x, y, z)):
-            record_component = position[component]
-            record_component.reset_dataset(io.Dataset(data.dtype, [num_particles]))
-            record_component.store_chunk(data, [0], [num_particles])
-            record_component.unit_SI = 1.0
-
-        # positionOffset: required by openPMD consumers (WarpX expects it)
-        pos_off = species_group["positionOffset"]
-        zeros = _ensure_openpmd_array(np.zeros(num_particles, dtype=np.float64))
-        for comp in ("x", "y", "z"):
-            rc = pos_off[comp]
-            rc.reset_dataset(io.Dataset(zeros.dtype, [num_particles]))
-            rc.store_chunk(zeros, [0], [num_particles])
-            rc.unit_SI = 1.0
-
-        momentum = species_group["momentum"]
-        for component, data in zip(("x", "y", "z"), (vx, vy, vz)):
-            record_component = momentum[component]
-            record_component.reset_dataset(io.Dataset(data.dtype, [num_particles]))
-            momenta = data * masses * gamma
-            # openPMD momentum is per physical particle; macro weight is stored
-            # separately in the weighting record for WarpX/PICMI readers.
-            record_component.store_chunk(momenta, [0], [num_particles])
-            record_component.unit_SI = 1.0
-
-        weighting = species_group["weighting"]
-        weighting.reset_dataset(io.Dataset(weights.dtype, [num_particles]))
-        weighting.store_chunk(weights, [0], [num_particles])
-        weighting.unit_SI = 1.0
-
-        charge = species_group["charge"]
-        charge.reset_dataset(io.Dataset(charges.dtype, [num_particles]))
-        charge.store_chunk(charges, [0], [num_particles])
-        charge.unit_SI = 1.0
-
-        mass = species_group["mass"]
-        mass.reset_dataset(io.Dataset(masses.dtype, [num_particles]))
-        mass.store_chunk(masses, [0], [num_particles])
-        mass.unit_SI = 1.0
-
-
 def _axis_diagnostic_position_array(x, u, dt, axis_min, axis_max, bc):
     x_diagnostic = x - u * dt / 2.0
 
@@ -511,6 +403,12 @@ def _iter_snapshot_particle_chunks(snapshot, static_parameters, dynamic_paramete
     static_metric = getattr(snapshot, "gamma_shards", None) is not None
     # static-metric snapshots carry Gamma computed from covariant u_i and the metric
     gamma_shards = snapshot.gamma_shards if static_metric else [(None, None)] * len(snapshot.x_shards)
+    if static_metric:
+        if len(gamma_shards) != len(snapshot.x_shards):
+            raise ValueError("Particle snapshot gamma and x shard lists must have the same length.")
+        for (x_index, _), (gamma_index, _) in zip(snapshot.x_shards, gamma_shards):
+            if tuple(gamma_index) != tuple(x_index[:5]):
+                raise ValueError("Particle snapshot gamma shards must follow the x shard layout.")
 
     for (x_index, x_chunk), (_u_index, u_chunk), (_active_index, active_chunk), (_gamma_index, gamma_chunk) in zip(
         snapshot.x_shards,
@@ -672,100 +570,6 @@ def write_tiled_particle_snapshot_openpmd(
         series.flush()
     finally:
         series.close()
-
-
-def write_openpmd_fields(field_map, static_parameters, dynamic_parameters=None, output_dir=None, plot_t=0, t=0, filename="fields", file_extension=".bp"):
-    """
-    Write the selected field data to an openPMD file for visualization in ParaView/VisIt.
-
-    Args:
-        field_map (dict): Selected scalar and vector mesh quantities.
-        static_parameters (dict): Compile-time/run parameters.
-        dynamic_parameters (dict): Scalar/grid parameters.
-        output_dir (str): Base output directory for the simulation.
-        plot_t (int): openPMD iteration number/index used when writing this step.
-        t (int): Simulation step index used to compute the physical time.
-        filename (str): Base name for the openPMD file.
-        file_extension (str): File extension for the openPMD series (for example, ".bp").
-    """
-    if isinstance(dynamic_parameters, str) and output_dir is None:
-        output_dir = dynamic_parameters
-        dynamic_parameters = static_parameters
-    static_parameters, dynamic_parameters = _split_output_parameters(static_parameters, dynamic_parameters)
-
-    field_map = field_map_for_output(field_map, static_parameters)
-    field_map = _field_map_to_interior(field_map)
-    # extract physical interior (strip ghost cells)
-
-    active_dims = (1, 1, 1)
-    # keep singleton mesh axes so thin 2D runs stay in physical x-y-z coordinates
-
-
-    series = _open_openpmd_series(output_dir, filename, file_extension=file_extension)
-    # open or create the openPMD series
-    iteration = series.iterations[int(plot_t)]
-    # specify the iteration using the plot number
-    iteration.time = float(t * dynamic_parameters.dt)
-    # set the physical time
-    iteration.dt = float(dynamic_parameters.dt)
-    # set the time step
-    iteration.time_unit_SI = 1.0
-    # set the time unit
-    write_openpmd_fields_to_iteration(iteration, field_map, dynamic_parameters, active_dims)
-    # write the field data to the iteration
-    series.flush()
-    series.close()
-    # flush and close the series
-
-
-def write_openpmd_particles(
-    particles,
-    static_parameters,
-    dynamic_parameters=None,
-    output_dir=None,
-    plot_t=0,
-    t=0,
-    filename="particles",
-    file_extension=".bp",
-    species_config=None,
-    species_names=None,
-):
-    """
-    Write all particle data to an openPMD file for visualization in ParaView/VisIt.
-
-    Args:
-        particles (list): Particle species list.
-        static_parameters (dict): Compile-time/run parameters.
-        dynamic_parameters (dict): Scalar/grid parameters.
-        output_dir (str): Base output directory for the simulation.
-        t (int): Iteration index.
-        filename (str): openPMD file name.
-    """
-    static_parameters, dynamic_parameters = _split_output_parameters(static_parameters, dynamic_parameters)
-
-    series = _open_openpmd_series(output_dir, filename, file_extension=file_extension)
-    # open or create the openPMD series
-    iteration = series.iterations[int(plot_t)]
-    # specify the iteration using the plot number
-    iteration.time = float(t * dynamic_parameters.dt)
-    # set the physical time
-    iteration.dt = float(dynamic_parameters.dt)
-    # set the time step
-    iteration.time_unit_SI = 1.0
-    # set the time unit
-    write_openpmd_particles_to_iteration(
-        iteration,
-        particles,
-        static_parameters,
-        dynamic_parameters,
-        species_config=species_config,
-        species_names=species_names,
-    )
-    # write the particle data to the iteration
-    series.flush()
-    series.close()
-    # flush and close the series
-
 
 
 def write_openpmd_initial_particles(

@@ -19,6 +19,7 @@ before tile migration.  Points outside the stencil return NaN, and invalid
 metrics are reported through checkify rather than clamped or repaired.
 """
 
+from functools import partial
 from typing import NamedTuple
 
 import jax
@@ -258,6 +259,7 @@ def check_particle_samples(valid, position, stage, tile=None):
     )
 
 
+@partial(jax.jit, static_argnames="static_parameters")
 def particle_lorentz_factor(particles, metric, static_parameters, dynamic_parameters):
     """
     Gamma = sqrt(1 + gamma^ij u_i u_j) for every tiled particle slot.

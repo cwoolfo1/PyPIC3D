@@ -241,7 +241,7 @@ class OpenPMDDiagnosticsTests(unittest.TestCase):
 
         self.assertEqual(array.shape, (4, 1, 6))
 
-    def test_write_openpmd_fields_preserves_thin_y_mesh_metadata(self):
+    def test_initial_fields_preserve_thin_y_mesh_metadata(self):
         shape_with_ghosts = (6, 3, 8)
         E = _zero_field(shape_with_ghosts)
         B = _zero_field(shape_with_ghosts)
@@ -267,8 +267,8 @@ class OpenPMDDiagnosticsTests(unittest.TestCase):
             "J": J,
         }
 
-        with patch.object(openPMD, "_open_openpmd_series", return_value=series):
-            openPMD.write_openpmd_fields(field_map, static_parameters, dynamic_parameters, "/tmp", plot_t=0, t=0)
+        with patch.object(openPMD.io, "Series", return_value=series):
+            openPMD.write_openpmd_initial_fields(field_map, static_parameters, dynamic_parameters, "/tmp")
 
         B_mesh = series.iterations[0].meshes["B"]
         self.assertEqual(set(series.iterations[0].meshes), {"E", "B", "J"})
@@ -305,15 +305,8 @@ class OpenPMDDiagnosticsTests(unittest.TestCase):
             "fluid_velocity": vector,
         }
 
-        with patch.object(openPMD, "_open_openpmd_series", return_value=series):
-            openPMD.write_openpmd_fields(
-                field_map,
-                static_parameters,
-                dynamic_parameters,
-                "/tmp",
-                plot_t=0,
-                t=0,
-            )
+        with patch.object(openPMD.io, "Series", return_value=series):
+            openPMD.write_openpmd_initial_fields(field_map, static_parameters, dynamic_parameters, "/tmp")
 
         dimensions = openPMD.io.Unit_Dimension
         expected = {
@@ -330,7 +323,7 @@ class OpenPMDDiagnosticsTests(unittest.TestCase):
                 unit_dimension,
             )
 
-    def test_write_openpmd_fields_uses_shifted_grid_lower_bounds_for_offsets(self):
+    def test_initial_fields_use_shifted_grid_lower_bounds_for_offsets(self):
         shape_with_ghosts = (6, 3, 3)
         E = _zero_field(shape_with_ghosts)
         field_map = {"E": E}
@@ -353,14 +346,14 @@ class OpenPMDDiagnosticsTests(unittest.TestCase):
         )
         series = FakeSeries()
 
-        with patch.object(openPMD, "_open_openpmd_series", return_value=series):
-            openPMD.write_openpmd_fields(field_map, static_parameters, dynamic_parameters, "/tmp", plot_t=0, t=0)
+        with patch.object(openPMD.io, "Series", return_value=series):
+            openPMD.write_openpmd_initial_fields(field_map, static_parameters, dynamic_parameters, "/tmp")
 
         E_mesh = series.iterations[0].meshes["E"]
         self.assertEqual(E_mesh.grid_spacing, [0.5, 1.0, 1.0])
         self.assertEqual(E_mesh.grid_global_offset, [1.0, -0.5, 2.0])
 
-    def test_write_openpmd_fields_assembles_tiled_fields_before_output(self):
+    def test_initial_fields_assemble_tiled_fields_before_output(self):
         shape_with_ghosts = (6, 4, 4)
         E = _zero_field(shape_with_ghosts)
         B = _zero_field(shape_with_ghosts)
@@ -402,8 +395,8 @@ class OpenPMDDiagnosticsTests(unittest.TestCase):
             "rho": tiled_fields[3],
         }
 
-        with patch.object(openPMD, "_open_openpmd_series", return_value=series):
-            openPMD.write_openpmd_fields(field_map, static_parameters, dynamic_parameters, "/tmp", plot_t=0, t=0)
+        with patch.object(openPMD.io, "Series", return_value=series):
+            openPMD.write_openpmd_initial_fields(field_map, static_parameters, dynamic_parameters, "/tmp")
 
         E_mesh = series.iterations[0].meshes["E"]
         rho_mesh = series.iterations[0].meshes["rho"]
@@ -538,7 +531,7 @@ class OpenPMDDiagnosticsTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "Async openPMD writer failed"):
                 writer.close()
 
-    def test_tiled_particle_snapshot_writes_same_records_as_synchronous_output(self):
+    def test_tiled_particle_snapshot_writes_expected_flat_records(self):
         parameter_values = _parameter_values()
         dynamic_values = {"C": 10.0}
         static_parameters, dynamic_parameters = particle_parameters_from_values(
@@ -552,19 +545,6 @@ class OpenPMDDiagnosticsTests(unittest.TestCase):
         tiled_particles, species_config = build_tiled_particles(species, static_parameters, dynamic_parameters)
         species_names = names_for_species(species)
 
-        sync_series = FakeSeries()
-        with patch.object(openPMD, "_open_openpmd_series", return_value=sync_series):
-            openPMD.write_openpmd_particles(
-                tiled_particles,
-                static_parameters,
-                dynamic_parameters,
-                "/tmp",
-                plot_t=2,
-                t=3,
-                species_config=species_config,
-                species_names=species_names,
-            )
-
         snapshot = async_writer.make_tiled_particle_snapshot(
             tiled_particles,
             step=2,
@@ -572,8 +552,8 @@ class OpenPMDDiagnosticsTests(unittest.TestCase):
             species_names=species_names,
             species_config=species_config,
         )
-        async_series = FakeSeries()
-        with patch.object(openPMD, "_open_openpmd_series", return_value=async_series):
+        series = FakeSeries()
+        with patch.object(openPMD, "_open_openpmd_series", return_value=series):
             openPMD.write_tiled_particle_snapshot_openpmd(
                 snapshot,
                 output_dir="/tmp",
@@ -583,30 +563,25 @@ class OpenPMDDiagnosticsTests(unittest.TestCase):
                 file_extension=".h5",
             )
 
-        sync_electrons = sync_series.iterations[2].particles["beam_electrons"]
-        async_electrons = async_series.iterations[2].particles["beam_electrons"]
-        sync_ions = sync_series.iterations[2].particles["background_ions"]
-        async_ions = async_series.iterations[2].particles["background_ions"]
-
-        self.assertEqual(async_series.iterations[2].time, 3 * float(dynamic_parameters.dt))
-        self.assertEqual(_record_data(async_electrons["position"]["x"]).shape, _record_data(sync_electrons["position"]["x"]).shape)
-        self.assertEqual(_record_data(async_ions["position"]["x"]).shape, _record_data(sync_ions["position"]["x"]).shape)
-        for group_async, group_sync in ((async_electrons, sync_electrons), (async_ions, sync_ions)):
-            for record_name in ("position", "positionOffset", "momentum"):
-                for component in ("x", "y", "z"):
-                    self.assertTrue(
-                        jnp.allclose(
-                            _record_data(group_async[record_name][component]),
-                            _record_data(group_sync[record_name][component]),
-                        )
-                    )
-            for record_name in ("weighting", "charge", "mass"):
-                self.assertTrue(
-                    jnp.allclose(
-                        _record_data(group_async[record_name]),
-                        _record_data(group_sync[record_name]),
-                    )
-                )
+        iteration = series.iterations[2]
+        self.assertEqual(iteration.time, 3 * float(dynamic_parameters.dt))
+        dt, velocity, C = float(dynamic_parameters.dt), 0.1, 10.0
+        gamma = 1.0 / np.sqrt(1.0 - velocity**2 / C**2)
+        for name, charge, mass, weight, x1 in (("beam_electrons", -1.0, 2.0, 3.0, [-1.5, 0.5]),
+                                               ("background_ions", 1.0, 4.0, 5.0, [1.5, -0.5])):
+            with self.subTest(species=name):
+                group = iteration.particles[name]
+                # flat particles store u^{n+1/2}; positions are moved back half a step
+                np.testing.assert_allclose(np.sort(_record_data(group["position"]["x"])),
+                                           np.sort(np.array(x1) - velocity * dt / 2))
+                np.testing.assert_allclose(_record_data(group["position"]["y"]), 0.0)
+                np.testing.assert_allclose(_record_data(group["positionOffset"]["x"]), 0.0)
+                np.testing.assert_allclose(_record_data(group["momentum"]["x"]), mass * gamma * velocity)
+                np.testing.assert_allclose(_record_data(group["momentum"]["z"]), 0.0)
+                np.testing.assert_allclose(_record_data(group["gamma"]), gamma)
+                np.testing.assert_allclose(_record_data(group["weighting"]), weight)
+                np.testing.assert_allclose(_record_data(group["charge"]), charge)
+                np.testing.assert_allclose(_record_data(group["mass"]), mass)
 
     def test_async_particle_writer_queue_size_caps_pending_snapshots(self):
         static_parameters, dynamic_parameters = particle_parameters_from_values(

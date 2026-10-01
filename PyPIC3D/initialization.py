@@ -176,6 +176,26 @@ def _validate_tiled_yee_configuration(static_config, dynamic_config):
             raise ValueError("Yee runtime requires the shared tile shape to divide Nx/Ny/Nz exactly")
 
 
+def _validate_static_metric_conducting_widths(static_parameters, grid_shape):
+    """
+    Static-metric PEC walls need more cells than guard cells on each conducting axis.
+
+    The edge solves and exterior reflections in ``boundary_conditions/pec.py``
+    pair each wall with the nodes beside it; on an axis no wider than the halo,
+    mirror images reach the opposite wall and the projection is no longer exact.
+    """
+
+    if static_parameters.solver != "static_metric":
+        return
+    g = int(static_parameters.guard_cells)
+    for axis, (bc, cells) in enumerate(zip(static_parameters.boundary_conditions, grid_shape)):
+        if bc == BC_CONDUCTING and int(cells) <= g:
+            raise ValueError(
+                f"static_metric conducting {'xyz'[axis]} boundaries need at least guard_cells + 1 = {g + 1} "
+                f"cells along that axis; got N{'xyz'[axis]}={int(cells)}"
+            )
+
+
 _CPU_PARTICLES_PER_LOGICAL_THREAD = 128
 _ACCELERATOR_PARTICLE_BATCH_TARGET = 1024
 
@@ -596,6 +616,8 @@ def initialize_simulation(toml_file):
 
     static_parameters = build_static_parameters(static_config)
     dynamic_parameters = build_dynamic_parameters(dynamic_config)
+    _validate_static_metric_conducting_widths(static_parameters, (int(Nx), int(Ny), int(Nz)))
+    # PML and supergaussian layers may have made periodic axes conducting above
     plotting_parameters = convert_to_jax_compatible(plotting_parameters)
     metric = (
         build_static_metric_state(static_parameters, dynamic_parameters)
@@ -639,9 +661,9 @@ def initialize_simulation(toml_file):
         particles,
         species_config=species_config,
         species_names=particle_species_names,
-        static_parameters=static_parameters,
-        dynamic_parameters=dynamic_parameters,
     )
+    # positions and velocities are both at t=0 here (before the leapfrog seed),
+    # so the histograms use the stored positions without a half-step shift
     for particle_record in initial_particle_records:
         name = particle_record.name.replace(" ", "_")
         plot_initial_histograms(
