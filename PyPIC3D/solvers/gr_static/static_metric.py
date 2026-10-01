@@ -3,7 +3,6 @@ import jax.numpy as jnp
 from PyPIC3D.boundary_conditions.supergaussian import apply_tiled_supergaussian_absorber
 from PyPIC3D.relativity.core import B_FIELD_LOCATIONS, D_FIELD_LOCATIONS
 from PyPIC3D.boundary_conditions.staggered import refresh_fields
-from PyPIC3D.boundary_conditions.grid_and_stencil import BC_CONDUCTING
 from PyPIC3D.boundary_conditions.ownership import owned_nodes
 from PyPIC3D.relativity.field_interpolation import reconstruct_vector
 
@@ -84,8 +83,6 @@ def update_D_relativity(D_tiles, H_tiles, J_tiles, metric, static_parameters, dy
     """Advance contravariant D and enforce its FIDO surface projection."""
     Dx, Dy, Dz = D_tiles
     Jx, Jy, Jz = J_tiles
-    if BC_CONDUCTING in static_parameters.boundary_conditions:
-        H_tiles = refresh_fields(H_tiles, static_parameters, B_FIELD_LOCATIONS)
     Hx, Hy, Hz = H_tiles
     dx, dy, dz = dynamic_parameters.dx, dynamic_parameters.dy, dynamic_parameters.dz
 
@@ -128,8 +125,6 @@ def update_D_relativity(D_tiles, H_tiles, J_tiles, metric, static_parameters, dy
 def update_B_relativity(E_tiles, B_tiles, metric, static_parameters, dynamic_parameters, dt):
     """Advance contravariant B and remove its normal surface component."""
     Bx, By, Bz = B_tiles
-    if BC_CONDUCTING in static_parameters.boundary_conditions:
-        E_tiles = refresh_fields(E_tiles, static_parameters, D_FIELD_LOCATIONS)
     Ex, Ey, Ez = E_tiles
     dx, dy, dz = dynamic_parameters.dx, dynamic_parameters.dy, dynamic_parameters.dz
 

@@ -703,8 +703,13 @@ def initialize_simulation(toml_file):
         E = update_tiled_vector_ghost_cells(E, static_parameters, num_guard_cells=guard_cells)
         B = update_tiled_vector_ghost_cells(B, static_parameters, num_guard_cells=guard_cells)
     external_E, external_B = external_fields
-    external_E = update_tiled_vector_ghost_cells(external_E, static_parameters, num_guard_cells=guard_cells)
-    external_B = update_tiled_vector_ghost_cells(external_B, static_parameters, num_guard_cells=guard_cells)
+    if static_metric:
+        external_E = refresh_vector(external_E, static_parameters, D_FIELD_LOCATIONS, 'D')
+        external_B = refresh_vector(external_B, static_parameters, B_FIELD_LOCATIONS, 'B')
+        # the time loop adds these to refreshed D/B without refreshing the sum
+    else:
+        external_E = update_tiled_vector_ghost_cells(external_E, static_parameters, num_guard_cells=guard_cells)
+        external_B = update_tiled_vector_ghost_cells(external_B, static_parameters, num_guard_cells=guard_cells)
     external_fields = (external_E, external_B)
 
     static_metric_state = None

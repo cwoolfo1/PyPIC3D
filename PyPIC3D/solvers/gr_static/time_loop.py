@@ -1,9 +1,3 @@
-from functools import partial
-
-from PyPIC3D.boundary_conditions.grid_and_stencil import BC_CONDUCTING
-from PyPIC3D.boundary_conditions.staggered import refresh_fields
-from PyPIC3D.relativity.core import D_FIELD_LOCATIONS, B_FIELD_LOCATIONS
-
 from PyPIC3D.deposition.GR_direct_deposition import GR_direct_deposition
 from PyPIC3D.deposition.GR_Esirkepov import GR_Esirkepov_current
 from PyPIC3D.particles.particle_tile_communication import refresh_tiled_particle_tiles
@@ -45,16 +39,8 @@ def time_loop_static_metric(
     # unpack the fixed-metric field state
 
     D_n_minusone, B_n_minusthreehalves = previous_fields
-    # unpack the previous fixed-metric field state
-
-    refresh_required = (BC_CONDUCTING in static_parameters.boundary_conditions or
-                        static_parameters.horizon_field_cells > 0)
-    if refresh_required:
-        refresh_vector = partial(refresh_fields, metric=metric)
-        D_n = refresh_vector(D_n, static_parameters, D_FIELD_LOCATIONS, 'D')
-        B_n_minushalf = refresh_vector(B_n_minushalf, static_parameters, B_FIELD_LOCATIONS, 'B')
-        D_n_minusone = refresh_vector(D_n_minusone, static_parameters, D_FIELD_LOCATIONS, 'D')
-        B_n_minusthreehalves = refresh_vector(B_n_minusthreehalves, static_parameters, B_FIELD_LOCATIONS, 'B')
+    # unpack the previous fixed-metric field state.  Every D and B arrives with
+    # refreshed halos and walls from update_D/B_relativity or initialization.
 
     D_n_minushalf = tuple( 0.5 * (D_n[i] + D_n_minusone[i]) for i in range(3) )
     B_n_minusone = tuple( 0.5 * (B_n_minushalf[i] + B_n_minusthreehalves[i]) for i in range(3) )
@@ -67,10 +53,8 @@ def time_loop_static_metric(
     # update the contravariant magnetic field using the centered displacement field
 
     push_D, push_B = add_external_fields(D_n, B_n, external_fields)
-    # particles see evolved fields plus prescribed external fields
-    if refresh_required:
-        push_D = refresh_vector(push_D, static_parameters, D_FIELD_LOCATIONS, 'D')
-        push_B = refresh_vector(push_B, static_parameters, B_FIELD_LOCATIONS, 'B')
+    # particles see evolved fields plus prescribed external fields; both are
+    # refreshed and the refresh is linear, so their sum needs no second refresh
 
     particles_n = particles
     # keep the time level n positions for the charge-conserving deposition.  The

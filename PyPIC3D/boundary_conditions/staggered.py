@@ -5,7 +5,7 @@ import jax
 
 from .grid_and_stencil import BC_CONDUCTING
 from .ghost_cells import update_tiled_vector_ghost_cells
-from .pec import project_fields
+from .pec import enforce_pec_B, enforce_pec_D
 from .sources import scalar_boundaries, source_boundaries
 
 
@@ -41,7 +41,8 @@ def refresh_fields(vector, static, locations, field_kind=None, metric=None):
         if BC_CONDUCTING in static.boundary_conditions:
             if metric is None:
                 raise ValueError('Conducting D/B boundaries require a Yee metric')
-            return project_fields(vector, static, locations, field_kind, metric)
+            enforce_pec = enforce_pec_D if field_kind == 'D' else enforce_pec_B
+            return enforce_pec(vector, static, locations, metric)
     return update_tiled_vector_ghost_cells(
         vector, static, static.guard_cells, locations=locations,
         preserve_exterior=field_kind is None)

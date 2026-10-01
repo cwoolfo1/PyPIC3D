@@ -34,6 +34,57 @@ def setup(n=(6, 5, 1), g=2, bc=(1, 0, 0), tiles=None, gamma=None, shift=(0.,0.,0
     return s,d,constant_metric(shape,gamma,shift)
 
 
+def coupled_metric(position):
+    """Smooth periodic metric whose off-diagonal terms couple every wall pair."""
+    X, Y, Z = (2*jnp.pi*value for value in position)
+    gamma = jnp.array([[2.+.2*jnp.sin(X), .3+.05*jnp.cos(Y), .15+.03*jnp.sin(Z)],
+                       [.3+.05*jnp.cos(Y), 3.+.1*jnp.cos(Y), -.2+.02*jnp.cos(X)],
+                       [.15+.03*jnp.sin(Z), -.2+.02*jnp.cos(X), 1.5+.1*jnp.sin(Z)]])
+    lapse = 1.+.03*jnp.sin(X)
+    shift = jnp.array([.04*jnp.sin(X), .02*jnp.sin(Y), .01*jnp.cos(Z)])
+    return lapse, shift, gamma, jnp.linalg.inv(gamma), jnp.sqrt(jnp.linalg.det(gamma))
+
+
+def coupled_setup(n, tiles, bc):
+    s, d = kernel_parameters(Nx=n[0], Ny=n[1], Nz=n[2], tile_shape=tiles, boundary_conditions=bc,
+                             solver='static_metric', metric='numerical',
+                             x_min=0., y_min=0., z_min=0., x_wind=1., y_wind=1., z_wind=1.)
+    return s, d, build_yee_metric(d, coupled_metric)
+
+
+class TestEdgeCoupledProjection(unittest.TestCase):
+    """Where two walls meet in a non-orthogonal metric, the wall rows couple."""
+
+    def test_refresh_is_idempotent_with_coupled_edges(self):
+        cases = (((16, 8, 1), (8, 8, 1), (1, 1, 0)),    # x/y walls, two tiles
+                 ((8, 6, 8), (4, 6, 4), (1, 1, 1)))     # x/y/z walls, 2x1x2 tiles
+        rng = np.random.default_rng(0)
+        for n, tiles, bc in cases:
+            s, d, m = coupled_setup(n, tiles, bc)
+            shape = m.center.lapse.shape
+            for kind, locations in (('D', D_FIELD_LOCATIONS), ('B', B_FIELD_LOCATIONS)):
+                with self.subTest(walls=bc, field=kind):
+                    vector = tuple(jnp.asarray(rng.normal(size=shape)) for _ in range(3))
+                    once = refresh_fields(vector, s, locations, kind, m)
+                    twice = refresh_fields(once, s, locations, kind, m)
+                    for first, second in zip(once, twice):
+                        np.testing.assert_allclose(second, first, rtol=0, atol=1e-12 * float(jnp.abs(first).max()))
+
+    def test_D_edge_rows_hold_simultaneously(self):
+        """Recomputing the x-wall normal row of D^y from the refreshed y-wall D^x reproduces it."""
+        from PyPIC3D.boundary_conditions.pec import _project_native_nodes, _prepare_normal_D, _pec_setup
+        s, d, m = coupled_setup((16, 8, 1), (8, 8, 1), (1, 1, 0))
+        vector = tuple(jnp.asarray(np.random.default_rng(1).normal(size=m.center.lapse.shape)) for _ in range(3))
+        refreshed = refresh_fields(vector, s, D_FIELD_LOCATIONS, 'D', m)
+        axes, exchange = _pec_setup(refreshed, s, D_FIELD_LOCATIONS)
+        snapshot = exchange(_prepare_normal_D(exchange(refreshed), s, axes))
+        one_pass = _project_native_nodes(snapshot, s, D_FIELD_LOCATIONS, 'D', m, axes)
+        g = s.guard_cells
+        for component in (0, 1):
+            np.testing.assert_allclose(one_pass[component][0, 0, 0, g:g+2, g:g+2, g],
+                                       refreshed[component][0, 0, 0, g:g+2, g:g+2, g], atol=1e-13)
+
+
 class TestProjectorAlgebra(unittest.TestCase):
     def test_metric_projectors_and_intersections(self):
         for gamma in (np.diag([2.,3.,4.]), np.array([[2.,.4,.2],[.4,1.5,.3],[.2,.3,1.]])):
@@ -205,8 +256,11 @@ class TestStaggeredProjectors(unittest.TestCase):
         from unittest.mock import patch
         from PyPIC3D.solvers.gr_static.time_loop import time_loop_static_metric
         s,d,m=setup()
-        value=jnp.ones(m.center.lapse.shape);v=(value,)*3;z=(value*0,)*3
-        fields=(v,v,z,value*0,value*0,(v,v),m,(v,v),False)
+        value=jnp.ones(m.center.lapse.shape);z=(value*0,)*3
+        # the loop expects every incoming D and B to be refreshed already
+        vD=refresh_fields((value,)*3,s,D_FIELD_LOCATIONS,'D',m)
+        vB=refresh_fields((value,)*3,s,B_FIELD_LOCATIONS,'B',m)
+        fields=(vD,vB,z,value*0,value*0,(vD,vB),m,(vD,vB),False)
         captured=[]
         def push(particles,species,D,B,*args):
             captured.append((D,B));return particles,particles
