@@ -15,9 +15,6 @@ from PyPIC3D.particles.particle_class import TiledParticles
 from PyPIC3D.utilities.grids import build_yee_grid
 
 
-jax.config.update("jax_enable_x64", True)
-
-
 class _HashableStaticParameters(NamedTuple):
     tile_shape: tuple
     guard_cells: int

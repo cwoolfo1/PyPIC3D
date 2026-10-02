@@ -190,6 +190,12 @@ def interpolate_metric(
     return sampled
 
 
+def particle_active_axes(tile_counts, tile_shape):
+    """Axes resolved by the global grid; a width-one tile is still physical when other tiles extend its axis."""
+
+    return tuple(int(count) * int(width) > 1 for count, width in zip(tile_counts, tile_shape))
+
+
 def safe_inactive_positions(position, active, grid, active_axes, guard_cells):
     """Move unused particle slots strictly inside the tile; live positions are unchanged."""
 
@@ -270,12 +276,7 @@ def particle_lorentz_factor(particles, metric, static_parameters, dynamic_parame
 
     g = int(static_parameters.guard_cells)
     ntx, nty, ntz = particles.active.shape[:3]
-    tile_nx, tile_ny, tile_nz = (int(width) for width in static_parameters.tile_shape)
-    active_axes = (
-        int(ntx) * tile_nx > 1,
-        int(nty) * tile_ny > 1,
-        int(ntz) * tile_nz > 1,
-    )
+    active_axes = particle_active_axes((ntx, nty, ntz), static_parameters.tile_shape)
 
     def one_tile(x_tile, u_tile, active_tile, tx, ty, tz):
         x = x_tile.reshape(-1, 3)

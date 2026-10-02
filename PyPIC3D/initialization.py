@@ -1,5 +1,4 @@
 import os
-from numbers import Integral
 from types import SimpleNamespace
 
 import jax
@@ -35,9 +34,10 @@ from PyPIC3D.diagnostics.openPMD import (
 )
 from PyPIC3D.diagnostics.plotting import plot_initial_histograms
 from PyPIC3D.boundary_conditions.ghost_cells import (
-    make_field_mesh,
+    apply_tiled_pec_boundary,
     update_tiled_vector_ghost_cells,
 )
+from PyPIC3D.boundary_conditions.staggered import refresh_fields
 from PyPIC3D.solvers.electrostatic.time_loop import time_loop_electrostatic
 from PyPIC3D.solvers.gr_static.time_loop import time_loop_static_metric
 from PyPIC3D.solvers.yee.time_loop import time_loop_electrodynamic
@@ -50,6 +50,7 @@ from PyPIC3D.boundary_conditions.grid_and_stencil import (
 from PyPIC3D.boundary_conditions.PML import initialize_tiled_pml_state, load_pml_from_toml
 from PyPIC3D.boundary_conditions.supergaussian import load_supergaussian_from_toml
 from PyPIC3D.utilities.parameters import build_dynamic_parameters, build_static_parameters
+from PyPIC3D.relativity.core import B_FIELD_LOCATIONS, D_FIELD_LOCATIONS
 from PyPIC3D.relativity.metrics.flat import (
     initialize_flat_cartesian_metric,
     initialize_flat_cylindrical_metric,
@@ -70,12 +71,6 @@ def _encode_field_bc(bc_name):
         "conducting": BC_CONDUCTING,
         "constant": BC_CONSTANT,
     }
-    if bc_name in ("polar", 4):
-        raise ValueError(
-            "Polar boundaries have been removed. Use conducting fields and "
-            "reflecting particles on a regular domain with guard nodes away "
-            "from the axes."
-        )
     if bc_name not in bc_codes:
         raise ValueError(f"Unsupported field boundary condition: {bc_name}")
     return bc_codes[bc_name]
@@ -90,12 +85,6 @@ def _encode_particle_bc(bc_name):
         "reflecting": BC_CONDUCTING,
         "absorbing": BC_ABSORBING,
     }
-    if bc_name in ("polar", 4):
-        raise ValueError(
-            "Polar boundaries have been removed. Use conducting fields and "
-            "reflecting particles on a regular domain with guard nodes away "
-            "from the axes."
-        )
     if bc_name not in bc_codes:
         raise ValueError(f"Unsupported particle boundary condition: {bc_name}")
     return bc_codes[bc_name]
@@ -200,17 +189,6 @@ _CPU_PARTICLES_PER_LOGICAL_THREAD = 128
 _ACCELERATOR_PARTICLE_BATCH_TARGET = 1024
 
 
-def _validate_requested_particle_batch_size(particle_batch_size):
-    """Accept automatic mode or a positive explicit batch size."""
-
-    if particle_batch_size is None:
-        return
-    if isinstance(particle_batch_size, bool) or not isinstance(particle_batch_size, Integral):
-        raise ValueError("particle_batch_size must be a positive integer.")
-    if particle_batch_size <= 0:
-        raise ValueError("particle_batch_size must be a positive integer.")
-
-
 def _available_cpu_threads():
     """Return the logical CPU allocation visible to this process."""
 
@@ -241,9 +219,11 @@ def _resolve_particle_batch_size(
     available_cpu_threads=None,
     local_device_count=None,
 ):
-    """Resolve a static batch size from actual occupancy and backend parallelism."""
+    """Resolve a static batch size from actual occupancy and backend parallelism.
 
-    _validate_requested_particle_batch_size(requested_batch_size)
+    ``requested_batch_size`` is None for automatic sizing, or a positive integer
+    already validated by ``build_static_parameters``.
+    """
 
     tile_capacity = int(particles.active.shape[-2]) * int(particles.active.shape[-1])
     if tile_capacity == 0:
@@ -380,7 +360,7 @@ def default_parameters():
         "cfl": 1.0,
         "ds_per_debye": None,
         "shape_factor": 1,
-        "guard_cells": 2,
+        "guard_cells": None,
         "electrostatic_schwarz_tol": 1.0e-6,
         "electrostatic_schwarz_max_iterations": 500,
         "electrostatic_local_cg_tol": 1.0e-6,
@@ -470,13 +450,6 @@ def initialize_simulation(toml_file):
             plotting_parameters,
         )
 
-    explicitly_configured_guards = any(
-        "guard_cells" in config.get(section, {})
-        for section in ("simulation_parameters", "static_parameters")
-    )
-    if not explicitly_configured_guards and static_config["solver"] == "static_metric":
-        static_config["guard_cells"] = 3
-
     print(f"Initializing Simulation: { static_config['name'] }\n")
     print(f"Using boundary conditions: x: {static_config['x_bc']}, y: {static_config['y_bc']}, z: {static_config['z_bc']}\n")
 
@@ -502,18 +475,11 @@ def initialize_simulation(toml_file):
         static_config["particle_tile_nz"] = int(Nz)
 
     requested_particle_batch_size = static_config.get("particle_batch_size")
-    _validate_requested_particle_batch_size(requested_particle_batch_size)
     # Particle packing needs a complete StaticParameters value, but automatic
     # sizing depends on the packed active population.  The placeholder is
     # replaced before particles are sharded or timestep kernels are compiled.
-    static_config["particle_batch_size"] = (
-        1 if requested_particle_batch_size is None else int(requested_particle_batch_size)
-    )
-
-    guard_cells = int(static_config["guard_cells"])
-    if guard_cells < 1:
-        raise ValueError("Tiled fields require at least one guard cell.")
-    static_config["guard_cells"] = guard_cells
+    if requested_particle_batch_size is None:
+        static_config["particle_batch_size"] = 1
     _validate_current_filter_contract(static_config)
 
     setup_write_dir(static_config, plotting_parameters)
@@ -590,17 +556,14 @@ def initialize_simulation(toml_file):
         "center": center_grid,
     }
 
-    tile_shape = _tile_shape_from_static_config(static_config)
-    static_config["tile_shape"] = tile_shape
     static_config["Nx"] = int(Nx)
     static_config["Ny"] = int(Ny)
     static_config["Nz"] = int(Nz)
-    tile_grid_shape = (
-        int(Nx) // int(tile_shape[0]),
-        int(Ny) // int(tile_shape[1]),
-        int(Nz) // int(tile_shape[2]),
-    )
-    static_config["field_mesh"] = make_field_mesh(tile_grid_shape)
+    static_parameters = build_static_parameters(static_config)
+    _validate_static_metric_conducting_widths(static_parameters, (int(Nx), int(Ny), int(Nz)))
+    # PML and supergaussian layers may have made periodic axes conducting above
+    tile_shape = static_parameters.tile_shape
+    guard_cells = static_parameters.guard_cells
 
     grid_dynamic_config = convert_to_jax_compatible({
         key: value for key, value in dynamic_config.items() if key != "grids"
@@ -609,15 +572,11 @@ def initialize_simulation(toml_file):
         **grid_dynamic_config,
         grids=SimpleNamespace(vertex=vertex_grid, center=center_grid),
     )
-    static_setup = SimpleNamespace(tile_shape=tile_shape, guard_cells=guard_cells)
-    tiled_center_grid, tiled_vertex_grid = build_tiled_yee_grids(static_setup, grid_setup)
+    tiled_center_grid, tiled_vertex_grid = build_tiled_yee_grids(static_parameters, grid_setup)
     dynamic_config["grids"]["tiled_center_grid"] = tiled_center_grid
     dynamic_config["grids"]["tiled_vertex_grid"] = tiled_vertex_grid
 
-    static_parameters = build_static_parameters(static_config)
     dynamic_parameters = build_dynamic_parameters(dynamic_config)
-    _validate_static_metric_conducting_widths(static_parameters, (int(Nx), int(Ny), int(Nz)))
-    # PML and supergaussian layers may have made periodic axes conducting above
     plotting_parameters = convert_to_jax_compatible(plotting_parameters)
     metric = (
         build_static_metric_state(static_parameters, dynamic_parameters)
@@ -645,11 +604,7 @@ def initialize_simulation(toml_file):
             "Reducing particle_batch_size from "
             f"{static_parameters.particle_batch_size} to tile capacity {effective_batch_size}."
         )
-    static_config["particle_batch_size"] = effective_batch_size
-    if effective_batch_size != static_parameters.particle_batch_size:
-        static_parameters = static_parameters._replace(
-            particle_batch_size=effective_batch_size,
-        )
+    static_parameters = static_parameters._replace(particle_batch_size=effective_batch_size)
     particles = shard_tiled_particles(particles, static_parameters)
     plotting_parameters = {
         **plotting_parameters,
@@ -709,15 +664,10 @@ def initialize_simulation(toml_file):
     )
     E, B, J = field_components[:3], field_components[3:6], field_components[6:9]
 
-    from PyPIC3D.relativity.core import D_FIELD_LOCATIONS, B_FIELD_LOCATIONS
     if static_metric:
-        from functools import partial
-        from PyPIC3D.boundary_conditions.staggered import refresh_fields
-        refresh_vector = partial(refresh_fields, metric=metric)
-        E = refresh_vector(E, static_parameters, D_FIELD_LOCATIONS, 'D')
-        B = refresh_vector(B, static_parameters, B_FIELD_LOCATIONS, 'B')
+        E = refresh_fields(E, static_parameters, D_FIELD_LOCATIONS, 'D', metric=metric)
+        B = refresh_fields(B, static_parameters, B_FIELD_LOCATIONS, 'B', metric=metric)
     elif solver == "electrodynamic_yee":
-        from PyPIC3D.boundary_conditions.ghost_cells import apply_tiled_pec_boundary
         E = apply_tiled_pec_boundary(E, static_parameters)
         E = update_tiled_vector_ghost_cells(E, static_parameters, guard_cells, locations=D_FIELD_LOCATIONS)
         B = update_tiled_vector_ghost_cells(B, static_parameters, guard_cells, locations=B_FIELD_LOCATIONS)
@@ -726,8 +676,8 @@ def initialize_simulation(toml_file):
         B = update_tiled_vector_ghost_cells(B, static_parameters, num_guard_cells=guard_cells)
     external_E, external_B = external_fields
     if static_metric:
-        external_E = refresh_vector(external_E, static_parameters, D_FIELD_LOCATIONS, 'D')
-        external_B = refresh_vector(external_B, static_parameters, B_FIELD_LOCATIONS, 'B')
+        external_E = refresh_fields(external_E, static_parameters, D_FIELD_LOCATIONS, 'D', metric=metric)
+        external_B = refresh_fields(external_B, static_parameters, B_FIELD_LOCATIONS, 'B', metric=metric)
         # the time loop adds these to refreshed D/B without refreshing the sum
     else:
         external_E = update_tiled_vector_ghost_cells(external_E, static_parameters, num_guard_cells=guard_cells)
@@ -744,8 +694,8 @@ def initialize_simulation(toml_file):
             dynamic_parameters,
         )
         D_previous, B_previous = static_metric_state
-        D_previous = refresh_vector(D_previous, static_parameters, D_FIELD_LOCATIONS, 'D')
-        B_previous = refresh_vector(B_previous, static_parameters, B_FIELD_LOCATIONS, 'B')
+        D_previous = refresh_fields(D_previous, static_parameters, D_FIELD_LOCATIONS, 'D', metric=metric)
+        B_previous = refresh_fields(B_previous, static_parameters, B_FIELD_LOCATIONS, 'B', metric=metric)
         static_metric_state = D_previous, B_previous
         print("Skipping flat-space energy diagnostics for static_metric fields and covariant particle u_i\n")
     else:

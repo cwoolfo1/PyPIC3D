@@ -21,13 +21,6 @@ from PyPIC3D.diagnostics.output_adapters import (
 from tests.kernel_fixtures import build_tiled_particles, field_tiles_from_global, kernel_parameters, particle_species
 
 
-jax.config.update("jax_enable_x64", True)
-
-
-def tile_scalar_field(field, static_parameters, dynamic_parameters, num_guard_cells=None):
-    return field_tiles_from_global(field, static_parameters, dynamic_parameters, num_guard_cells)
-
-
 class TestTiledFluidQuantities(unittest.TestCase):
     def _build_parameters(self, shape_factor=2, tile_shape=None):
         x_wind, y_wind, z_wind = 4.0, 3.0, 2.0
@@ -61,7 +54,7 @@ class TestTiledFluidQuantities(unittest.TestCase):
         )
 
     def _scalar_tiles(self, static_parameters, dynamic_parameters):
-        return tile_scalar_field(
+        return field_tiles_from_global(
             self._empty_scalar(dynamic_parameters),
             static_parameters,
             dynamic_parameters,

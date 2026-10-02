@@ -3,19 +3,19 @@ import jax.numpy as jnp
 
 from .core import D_FIELD_LOCATIONS, B_FIELD_LOCATIONS
 
-def location_interpolate_axis(field, source_location, target_location, axis):
-    array_axis = axis + 3
-    if source_location[axis] == target_location[axis]:
-        return field
-    if source_location[axis] == "C":
-        return 0.5 * (field + jnp.roll(field, -1, axis=array_axis))
-    return 0.5 * (field + jnp.roll(field, 1, axis=array_axis))
-
-
 def location_interpolate(field, source_location, target_location):
+    """Average a field from one C/V location to another, one axis at a time.
+
+    Axis ``a`` of the location is array axis ``a + 3`` of a tiled field.  A
+    C-to-V move averages with the upper neighbour, a V-to-C move with the
+    lower one.
+    """
     interpolated = field
     for axis in range(3):
-        interpolated = location_interpolate_axis(interpolated, source_location, target_location, axis)
+        if source_location[axis] == target_location[axis]:
+            continue
+        shift = -1 if source_location[axis] == "C" else 1
+        interpolated = 0.5 * (interpolated + jnp.roll(interpolated, shift, axis=axis + 3))
     return interpolated
 
 

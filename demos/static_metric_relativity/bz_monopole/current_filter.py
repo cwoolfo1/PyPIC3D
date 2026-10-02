@@ -1,6 +1,6 @@
 """Conservative binomial filtering of conformal finite-difference sources."""
 import jax.numpy as jnp
-from PyPIC3D.boundary_conditions.staggered import scalar_boundaries
+from PyPIC3D.boundary_conditions.sources import scalar_boundaries
 from PyPIC3D.relativity.core import D_FIELD_LOCATIONS
 
 

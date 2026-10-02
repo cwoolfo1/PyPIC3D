@@ -511,6 +511,24 @@ def vector_tiles_from_global(field, static_parameters, dynamic_parameters, num_g
     )
 
 
+def tile_scalar_field(field, parameter_set, tile_shape, num_guard_cells=2):
+    """Tile a global field (one ghost layer) using a raw parameter dictionary."""
+    parameter_set = dict(parameter_set)
+    parameter_set["tile_shape"] = tuple(int(width) for width in tile_shape)
+    parameter_set["field_mesh"] = make_field_mesh(
+        tuple(
+            _tile_axis_count(parameter_set[axis], width)
+            for axis, width in zip(("Nx", "Ny", "Nz"), tile_shape)
+        )
+    )
+    static_parameters, dynamic_parameters = kernel_parameters_from_values(parameter_set)
+    return field_tiles_from_global(field, static_parameters, dynamic_parameters, num_guard_cells)
+
+
+def tile_vector_field(field, parameter_set, tile_shape, num_guard_cells=2):
+    return tuple(tile_scalar_field(component, parameter_set, tile_shape, num_guard_cells) for component in field)
+
+
 def particle_species(
     name,
     charge,

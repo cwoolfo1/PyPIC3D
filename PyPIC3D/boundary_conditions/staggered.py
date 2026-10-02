@@ -6,7 +6,6 @@ import jax
 from .grid_and_stencil import BC_CONDUCTING
 from .ghost_cells import update_tiled_vector_ghost_cells
 from .pec import enforce_pec_B, enforce_pec_D
-from .sources import scalar_boundaries, source_boundaries
 
 
 def freeze_horizon_layers(vector, static):

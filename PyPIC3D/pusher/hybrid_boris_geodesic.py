@@ -18,6 +18,7 @@ from PyPIC3D.relativity.core import (
 from PyPIC3D.relativity.interpolate_metric import (
     check_particle_samples,
     interpolate_metric,
+    particle_active_axes,
     safe_inactive_positions,
 )
 
@@ -123,18 +124,12 @@ def hybrid_boris_geodesic_push(
     shape_factor = static_parameters.shape_factor
     metric_name = static_parameters.metric
     ntx, nty, ntz = particles.active.shape[:3]
-    tile_nx, tile_ny, tile_nz = (int(width) for width in static_parameters.tile_shape)
-    active_axes = (
-        int(ntx) * tile_nx > 1,
-        int(nty) * tile_ny > 1,
-        int(ntz) * tile_nz > 1,
-    )
-    # A width-one local tile remains physical when other tiles extend the axis.
+    active_axes = particle_active_axes((ntx, nty, ntz), static_parameters.tile_shape)
     inactive_axis_indices = (g, g, g)
     q_over_m = species_config.charge / species_config.mass
     cell_size = jnp.array([dynamic_parameters.dx, dynamic_parameters.dy, dynamic_parameters.dz])
 
-    def push_active_batch(x_n, u_old, active, q_over_m, update_x, tx, ty, tz):
+    def push_active_batch(x_n, u_old, active, q_over_m_batch, update_x, tx, ty, tz):
         tile = jnp.array([tx, ty, tz])
         center_grid = tuple(axis[tx, ty, tz] for axis in dynamic_parameters.grids.tiled_center_grid)
         vertex_grid = tuple(axis[tx, ty, tz] for axis in dynamic_parameters.grids.tiled_vertex_grid)
@@ -158,11 +153,11 @@ def hybrid_boris_geodesic_push(
                               shape_factor, active_axes, inactive_axis_indices)
         E_cov = lower_vector(D_con, metric_n.gamma)
         # EM(dt/2) is a quarter-step electric kick, a half-step rotation, and a quarter-step kick.
-        electric_kick = (q_over_m * dt / 4.0)[..., jnp.newaxis] * metric_n.lapse[..., jnp.newaxis] * E_cov
+        electric_kick = (q_over_m_batch * dt / 4.0)[..., jnp.newaxis] * metric_n.lapse[..., jnp.newaxis] * E_cov
 
         def electromagnetic_half_step(u):
             u = u + electric_kick
-            u = magnetic_boris_rotation(u, B_con, metric_n, q_over_m, dt / 2.0)
+            u = magnetic_boris_rotation(u, B_con, metric_n, q_over_m_batch, dt / 2.0)
             return u + electric_kick
 
         u_after_first_em = jnp.where(moving, electromagnetic_half_step(u_old), u_old)

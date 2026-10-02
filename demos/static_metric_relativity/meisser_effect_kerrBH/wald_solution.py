@@ -32,6 +32,7 @@ from PyPIC3D.boundary_conditions.supergaussian import (
 )
 from PyPIC3D.utilities.parameters import DynamicParameters, GridParameters, StaticParameters
 from PyPIC3D.relativity.core import B_FIELD_LOCATIONS, D_FIELD_LOCATIONS
+from PyPIC3D.relativity.field_interpolation import metric_weighted_interpolate
 from PyPIC3D.relativity.metrics.kerr_schild import initialize_kerr_schild_spherical_metric
 from PyPIC3D.utilities.grids import build_tiled_yee_grids, build_yee_grid
 
@@ -131,17 +132,13 @@ def build_pypic_parameters(config):
         boundary_conditions=(BC_CONSTANT, BC_PERIODIC, BC_PERIODIC),
         particle_boundary_conditions=(BC_CONSTANT, BC_PERIODIC, BC_PERIODIC),
         field_mesh=make_field_mesh((1, 1, 1)),
-
-
+        # These parameters are not used in this demo,
+        # but are required for the PyPIC3D parameter dataclass.
         electrostatic_schwarz_tol=None,
         electrostatic_schwarz_max_iterations=None,
         electrostatic_local_cg_tol=None,
         electrostatic_local_cg_max_iterations=None,
         particle_batch_size=1,
-        # These parameters are not used in this demo,
-        # but are required for the PyPIC3D parameter dataclass.
-
-
     )
 
     grid_setup = SimpleNamespace(
@@ -305,36 +302,6 @@ def contravariant_B_from_potential(A_spatial, metric, dynamic_parameters):
     )
 
 
-def _location_interpolate(field, source_location, target_location):
-    interpolated = field
-    for axis in range(3):
-        if source_location[axis] == target_location[axis]:
-            continue
-
-        array_axis = axis + 3
-        if source_location[axis] == "C":
-            interpolated = 0.5 * (
-                interpolated + jnp.roll(interpolated, -1, axis=array_axis)
-            )
-        else:
-            interpolated = 0.5 * (
-                interpolated + jnp.roll(interpolated, 1, axis=array_axis)
-            )
-    return interpolated
-
-
-def _metric_weighted_interpolate(
-    field,
-    source_metric,
-    target_metric,
-    source_location,
-    target_location,
-):
-    weighted = source_metric.sqrt_gamma * field
-    weighted = _location_interpolate(weighted, source_location, target_location)
-    return weighted / target_metric.sqrt_gamma
-
-
 def contravariant_D_from_covariant_E(
     E_on_D_locations,
     B,
@@ -347,7 +314,7 @@ def contravariant_D_from_covariant_E(
     for target_component, target_location in enumerate(D_FIELD_LOCATIONS):
         target_metric = metric.D[target_component]
         B_on_target = tuple(
-            _metric_weighted_interpolate(
+            metric_weighted_interpolate(
                 B[source_component],
                 metric.B[source_component],
                 target_metric,
@@ -487,7 +454,7 @@ def center_vector(vector, source_locations, metric):
 
     metrics = metric.D if source_locations == D_FIELD_LOCATIONS else metric.B
     return tuple(
-        _metric_weighted_interpolate(
+        metric_weighted_interpolate(
             component,
             source_metric,
             metric.center,

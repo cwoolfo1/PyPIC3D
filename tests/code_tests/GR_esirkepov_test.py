@@ -21,11 +21,8 @@ import unittest
 import jax
 import jax.numpy as jnp
 
-jax.config.update("jax_enable_x64", True)
-
 from PyPIC3D.boundary_conditions.ghost_cells import update_tiled_vector_ghost_cells
 from PyPIC3D.deposition.Esirkepov import Esirkepov_current
-from PyPIC3D.deposition.GR_direct_deposition import GR_direct_deposition
 from PyPIC3D.deposition.GR_Esirkepov import GR_Esirkepov_current
 from PyPIC3D.deposition.rho import compute_rho
 from PyPIC3D.initialization import (

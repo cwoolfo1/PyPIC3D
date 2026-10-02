@@ -28,39 +28,9 @@ from PyPIC3D.solvers.yee.first_order_yee import (
     update_E,
 )
 from PyPIC3D.utilities.grids import build_tiled_yee_grids
-from tests.kernel_fixtures import field_tiles_from_global, kernel_parameters_from_values
-
-jax.config.update("jax_enable_x64", True)
+from tests.kernel_fixtures import _tile_axis_count, kernel_parameters_from_values, tile_vector_field
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-
-
-def _tile_axis_count(n_cells, cells_per_tile):
-    if int(n_cells) % int(cells_per_tile) != 0:
-        raise ValueError("Shared tile sizes must divide the physical grid dimensions exactly.")
-    return int(n_cells) // int(cells_per_tile)
-
-
-def tile_scalar_field(field, parameter_set, tile_shape, num_guard_cells=2):
-    parameter_set = dict(parameter_set)
-    parameter_set["tile_shape"] = tuple(int(width) for width in tile_shape)
-    parameter_set["field_mesh"] = ghost_cells.make_field_mesh(
-        tuple(
-            int(parameter_set[axis]) // int(width)
-            for axis, width in zip(("Nx", "Ny", "Nz"), tile_shape)
-        )
-    )
-    static_parameters, dynamic_parameters = kernel_parameters_from_values(parameter_set)
-    return field_tiles_from_global(
-        field,
-        static_parameters,
-        dynamic_parameters,
-        num_guard_cells=num_guard_cells,
-    )
-
-
-def tile_vector_field(field, parameter_set, tile_shape, num_guard_cells=2):
-    return tuple(tile_scalar_field(component, parameter_set, tile_shape, num_guard_cells) for component in field)
 
 
 def _update_ghost_cells(field, bc_x, bc_y, bc_z):

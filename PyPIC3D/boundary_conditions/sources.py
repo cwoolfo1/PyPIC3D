@@ -4,8 +4,21 @@ from functools import partial
 import jax
 import jax.numpy as jnp
 
-from .halo_exchange import make_distributed_ghost_updater, make_distributed_ghost_folder
+from .halo_exchange import (
+    make_distributed_ghost_updater, make_distributed_ghost_folder,
+    _is_stacked_tiled_vector_field,
+)
 from PyPIC3D.relativity.core import D_FIELD_LOCATIONS
+
+
+def particle_vector_reflecting_parity(component):
+    """Return specular-reflection parity for a deposited Cartesian component.
+
+    The normal component is odd and the two tangential components are even.
+    The returned tuple is ordered by wall normal as ``(x, y, z)``.
+    """
+
+    return tuple(-1 if axis == int(component) else 1 for axis in range(3))
 
 
 @partial(jax.jit, static_argnames=('static', 'location', 'parity', 'fold', 'particle'))
@@ -26,13 +39,12 @@ def source_boundaries(value, static, *, fold=False, vector=False, reflecting_par
     result = []
     for component, (array, location) in enumerate(zip(value, D_FIELD_LOCATIONS)):
         parity = (
-            tuple(-1 if axis == component else 1 for axis in range(3))
+            particle_vector_reflecting_parity(component)
             if reflecting_parity is None else reflecting_parity[component]
         )
         result.append(scalar_boundaries(
             array, static, location, parity, fold=fold, particle=True
         ))
-    if hasattr(value, 'ndim') and value.ndim == 7:
+    if _is_stacked_tiled_vector_field(value):
         return jnp.stack(result)
     return tuple(result)
-

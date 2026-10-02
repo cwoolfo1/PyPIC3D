@@ -17,7 +17,6 @@ import numpy as np
 from tqdm import tqdm
 
 from PyPIC3D.boundary_conditions.staggered import refresh_fields as refresh_vector
-from PyPIC3D.diagnostics.static_metric import node_weights  # Re-export for diagnostic callers.
 from PyPIC3D.relativity.core import B_FIELD_LOCATIONS, D_FIELD_LOCATIONS
 from PyPIC3D.solvers.gr_static.static_metric import (
     compute_covariant_E, compute_covariant_H, update_B_relativity,
@@ -25,11 +24,12 @@ from PyPIC3D.solvers.gr_static.static_metric import (
 from PyPIC3D.solvers.gr_static.time_loop import time_loop_static_metric
 if __package__:
     from .simulation_parameters import SimulationParameters, build_runtime, shard_array
+    from .current_filter import filter_current
     from .magnetization import measure_magnetization
     from .plasma_injector import empty_particles, inject_pairs
     from .diagnostics import (
-        exterior_mask, constraint_residuals, validate_constraint_settings,
-        check_constraints, assemble, diagnostics,
+        constraint_residuals, validate_constraint_settings,
+        check_constraints, diagnostics,
     )
     from .output import (
         RadialBoundaryBudget, plot_diagnostics, output_metadata,
@@ -37,11 +37,12 @@ if __package__:
     )
 else:
     from simulation_parameters import SimulationParameters, build_runtime, shard_array
+    from current_filter import filter_current
     from magnetization import measure_magnetization
     from plasma_injector import empty_particles, inject_pairs
     from diagnostics import (
-        exterior_mask, constraint_residuals, validate_constraint_settings,
-        check_constraints, assemble, diagnostics,
+        constraint_residuals, validate_constraint_settings,
+        check_constraints, diagnostics,
     )
     from output import (
         RadialBoundaryBudget, plot_diagnostics, output_metadata,
@@ -104,7 +105,7 @@ def apply_sponge(fields, background, p, static, dynamic):
     return (damp(D, zero, D_FIELD_LOCATIONS), damp(B, background, B_FIELD_LOCATIONS))+fields[2:]
 
 
-def make_step(p, species, static, dynamic, background, *, sponge=True,
+def make_step(p, species, static, dynamic, background, *,
               current_filter_passes=0):
     """Check deterministic kernels, leaving rejection sampling outside checkify.
 
@@ -120,16 +121,11 @@ def make_step(p, species, static, dynamic, background, *, sponge=True,
     def evolve(particles, fields):
         transform = None
         if current_filter_passes:
-            if __package__:
-                from .current_filter import filter_current
-            else:
-                from current_filter import filter_current
             transform = lambda current: filter_current(current, fields[6], static, current_filter_passes)
         errors, (particles, fields, boundary) = time_loop_static_metric(
             particles, species, fields, static, dynamic, return_diagnostics=True,
             return_errors=True, current_transform=transform)
-        if sponge:
-            fields = apply_sponge(fields, background, p, static, dynamic)
+        fields = apply_sponge(fields, background, p, static, dynamic)
         finite = finite_state(particles, fields)
         return errors, (particles, fields, boundary), finite
     checked = jax.jit(evolve)
@@ -239,7 +235,7 @@ def evolve(particles, species, fields, key, p, static, dynamic, background, outp
     np.savez(output/'diagnostics.npz', **data)
     save_final_state(output/'final_state.npz', particles, species, fields, target,
                      metadata, dynamic, budget.as_array())
-    plot_diagnostics(data, p, output/'figure6_diagnostics.png')
+    plot_diagnostics(data, output/'figure6_diagnostics.png')
     return particles, fields, key, target
 
 

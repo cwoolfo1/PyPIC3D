@@ -73,7 +73,11 @@ def _axis_permutations(mesh_shape, boundary_conditions):
     return send_positive, send_negative
 
 
-def _default_mesh_for_tile_shape(tile_grid_shape):
+def make_field_mesh(tile_grid_shape):
+    """
+    Build the JAX device mesh for one logical field tile per device.
+    """
+
     tile_grid_shape = tuple(int(width) for width in tile_grid_shape)
     n_devices = math.prod(tile_grid_shape)
     devices = jax.devices()
@@ -89,14 +93,6 @@ def _default_mesh_for_tile_shape(tile_grid_shape):
         devices=devices[:n_devices],
         axis_types=(jax.sharding.AxisType.Auto,) * len(MESH_AXES),
     )
-
-
-def make_field_mesh(tile_grid_shape):
-    """
-    Build the JAX device mesh for one logical field tile per device.
-    """
-
-    return _default_mesh_for_tile_shape(tile_grid_shape)
 
 
 def _validate_scalar_tile_topology(field_tiles, mesh):
@@ -127,7 +123,6 @@ def _local_refresh_reduced_axis(
     axis,
     g,
     boundary_condition,
-    reflecting_parity=None,
 ):
     interior_slice = [slice(None), slice(None), slice(None)]
     interior_slice[axis] = slice(g, g + 1)
@@ -144,14 +139,6 @@ def _local_refresh_reduced_axis(
     elif boundary_condition == BC_CONSTANT:
         tile = tile.at[tuple(lower_slice)].set(jnp.broadcast_to(interior, tile[tuple(lower_slice)].shape))
         tile = tile.at[tuple(upper_slice)].set(jnp.broadcast_to(interior, tile[tuple(upper_slice)].shape))
-    elif boundary_condition == BC_CONDUCTING and reflecting_parity is not None:
-        reflected = reflecting_parity * interior
-        tile = tile.at[tuple(lower_slice)].set(
-            jnp.broadcast_to(reflected, tile[tuple(lower_slice)].shape)
-        )
-        tile = tile.at[tuple(upper_slice)].set(
-            jnp.broadcast_to(reflected, tile[tuple(upper_slice)].shape)
-        )
     else:
         tile = tile.at[tuple(lower_slice)].set(0.0)
         tile = tile.at[tuple(upper_slice)].set(0.0)
@@ -193,38 +180,6 @@ def _refresh_axis(tile, axis, g, axis_name, send_positive, send_negative):
     tile = tile.at[lower_ghost].set(lower_values)
     tile = tile.at[upper_ghost].set(upper_values)
 
-    return tile
-
-
-def _apply_local_reflecting_boundary_axis(
-    tile,
-    axis,
-    g,
-    parity,
-    axis_name,
-    axis_size,
-):
-    """Mirror owner interiors into halos on true global reflecting walls."""
-
-    lower_ghost, upper_ghost, lower_interior, upper_interior = _axis_slices(axis, g)
-    tile_index = jax.lax.axis_index(axis_name)
-
-    tile = jax.lax.cond(
-        tile_index == 0,
-        lambda local_tile: local_tile.at[lower_ghost].set(
-            parity * jnp.flip(local_tile[lower_interior], axis=axis)
-        ),
-        lambda local_tile: local_tile,
-        tile,
-    )
-    tile = jax.lax.cond(
-        tile_index == axis_size - 1,
-        lambda local_tile: local_tile.at[upper_ghost].set(
-            parity * jnp.flip(local_tile[upper_interior], axis=axis)
-        ),
-        lambda local_tile: local_tile,
-        tile,
-    )
     return tile
 
 
@@ -349,21 +304,11 @@ def _local_refresh_scalar_tile(
                 axis,
                 g,
                 boundary_condition,
-                reflecting_parity=parity,
             )
         else:
             tile = _refresh_axis(tile, axis, g, axis_name, positive, negative)
             if boundary_condition == BC_CONSTANT:
                 tile = _apply_local_constant_boundary_axis(tile, axis, g, axis_name, mesh_shape[axis])
-            elif boundary_condition == BC_CONDUCTING and parity is not None:
-                tile = _apply_local_reflecting_boundary_axis(
-                    tile,
-                    axis,
-                    g,
-                    parity,
-                    axis_name,
-                    mesh_shape[axis],
-                )
         if keep_face:
             tile = jax.lax.cond(jax.lax.axis_index(axis_name) == 0,
                 lambda a: a.at[face].set(lower_flux), lambda a: a, tile)
@@ -376,7 +321,6 @@ def _local_fold_reduced_axis(
     axis,
     g,
     boundary_condition,
-    reflecting_parity=None,
 ):
     lower_slice = [slice(None), slice(None), slice(None)]
     lower_slice[axis] = slice(0, g)
@@ -390,12 +334,7 @@ def _local_fold_reduced_axis(
     if boundary_condition == BC_PERIODIC:
         tile = tile.at[tuple(interior_slice)].add(ghost_sum)
     elif boundary_condition == BC_CONDUCTING:
-        contribution = (
-            -ghost_sum
-            if reflecting_parity is None
-            else reflecting_parity * ghost_sum
-        )
-        tile = tile.at[tuple(interior_slice)].add(contribution)
+        tile = tile.at[tuple(interior_slice)].add(-ghost_sum)
     tile = tile.at[tuple(lower_slice)].set(0.0)
     tile = tile.at[tuple(upper_slice)].set(0.0)
 
@@ -410,7 +349,6 @@ def _add_exterior_boundary_fold(
     upper_ghost,
     axis_name,
     axis_size,
-    reflecting_parity=None,
 ):
     lower_index = jax.lax.axis_index(axis_name) == 0
     upper_index = jax.lax.axis_index(axis_name) == axis_size - 1
@@ -420,26 +358,15 @@ def _add_exterior_boundary_fold(
     upper_target = [slice(None), slice(None), slice(None)]
     upper_target[axis] = slice(-2 * g, -g)
 
-    lower_contribution = (
-        -lower_ghost
-        if reflecting_parity is None
-        else reflecting_parity * jnp.flip(lower_ghost, axis=axis)
-    )
-    upper_contribution = (
-        -upper_ghost
-        if reflecting_parity is None
-        else reflecting_parity * jnp.flip(upper_ghost, axis=axis)
-    )
-
     tile = jax.lax.cond(
         lower_index,
-        lambda local_tile: local_tile.at[tuple(lower_target)].add(lower_contribution),
+        lambda local_tile: local_tile.at[tuple(lower_target)].add(-lower_ghost),
         lambda local_tile: local_tile,
         tile,
     )
     tile = jax.lax.cond(
         upper_index,
-        lambda local_tile: local_tile.at[tuple(upper_target)].add(upper_contribution),
+        lambda local_tile: local_tile.at[tuple(upper_target)].add(-upper_ghost),
         lambda local_tile: local_tile,
         tile,
     )
@@ -456,7 +383,6 @@ def _fold_axis(
     boundary_condition,
     send_positive,
     send_negative,
-    reflecting_parity=None,
 ):
     lower_ghost, upper_ghost, lower_interior, upper_interior = _axis_slices(axis, g)
 
@@ -479,7 +405,6 @@ def _fold_axis(
             upper_values,
             axis_name,
             axis_size,
-            reflecting_parity=reflecting_parity,
         )
     tile = tile.at[lower_ghost].set(0.0)
     tile = tile.at[upper_ghost].set(0.0)
@@ -525,7 +450,6 @@ def _local_fold_scalar_tile(
                 axis,
                 g,
                 boundary_condition,
-                reflecting_parity=parity,
             )
         else:
             tile = _fold_axis(
@@ -537,7 +461,6 @@ def _local_fold_scalar_tile(
                 boundary_condition,
                 positive,
                 negative,
-                reflecting_parity=parity,
             )
         if keep_face:
             tile = jax.lax.cond(jax.lax.axis_index(axis_name) == 0,
@@ -679,8 +602,6 @@ def make_distributed_vector_ghost_updater(
     tile_shape,
     boundary_conditions,
     num_guard_cells,
-    *,
-    reflecting_parity=None,
 ):
     """
     Build a shard-mapped vector halo refresher.
@@ -693,20 +614,12 @@ def make_distributed_vector_ghost_updater(
     g = int(num_guard_cells)
     tile_shape = tuple(int(width) for width in tile_shape)
     boundary_conditions = tuple(int(bc) for bc in boundary_conditions)
-    if reflecting_parity is not None:
-        reflecting_parity = tuple(tuple(int(value) for value in component)
-                                  for component in reflecting_parity)
     mesh_shape = tuple(int(width) for width in mesh.devices.shape)
     reduced_axes = _reduced_axes_from_tile_shape(tile_shape, mesh_shape)
     send_positive, send_negative = _axis_permutations(mesh_shape, boundary_conditions)
 
-    if reflecting_parity is None:
-        component_parity = None
-    else:
-        component_parity = jnp.asarray(reflecting_parity)
-
     def local_update(local_tiles):
-        def update_component(local_component, parity):
+        def update_component(local_component):
             tile = local_component[0, 0, 0]
             tile = _local_refresh_scalar_tile(
                 tile,
@@ -716,20 +629,10 @@ def make_distributed_vector_ghost_updater(
                 mesh_shape,
                 send_positive,
                 send_negative,
-                reflecting_parity=parity,
             )
             return tile[jnp.newaxis, jnp.newaxis, jnp.newaxis, :, :, :]
 
-        if component_parity is None:
-            return jax.vmap(
-                lambda component: update_component(component, None),
-                in_axes=0,
-                out_axes=0,
-            )(local_tiles)
-        return jax.vmap(update_component, in_axes=(0, 0), out_axes=0)(
-            local_tiles,
-            component_parity,
-        )
+        return jax.vmap(update_component, in_axes=0, out_axes=0)(local_tiles)
 
     mapped_update = jax.shard_map(
         local_update,
@@ -809,8 +712,6 @@ def make_distributed_vector_ghost_folder(
     tile_shape,
     boundary_conditions,
     num_guard_cells,
-    *,
-    reflecting_parity=None,
 ):
     """
     Build a shard-mapped vector ghost-deposit folder.
@@ -823,20 +724,12 @@ def make_distributed_vector_ghost_folder(
     g = int(num_guard_cells)
     tile_shape = tuple(int(width) for width in tile_shape)
     boundary_conditions = tuple(int(bc) for bc in boundary_conditions)
-    if reflecting_parity is not None:
-        reflecting_parity = tuple(tuple(int(value) for value in component)
-                                  for component in reflecting_parity)
     mesh_shape = tuple(int(width) for width in mesh.devices.shape)
     reduced_axes = _reduced_axes_from_tile_shape(tile_shape, mesh_shape)
     send_positive, send_negative = _axis_permutations(mesh_shape, boundary_conditions)
 
-    if reflecting_parity is None:
-        component_parity = None
-    else:
-        component_parity = jnp.asarray(reflecting_parity)
-
     def local_fold(local_tiles):
-        def fold_component(local_component, parity):
+        def fold_component(local_component):
             tile = local_component[0, 0, 0]
             tile = _local_fold_scalar_tile(
                 tile,
@@ -846,20 +739,10 @@ def make_distributed_vector_ghost_folder(
                 mesh_shape,
                 send_positive,
                 send_negative,
-                reflecting_parity=parity,
             )
             return tile[jnp.newaxis, jnp.newaxis, jnp.newaxis, :, :, :]
 
-        if component_parity is None:
-            return jax.vmap(
-                lambda component: fold_component(component, None),
-                in_axes=0,
-                out_axes=0,
-            )(local_tiles)
-        return jax.vmap(fold_component, in_axes=(0, 0), out_axes=0)(
-            local_tiles,
-            component_parity,
-        )
+        return jax.vmap(fold_component, in_axes=0, out_axes=0)(local_tiles)
 
     mapped_fold = jax.shard_map(
         local_fold,

@@ -1,4 +1,3 @@
-from PyPIC3D.particles.particle_class import TiledParticles, SpeciesConfig
 from PyPIC3D.particles.particle_batching import (
     number_of_particle_batches,
     particle_batch_indices,
@@ -6,7 +5,7 @@ from PyPIC3D.particles.particle_batching import (
 )
 
 from PyPIC3D.boundary_conditions.grid_and_stencil import (
-    collapse_axis_stencil,
+    collapse_tiled_axis_stencil,
     prepare_particle_axis_stencil,
 )
 
@@ -26,13 +25,6 @@ import jax
 import jax.numpy as jnp
 from functools import partial
 
-def _collapse_tiled_axis_stencil(points, weights, local_n, reduced_axis, g):
-    if reduced_axis:
-        collapsed_points = jnp.full((1, points.shape[1]), int(g), dtype=points.dtype)
-        collapsed_weights = jnp.sum(weights, axis=0, keepdims=True)
-        return collapsed_points, collapsed_weights
-    return collapse_axis_stencil(points, weights, local_n, ghost_cells=True)
-
 
 @partial(jax.jit, static_argnames="static_parameters")
 def J_from_rhov(
@@ -48,7 +40,6 @@ def J_from_rhov(
     current_filter = static_parameters.current_filter
     tile_shape = tuple(int(width) for width in static_parameters.tile_shape)
     g = int(static_parameters.guard_cells)
-    g = int(g)
     # determine the number of guard cells and the shape of each of the tiles
 
     tiled_center_grid = dynamic_parameters.grids.tiled_center_grid
@@ -204,22 +195,22 @@ def J_from_rhov(
             )
             # compute the center- and vertex-grid weights for the selected shape
 
-            xpts_center, x_weights_center = _collapse_tiled_axis_stencil(
+            xpts_center, x_weights_center = collapse_tiled_axis_stencil(
                 jnp.asarray(xpts_center), jnp.asarray(x_weights_center), local_Nx, reduced_x, g
             )
-            xpts_vertex, x_weights_vertex = _collapse_tiled_axis_stencil(
+            xpts_vertex, x_weights_vertex = collapse_tiled_axis_stencil(
                 jnp.asarray(xpts_vertex), jnp.asarray(x_weights_vertex), local_Nx, reduced_x, g
             )
-            ypts_center, y_weights_center = _collapse_tiled_axis_stencil(
+            ypts_center, y_weights_center = collapse_tiled_axis_stencil(
                 jnp.asarray(ypts_center), jnp.asarray(y_weights_center), local_Ny, reduced_y, g
             )
-            ypts_vertex, y_weights_vertex = _collapse_tiled_axis_stencil(
+            ypts_vertex, y_weights_vertex = collapse_tiled_axis_stencil(
                 jnp.asarray(ypts_vertex), jnp.asarray(y_weights_vertex), local_Ny, reduced_y, g
             )
-            zpts_center, z_weights_center = _collapse_tiled_axis_stencil(
+            zpts_center, z_weights_center = collapse_tiled_axis_stencil(
                 jnp.asarray(zpts_center), jnp.asarray(z_weights_center), local_Nz, reduced_z, g
             )
-            zpts_vertex, z_weights_vertex = _collapse_tiled_axis_stencil(
+            zpts_vertex, z_weights_vertex = collapse_tiled_axis_stencil(
                 jnp.asarray(zpts_vertex), jnp.asarray(z_weights_vertex), local_Nz, reduced_z, g
             )
             # collapse each center and vertex stencil independently on reduced axes

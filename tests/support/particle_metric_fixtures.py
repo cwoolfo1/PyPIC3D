@@ -13,7 +13,6 @@ from PyPIC3D.pusher.hybrid_boris_geodesic import magnetic_boris_rotation, gather
 from PyPIC3D.particles.particle_class import SpeciesConfig, TiledParticles
 from tests.kernel_fixtures import kernel_parameters, empty_tiled_vector
 
-jax.config.update('jax_enable_x64', True)
 PERIOD = 2*np.pi*np.sqrt(1.16)
 
 

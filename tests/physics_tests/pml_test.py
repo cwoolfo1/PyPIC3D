@@ -27,57 +27,7 @@ from PyPIC3D.solvers.yee.first_order_yee import (
 )
 from PyPIC3D.utilities.grids import build_yee_grid
 from PyPIC3D.diagnostics.diagnostic_quantities import compute_energy
-from tests.kernel_fixtures import kernel_parameters_from_values
-
-jax.config.update("jax_enable_x64", True)
-
-
-def _tile_axis_count(n_cells, cells_per_tile):
-    if int(n_cells) % int(cells_per_tile) != 0:
-        raise ValueError("Shared tile sizes must divide the physical grid dimensions exactly.")
-    return int(n_cells) // int(cells_per_tile)
-
-
-def tile_scalar_field(field, parameter_set, tile_shape, num_guard_cells=2):
-    tile_nx, tile_ny, tile_nz = [int(width) for width in tile_shape]
-    g = int(num_guard_cells)
-    Nx = int(field.shape[0]) - 2
-    Ny = int(field.shape[1]) - 2
-    Nz = int(field.shape[2]) - 2
-    ntx = _tile_axis_count(Nx, tile_nx)
-    nty = _tile_axis_count(Ny, tile_ny)
-    ntz = _tile_axis_count(Nz, tile_nz)
-    # get the number of tiles along each axis
-
-    interior_tiles = field[1:-1, 1:-1, 1:-1]
-    interior_tiles = interior_tiles.reshape(ntx, tile_nx, nty, tile_ny, ntz, tile_nz)
-    interior_tiles = interior_tiles.transpose(0, 2, 4, 1, 3, 5)
-    # reshape the interior of the field into tiles, and then transpose to get the correct order of axes
-
-    field_tiles = jnp.zeros(
-        (
-            ntx,
-            nty,
-            ntz,
-            tile_nx + 2 * g,
-            tile_ny + 2 * g,
-            tile_nz + 2 * g,
-        ),
-        dtype=field.dtype,
-    )
-    field_tiles = field_tiles.at[:, :, :, g:-g, g:-g, g:-g].set(interior_tiles)
-    # populate the field tiles with the interior tiles, leaving the guard cells as zeros
-
-    parameter_set = dict(parameter_set)
-    parameter_set["tile_shape"] = tuple(int(width) for width in tile_shape)
-    parameter_set["field_mesh"] = ghost_cells.make_field_mesh((ntx, nty, ntz))
-    static_parameters, _ = kernel_parameters_from_values(parameter_set)
-    return ghost_cells.update_tiled_ghost_cells(field_tiles, static_parameters, g)
-    # update the guard cells of the tiled field using the ghost_cells function
-
-
-def tile_vector_field(field, parameter_set, tile_shape, num_guard_cells=2):
-    return tuple(tile_scalar_field(component, parameter_set, tile_shape, num_guard_cells) for component in field)
+from tests.kernel_fixtures import kernel_parameters_from_values, tile_vector_field
 
 
 def _update_ghost_cells(field, bc_x, bc_y, bc_z):

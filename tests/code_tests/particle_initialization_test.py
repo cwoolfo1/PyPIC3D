@@ -3,7 +3,6 @@ import tempfile
 import unittest
 from types import SimpleNamespace
 
-import jax
 import jax.numpy as jnp
 import numpy as np
 
@@ -12,9 +11,6 @@ from PyPIC3D.particles.particle_class import SpeciesConfig, TiledParticles
 from PyPIC3D.utilities.parameters import GridParameters
 from PyPIC3D.utilities.grids import build_yee_grid
 from tests.kernel_fixtures import build_tiled_particles, particle_parameters_from_tile_values, particle_species
-
-
-jax.config.update("jax_enable_x64", True)
 
 
 class TestTiledParticleInitialization(unittest.TestCase):

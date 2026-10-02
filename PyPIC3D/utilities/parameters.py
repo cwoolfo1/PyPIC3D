@@ -118,23 +118,17 @@ def build_static_parameters(static_config):
               static_config.get("particle_pusher") == "hybrid_boris_geodesic")
     if static_config.get("guard_cells") is None:
         static_config["guard_cells"] = 3 if hybrid else 2
-    if hybrid and int(static_config["guard_cells"]) < 3:
+    guard_cells = int(static_config["guard_cells"])
+    if guard_cells < 1:
+        raise ValueError("Tiled fields require at least one guard cell.")
+    if hybrid and guard_cells < 3:
         raise ValueError("Hybrid Hermite particle metrics require guard_cells >= 3")
     tile_shape = _tile_shape(static_config)
     particle_batch_size = static_config.get("particle_batch_size", 1)
-    if isinstance(particle_batch_size, bool) or not isinstance(particle_batch_size, Integral):
-        raise ValueError("particle_batch_size must be a positive integer.")
-    if particle_batch_size <= 0:
+    if (isinstance(particle_batch_size, bool) or not isinstance(particle_batch_size, Integral)
+            or particle_batch_size <= 0):
         raise ValueError("particle_batch_size must be a positive integer.")
 
-    bc = _axis_tuple(static_config['boundary_conditions'])
-    pbc = _axis_tuple(static_config.get('particle_boundary_conditions', (0,0,0)))
-    if 4 in bc or 4 in pbc or 'polar_cap_angle' in static_config:
-        raise ValueError(
-            "Polar boundaries have been removed. Use conducting field boundaries "
-            "and reflecting particles on a regular domain with metric guard nodes "
-            "away from the axes; set the angular bounds explicitly."
-        )
     return StaticParameters(
         name=static_config.get("name", "Default Simulation"),
         output_dir=static_config.get("output_dir", "."),
@@ -152,7 +146,7 @@ def build_static_parameters(static_config):
         metric_mass=float(static_config.get("metric_mass", 1.0)),
         metric_spin=float(static_config.get("metric_spin", 0.0)),
         shape_factor=int(static_config["shape_factor"]),
-        guard_cells=int(static_config["guard_cells"]),
+        guard_cells=guard_cells,
         tile_shape=tile_shape,
         electrostatic_schwarz_tol=float(static_config.get("electrostatic_schwarz_tol", 1.0e-6)),
         electrostatic_schwarz_max_iterations=int(static_config.get("electrostatic_schwarz_max_iterations", 500)),
@@ -164,9 +158,7 @@ def build_static_parameters(static_config):
         supergaussian_active=bool(static_config.get("supergaussian_active", False)),
         supergaussian_layers=tuple(static_config.get("supergaussian_layers", ())),
         boundary_conditions=_axis_tuple(static_config["boundary_conditions"]),
-        particle_boundary_conditions=_axis_tuple(
-            static_config.get("particle_boundary_conditions", {"x": 0, "y": 0, "z": 0})
-        ),
+        particle_boundary_conditions=_axis_tuple(static_config.get("particle_boundary_conditions", (0, 0, 0))),
         field_mesh=_field_mesh(static_config, tile_shape),
         horizon_field_cells=int(horizon_cells),
     )
@@ -243,13 +235,3 @@ def dynamic_parameters_for_output(dynamic_parameters):
         for key, value in dynamic_items.items()
         if key not in skip
     }
-
-
-def boundary_dict(static_parameters):
-    bc_x, bc_y, bc_z = static_parameters.boundary_conditions
-    return {"x": bc_x, "y": bc_y, "z": bc_z}
-
-
-def particle_boundary_dict(static_parameters):
-    bc_x, bc_y, bc_z = static_parameters.particle_boundary_conditions
-    return {"x": bc_x, "y": bc_y, "z": bc_z}

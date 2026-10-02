@@ -12,7 +12,6 @@ from PyPIC3D.initialization import (
     _encode_field_bc,
     _encode_particle_bc,
     _resolve_particle_batch_size,
-    _validate_requested_particle_batch_size,
     default_parameters,
     initialize_simulation,
     setup_write_dir,
@@ -29,8 +28,9 @@ from PyPIC3D.boundary_conditions.grid_and_stencil import (
 )
 from PyPIC3D.particles.particle_class import TiledParticles
 from PyPIC3D.utilities.grids import build_yee_grid
+from PyPIC3D.utilities.parameters import build_static_parameters
+from tests.kernel_fixtures import kernel_parameters
 
-jax.config.update("jax_enable_x64", True)
 
 class TestInitializationFunctions(unittest.TestCase):
 
@@ -73,7 +73,7 @@ class TestInitializationFunctions(unittest.TestCase):
         self.assertEqual(sim["particle_x_bc"], "periodic")
         self.assertEqual(sim["particle_y_bc"], "periodic")
         self.assertEqual(sim["particle_z_bc"], "periodic")
-        self.assertEqual(sim["guard_cells"], 2)
+        self.assertIsNone(sim["guard_cells"])  # resolved by build_static_parameters
         self.assertIsNone(sim["particle_batch_size"])
         self.assertFalse(plotting["plotchargedensity"])
         self.assertIn('eps', dynamic)
@@ -172,7 +172,7 @@ class TestInitializationFunctions(unittest.TestCase):
         for invalid_batch_size in (0, -1, 1.5, True):
             with self.subTest(particle_batch_size=invalid_batch_size):
                 with self.assertRaisesRegex(ValueError, "positive integer"):
-                    _validate_requested_particle_batch_size(invalid_batch_size)
+                    build_static_parameters(dict(kernel_parameters()[0]._asdict(), particle_batch_size=invalid_batch_size))
 
     def test_encode_field_bc_accepts_constant_boundary(self):
         self.assertEqual(_encode_field_bc("constant"), BC_CONSTANT)

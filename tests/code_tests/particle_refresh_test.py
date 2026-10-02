@@ -1,6 +1,5 @@
 import unittest
 
-import jax
 import jax.numpy as jnp
 
 from PyPIC3D.boundary_conditions.grid_and_stencil import (
@@ -14,9 +13,6 @@ from PyPIC3D.particles.particle_tile_communication import (
     refresh_tiled_particle_tiles,
     update_tiled_particle_positions,
 )
-
-
-jax.config.update("jax_enable_x64", True)
 
 
 class TestTiledParticleRefresh(unittest.TestCase):

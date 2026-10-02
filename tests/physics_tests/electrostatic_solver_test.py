@@ -15,9 +15,6 @@ from PyPIC3D.solvers.electrostatic.electrostatic_yee import (
 from tests.kernel_fixtures import kernel_parameters
 
 
-jax.config.update("jax_enable_x64", True)
-
-
 def _tile_field(interior, tile_grid_shape, tile_shape, g):
     ntx, nty, ntz = tile_grid_shape
     tile_nx, tile_ny, tile_nz = tile_shape

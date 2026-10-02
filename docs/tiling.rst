@@ -1,5 +1,5 @@
 Domain Decomposition
-======
+====================
 
 PyPIC3D uses one shared Cartesian decomposition for fields and particles. Each
 logical tile owns a physical interior, surrounding guard cells, fixed-capacity
@@ -69,6 +69,25 @@ the named ``tile_x``, ``tile_y``, and ``tile_z`` mesh axes. Reduced one-cell
 dimensions remain in the tile layout and are handled without removing axes or
 changing array rank.
 
+Particle Boundary Folds
+-----------------------
+
+At a reflecting particle wall, every solver folds particle deposits by the
+nodal method of images about the wall nodes, in ``boundary_conditions/sources.py``
+and ``halo_exchange._staggered_conducting_axis``:
+
+- Charge and fluid moments sit on collocated C nodes. The upper wall node at
+  ``g+n`` is an owned physical node. A deposit in the exterior guard region is
+  added to its mirror owner, and a wall node receives its coincident image,
+  so its point density doubles. Integrals of these nodal densities use
+  trapezoid end weights on the wall nodes (see
+  ``diagnostics.static_metric.node_weights``).
+- Currents sit at the Yee E-component locations. Their images are odd in the
+  component normal to the wall and even in the two tangential components.
+
+Halos are then refreshed with the same images. No metric volume factors enter
+the fold.
+
 Device Topology
 ---------------
 
@@ -100,9 +119,9 @@ Confirm the two devices are available to JAX before launching a long run:
    CUDA_VISIBLE_DEVICES=0,1 JAX_PLATFORMS=cuda \
      python -c "import jax; print(jax.default_backend(), jax.devices())"
 
-The legacy ``GPUs`` configuration setting remains accepted so existing input
-files continue to load, but it is not used for device selection. The JAX
-environment variables above determine the backend and visible devices.
+The ``GPUs`` configuration setting is accepted but not used for device
+selection. The JAX environment variables above determine the backend and
+visible devices.
 
 The tile topology must also contain two tiles. For a ``300 x 1 x 300`` x-z
 domain, splitting the periodic x direction keeps the full current-sheet

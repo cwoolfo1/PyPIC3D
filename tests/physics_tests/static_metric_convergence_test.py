@@ -16,9 +16,6 @@ from PyPIC3D.solvers.gr_static.static_metric import update_B_relativity
 from tests.kernel_fixtures import empty_tiled_vector, kernel_parameters
 
 
-jax.config.update("jax_enable_x64", True)
-
-
 def _single_particle_species(charge):
     return SpeciesConfig(
         charge=jnp.asarray([charge]),

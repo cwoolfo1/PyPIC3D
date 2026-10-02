@@ -17,9 +17,6 @@ from PyPIC3D.utilities.filters import (
 )
 
 
-jax.config.update("jax_enable_x64", True)
-
-
 def _mesh(mesh_shape):
     n_devices = int(jnp.prod(jnp.asarray(mesh_shape)))
     devices = jax.devices()

@@ -113,7 +113,6 @@ def write_movie(series, indices, output_path, color_limit, fps, dpi):
         with writer.saving(figure, str(output_path), dpi=dpi):
             for index in indices:
                 time, x, z, magnetic = read_magnetic_frame(series, index)
-                smoothing_width = SMOOTHING_SIGMA_CELLS * (x[1] - x[0]) / SKIN_DEPTH
                 x, z, bx, bz, magnitude = field_line_quantities(x, z, magnetic)
                 axis.clear()
                 axis.set_facecolor("black")

@@ -17,45 +17,12 @@ from PyPIC3D.particles.particle_class import SpeciesConfig, TiledParticles
 from PyPIC3D.particles.particle_tile_communication import refresh_tiled_particle_tiles
 from PyPIC3D.diagnostics.output_adapters import assemble_tiled_vector_field
 from PyPIC3D.utilities.grids import build_tiled_yee_grids, build_yee_grid
-from tests.kernel_fixtures import field_tiles_from_global, kernel_parameters_from_values
-
-
-jax.config.update("jax_enable_x64", True)
-
-
-def _tile_axis_count(n_cells, cells_per_tile):
-    if int(n_cells) % int(cells_per_tile) != 0:
-        raise ValueError("Shared tile sizes must divide the physical grid dimensions exactly.")
-    return int(n_cells) // int(cells_per_tile)
-# compute the number of tiles along each axis, ensuring that the number of cells is divisible by the number of cells per tile.
-
-
-def tile_scalar_field(field, parameter_set, tile_shape, num_guard_cells=2):
-    parameter_set = dict(parameter_set)
-    parameter_set["tile_shape"] = tuple(int(width) for width in tile_shape)
-    parameter_set["field_mesh"] = ghost_cells.make_field_mesh(
-        tuple(
-            int(parameter_set[axis]) // int(width)
-            for axis, width in zip(("Nx", "Ny", "Nz"), tile_shape)
-        )
-    )
-    static_parameters, dynamic_parameters = kernel_parameters_from_values(parameter_set)
-    return field_tiles_from_global(
-        field,
-        static_parameters,
-        dynamic_parameters,
-        num_guard_cells=num_guard_cells,
-    )
-
-
-def tile_vector_field(field, parameter_set, tile_shape, num_guard_cells=2):
-    return tuple(tile_scalar_field(component, parameter_set, tile_shape, num_guard_cells) for component in field)
+from tests.kernel_fixtures import _tile_axis_count, kernel_parameters_from_values
 
 
 def _field_static_parameters(parameter_set):
     static_parameters, _ = kernel_parameters_from_values(parameter_set)
     return static_parameters
-    # call tile_scalar_field for each component of the vector field and return a tuple of tiled components
 
 
 def _update_ghost_cells(field, bc_x, bc_y, bc_z):
@@ -357,7 +324,6 @@ class TestDirectDeposition(unittest.TestCase):
             self.assertEqual(tile_component.ndim, 6)
             # ensure that the tiled current density components have 6 dimensions (tile_x, tile_y, tile_z, tile_nx, tile_ny, tile_nz)
         for reference_component, tiled_component in zip(J_reference, J_from_tiles):
-            error = jnp.max(jnp.abs(tiled_component - reference_component))
             self.assertTrue(jnp.allclose(tiled_component, reference_component, rtol=5.0e-15, atol=5.0e-15))
             # compare the assembled tiled current density components to the reference components from the single-tile deposition, ensuring they are close within a specified tolerance
 
@@ -663,7 +629,6 @@ class TestDirectDeposition(unittest.TestCase):
             "particle_tile_ny": 3,
             "particle_tile_nz": 2,
         }
-        dynamic_values = {"C": 3.0e8, "alpha": 0.6}
         particles = self._particles_from_slots(
             parameter_set,
             simulation_parameters,
@@ -742,7 +707,6 @@ class TestDirectDeposition(unittest.TestCase):
             "particle_tile_ny": 3,
             "particle_tile_nz": 2,
         }
-        dynamic_values = {"C": 3.0e8, "alpha": 1.0}
         particles = self._particles_from_slots(
             parameter_set,
             simulation_parameters,

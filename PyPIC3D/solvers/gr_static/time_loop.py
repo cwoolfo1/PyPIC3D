@@ -1,5 +1,8 @@
+from jax.experimental import checkify
+
 from PyPIC3D.deposition.GR_direct_deposition import GR_direct_deposition
 from PyPIC3D.deposition.GR_Esirkepov import GR_Esirkepov_current
+from PyPIC3D.diagnostics.static_metric import step_diagnostics
 from PyPIC3D.particles.particle_tile_communication import refresh_tiled_particle_tiles
 from PyPIC3D.pusher.hybrid_boris_geodesic import hybrid_boris_geodesic_push
 from PyPIC3D.utilities.field_helpers import add_external_fields
@@ -65,7 +68,6 @@ def time_loop_static_metric(
     push_args = (particles, species_config, push_D, push_B, metric,
                static_parameters, dynamic_parameters)
     if return_errors:
-        from jax.experimental import checkify
         push_errors, (particles, centered_particles) = checkify.checkify(
             lambda pts: hybrid_boris_geodesic_push(pts, *push_args[1:]))(particles)
     else:
@@ -93,7 +95,6 @@ def time_loop_static_metric(
 
     boundary_diagnostics = None
     if return_diagnostics:
-        from PyPIC3D.diagnostics.static_metric import step_diagnostics
         boundary_diagnostics = step_diagnostics(particles_n, particles, J_n_plushalf,
                                                 species_config, metric, static_parameters,
                                                 dynamic_parameters)

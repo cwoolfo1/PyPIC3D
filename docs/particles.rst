@@ -101,6 +101,23 @@ For the ``static_metric`` solver ``u`` is the covariant spatial four-velocity
 ``u_i`` in the active chart, so ``initial_vx/vy/vz`` are read as ``u_1``,
 ``u_2`` and ``u_3`` and are not three-velocity components.
 
+Particle Output
+---------------
+
+openPMD particle series contain ``position``, ``momentum``, ``weighting``,
+``charge``, ``mass``, and a scalar ``gamma`` record for every solver.
+
+For flat runs, ``gamma`` is the Lorentz factor of the stored velocity,
+``momentum`` is ``m*gamma*v``, and runtime snapshots shift positions back by
+``u*dt/2`` so that position and velocity refer to the same time level.
+
+For the ``static_metric`` solver, ``momentum`` is ``m*u_i``, the covariant
+spatial components in units with ``c=1``; ``u_i`` already includes the
+Lorentz factor. ``gamma`` is ``sqrt(1 + gamma^ij u_i u_j)``, computed by
+``relativity.interpolate_metric.particle_lorentz_factor`` with the same
+Hermite metric sample the pusher uses. Positions are written as stored, with
+no half-step shift.
+
 Shape Factors
 -------------
 

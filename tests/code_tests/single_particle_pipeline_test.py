@@ -29,9 +29,6 @@ from PyPIC3D.utilities.filters import digital_filter, digital_filter_vector
 from tests.kernel_fixtures import build_tiled_particles, empty_tiled_scalar, empty_tiled_vector, kernel_parameters, particle_species
 
 
-jax.config.update("jax_enable_x64", True)
-
-
 def _runtime_parameters(
     *,
     shape_factor=1,
@@ -485,7 +482,6 @@ def _manual_esirkepov_current_tiles_1d(particles, species_config, static_paramet
     tile, old_x, u = _particle_state(particles)
     tx, ty, tz = tile
     tile_nx, tile_ny, tile_nz = [int(width) for width in static_parameters.tile_shape]
-    local_Nx = tile_nx + 2 * g
     x_grid = dynamic_parameters.grids.tiled_center_grid[0][tx, ty, tz]
 
     old_position = jnp.asarray([old_x[0]])

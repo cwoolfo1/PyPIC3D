@@ -9,21 +9,13 @@ from PyPIC3D.boundary_conditions.ghost_cells import (
     update_tiled_vector_ghost_cells,
 )
 from PyPIC3D.boundary_conditions.grid_and_stencil import (
-    collapse_axis_stencil,
+    collapse_tiled_axis_stencil,
     prepare_particle_axis_stencil,
 )
 from PyPIC3D.deposition.shapes import get_first_order_weights, get_second_order_weights
 from PyPIC3D.relativity.core import contravariant_three_velocity
 from PyPIC3D.relativity.interpolate_metric import interpolate_metric, safe_inactive_positions
 from PyPIC3D.utilities.filters import tiled_bilinear_filter_vector, tiled_digital_filter_vector
-
-
-def _collapse_tiled_axis_stencil(points, weights, local_n, reduced_axis, g):
-    if reduced_axis:
-        collapsed_points = jnp.full((1, points.shape[1]), int(g), dtype=points.dtype)
-        collapsed_weights = jnp.sum(weights, axis=0, keepdims=True)
-        return collapsed_points, collapsed_weights
-    return collapse_axis_stencil(points, weights, local_n, ghost_cells=True)
 
 
 @partial(jax.jit, static_argnames="static_parameters")
@@ -203,22 +195,22 @@ def GR_direct_deposition(
         y_weights_face = jnp.asarray(y_weights_face)
         z_weights_face = jnp.asarray(z_weights_face)
 
-        xpts_node, x_weights_node = _collapse_tiled_axis_stencil(
+        xpts_node, x_weights_node = collapse_tiled_axis_stencil(
             xpts_node, x_weights_node, local_Nx, reduced_x, g
         )
-        xpts_face, x_weights_face = _collapse_tiled_axis_stencil(
+        xpts_face, x_weights_face = collapse_tiled_axis_stencil(
             xpts_face, x_weights_face, local_Nx, reduced_x, g
         )
-        ypts_node, y_weights_node = _collapse_tiled_axis_stencil(
+        ypts_node, y_weights_node = collapse_tiled_axis_stencil(
             ypts_node, y_weights_node, local_Ny, reduced_y, g
         )
-        ypts_face, y_weights_face = _collapse_tiled_axis_stencil(
+        ypts_face, y_weights_face = collapse_tiled_axis_stencil(
             ypts_face, y_weights_face, local_Ny, reduced_y, g
         )
-        zpts_node, z_weights_node = _collapse_tiled_axis_stencil(
+        zpts_node, z_weights_node = collapse_tiled_axis_stencil(
             zpts_node, z_weights_node, local_Nz, reduced_z, g
         )
-        zpts_face, z_weights_face = _collapse_tiled_axis_stencil(
+        zpts_face, z_weights_face = collapse_tiled_axis_stencil(
             zpts_face, z_weights_face, local_Nz, reduced_z, g
         )
 

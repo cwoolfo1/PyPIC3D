@@ -2,6 +2,7 @@
 import jax
 import jax.numpy as jnp
 
+from PyPIC3D.relativity.core import D_FIELD_LOCATIONS
 from .grid_and_stencil import BC_CONDUCTING, BC_CONSTANT
 from .halo_exchange import (
     MESH_AXES, SCALAR_TILE_SPEC, VECTOR_TILE_SPEC,
@@ -11,36 +12,17 @@ from .halo_exchange import (
     make_distributed_zero_boundary, make_distributed_constant_boundary,
     _is_stacked_tiled_vector_field,
 )
-from .ownership import staggered_mirror
-from .sources import source_boundaries
+from .sources import particle_vector_reflecting_parity, source_boundaries
 
 BC_TYPE_FIELD = 0
 BC_TYPE_PARTICLE = 1
-_PARTICLE_SCALAR_REFLECTING_PARITY = (1, 1, 1)
 
 
-def particle_vector_reflecting_parity(component):
-    """Return specular-reflection parity for a deposited Cartesian component.
+def _reject_field_reflecting_parity(reflecting_parity):
+    """Reflection parity describes particle deposits; field walls ignore it."""
 
-    The normal component is odd and the two tangential components are even.
-    The returned tuple is ordered by wall normal as ``(x, y, z)``.
-    """
-
-    return tuple(-1 if axis == int(component) else 1 for axis in range(3))
-
-
-def _particle_reflecting_parity(bc_type, reflecting_parity, vector):
-    """Default particle-deposit parity: even scalars, odd normal vector components."""
-
-    if int(bc_type) == BC_TYPE_FIELD:
-        if reflecting_parity is not None:
-            raise ValueError("reflecting_parity is only valid for particle boundary conditions.")
-        return None
     if reflecting_parity is not None:
-        return reflecting_parity
-    if vector:
-        return tuple(particle_vector_reflecting_parity(component) for component in range(3))
-    return _PARTICLE_SCALAR_REFLECTING_PARITY
+        raise ValueError("reflecting_parity is only valid for particle boundary conditions.")
 
 
 def _as_python_int(value):
@@ -96,13 +78,12 @@ def update_tiled_ghost_cells(
 
     tile_shape = tuple(int(width) for width in static_parameters.tile_shape)
     mesh = static_parameters.field_mesh
-    reflecting_parity = _particle_reflecting_parity(bc_type, reflecting_parity, vector=False)
+    _reject_field_reflecting_parity(reflecting_parity)
     updater = make_distributed_ghost_updater(
         mesh,
         tile_shape,
         _boundary_conditions_for_type(static_parameters, bc_type),
         num_guard_cells,
-        reflecting_parity=reflecting_parity,
         location=location,
         preserve_exterior=preserve_exterior,
     )
@@ -133,17 +114,17 @@ def update_tiled_vector_ghost_cells(
         return source_boundaries(field_tiles, static_parameters._replace(guard_cells=int(num_guard_cells)),
                                  fold=False, vector=True, reflecting_parity=reflecting_parity)
 
-    reflecting_parity = _particle_reflecting_parity(bc_type, reflecting_parity, vector=True)
-    # resolved before the per-component route so a normal component keeps its odd parity
+    _reject_field_reflecting_parity(reflecting_parity)
+    # Field boundaries only: conducting walls with staggered locations, or
+    # preserved exterior slabs, refresh each component at its own location.
     preserve_any = any(preserve_exterior) if isinstance(preserve_exterior, tuple) else preserve_exterior
     if (preserve_any or locations is not None and
             BC_CONDUCTING in _boundary_conditions_for_type(static_parameters, bc_type)):
         locations = (None,) * len(field_tiles) if locations is None else locations
         result = tuple(update_tiled_ghost_cells(
             value, static_parameters, num_guard_cells, bc_type,
-            reflecting_parity=None if reflecting_parity is None else reflecting_parity[i],
             location=location, preserve_exterior=preserve_exterior)
-            for i, (value, location) in enumerate(zip(field_tiles, locations)))
+            for value, location in zip(field_tiles, locations))
         return jnp.stack(result) if _is_stacked_tiled_vector_field(field_tiles) else result
 
     tile_shape = tuple(int(width) for width in static_parameters.tile_shape)
@@ -153,7 +134,6 @@ def update_tiled_vector_ghost_cells(
         tile_shape,
         _boundary_conditions_for_type(static_parameters, bc_type),
         num_guard_cells,
-        reflecting_parity=reflecting_parity,
     )
     result = updater(field_tiles)
     return result
@@ -183,7 +163,6 @@ def apply_tiled_zero_boundary(field_tiles, static_parameters, axis, num_guard_ce
 
 def apply_tiled_pec_boundary(fields, static_parameters):
     """Yee tangential electric clamp at the physical endpoints, g and g+n."""
-    from PyPIC3D.relativity.core import D_FIELD_LOCATIONS
     result = list(fields)
     for axis, bc in enumerate(static_parameters.boundary_conditions):
         if bc == BC_CONDUCTING:
@@ -248,13 +227,12 @@ def fold_tiled_ghost_cells(
 
     tile_shape = tuple(int(width) for width in static_parameters.tile_shape)
     mesh = static_parameters.field_mesh
-    reflecting_parity = _particle_reflecting_parity(bc_type, reflecting_parity, vector=False)
+    _reject_field_reflecting_parity(reflecting_parity)
     folder = make_distributed_ghost_folder(
         mesh,
         tile_shape,
         _boundary_conditions_for_type(static_parameters, bc_type),
         num_guard_cells,
-        reflecting_parity=reflecting_parity,
     )
     result = folder(field_tiles)
     return result
@@ -280,13 +258,12 @@ def fold_tiled_vector_ghost_cells(
 
     tile_shape = tuple(int(width) for width in static_parameters.tile_shape)
     mesh = static_parameters.field_mesh
-    reflecting_parity = _particle_reflecting_parity(bc_type, reflecting_parity, vector=True)
+    _reject_field_reflecting_parity(reflecting_parity)
     folder = make_distributed_vector_ghost_folder(
         mesh,
         tile_shape,
         _boundary_conditions_for_type(static_parameters, bc_type),
         num_guard_cells,
-        reflecting_parity=reflecting_parity,
     )
     result = folder(field_tiles)
     return result

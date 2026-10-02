@@ -139,10 +139,8 @@ a selectable numerical mode.
 Boundary Conditions and PML
 ---------------------------
 
-The former ``polar`` boundary implementation and numeric boundary code 4 have
-been removed. Spherical runs use explicit angular bounds, conducting fields,
-and reflecting particles on a regular chart. Metric guard nodes must stay
-away from the axes; the former exact-axis finite-volume mode is unsupported.
+Spherical runs use explicit angular bounds, conducting fields, and reflecting
+particles on a regular chart. Metric guard nodes must stay away from the axes.
 
 Field boundaries are set with ``x_bc``, ``y_bc``, and ``z_bc``:
 
@@ -150,10 +148,10 @@ Field boundaries are set with ``x_bc``, ``y_bc``, and ``z_bc``:
 - ``conducting``
 
 Standard Yee conducting boundaries zero tangential electric components at
-``g`` and ``g+n`` on the first and last tiles. The upper wall used to occupy
-``g+n-1``; the effective cavity width is now ``N*dx`` instead of ``(N-1)*dx``.
-Upper C endpoints are owned physical nodes even though stored in a halo slot;
-neighbor exchange preserves them, including transverse communication.
+``g`` and ``g+n`` on the first and last tiles, so the cavity width is
+``N*dx``. Upper C endpoints are owned physical nodes even though stored in a
+halo slot; neighbor exchange preserves them, including transverse
+communication.
 
 For the static-metric finite-difference solver, ``conducting`` instead imposes
 FIDO-field constraints on the evolved contravariant vectors:
@@ -169,18 +167,47 @@ At a coordinate face ``x^a=constant``, the spatial-metric unit normal is
 ``n^i=gamma^{ia}/sqrt(gamma^{aa})``. A physically normal D can therefore have
 nonzero coordinate-tangential components. Surface tensors are taken from the
 existing C/V metric samples, with density-weighted component transfers to a
-common location before projection. Reflections use ``2G-I`` for D and
-``2F-I`` for B. At independent intersections D vanishes and B lies in the
-common tangent space, defined by the metric Gram matrix. Exterior corner
-reflections compose in x, y, z order.
+common location before projection.
 
-These are local explicit projections: projector algebra is exact at the
-reconstruction points; interpolating the stored staggered fields back to a
-common surface introduces truncation error. There is no coupled boundary
-solve. ``staggered.refresh_fields`` requires ``metric`` when applying a D/B
-conducting boundary. Initialization, previous time levels, updated stages,
-horizon/sponge processing, and temporary total fields for particle gathering
-all use this adapter. Particle reflection and source folding are unchanged.
+``enforce_pec_D`` and ``enforce_pec_B`` in ``boundary_conditions/pec.py``
+apply these constraints on the native Yee nodes:
+
+- On a wall, each native D component keeps only its row of the normal
+  projection, ``D^i <- (gamma^{ia}/gamma^{aa}) D^a``, and each native B
+  component has that row removed. D vanishes on nodes where two or more
+  walls intersect. Each B component has a single C axis, so it meets at most
+  one wall.
+- Where an off-diagonal ``gamma^{pq}`` couples the normals of two walls
+  meeting at an edge, the D wall rows beside the edge read each other through
+  the component transfer. ``solve_D_edges`` solves each coupled pair exactly
+  instead of taking a single pass over a common snapshot.
+- Exterior ghosts are filled by reflection about the wall nodes, ``2G-I``
+  for D and ``2F-I`` for B, composed in x, y, z order at corners. For B, the
+  ghost pair beside each edge is coupled the same way; ``solve_B_edges``
+  solves it from two reflection sweeps, and a further sweep fills
+  triple-corner ghosts when all three axes are conducting.
+- Internal tile boundaries are communicated, never projected; halo exchange
+  preserves the conducting exterior slabs.
+
+Each conducting axis of a ``static_metric`` run needs at least
+``guard_cells + 1`` cells, so that mirror images about one wall do not reach
+the opposite wall. Initialization rejects narrower axes.
+
+The projector algebra is exact at the reconstruction points; interpolating
+the stored staggered fields to a common surface introduces truncation error.
+
+``staggered.refresh_fields`` requires ``metric`` when applying a D/B
+conducting boundary; it freezes any configured horizon layers before the
+projection. D and B are refreshed when they are produced:
+``update_D_relativity`` and ``update_B_relativity`` return refreshed fields,
+and initialization refreshes the initial and previous-time-level D and B.
+External fields are refreshed once at initialization with
+``refresh_fields(..., 'D')`` and ``refresh_fields(..., 'B')``. The time loop
+relies on this contract. It does not refresh D or B again, and it does not
+refresh the sum of evolved and external fields used for the particle push;
+both terms are already refreshed and the refresh is linear. Particle
+reflection and source folding do not use these projectors; they follow the
+particle-boundary rules in :doc:`tiling`.
 
 The auxiliary E/H routines remain pure constitutive calculations. Their
 computed exterior values are preserved during internal halo exchange. The

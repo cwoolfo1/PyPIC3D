@@ -1,12 +1,10 @@
 from functools import partial
 
 import jax
-from jax import jit
 import jax.numpy as jnp
 
 from PyPIC3D.boundary_conditions.grid_and_stencil import (
-    BC_PERIODIC,
-    collapse_axis_stencil,
+    collapse_tiled_axis_stencil,
     prepare_particle_axis_stencil,
 )
 from PyPIC3D.boundary_conditions.ghost_cells import (
@@ -15,25 +13,13 @@ from PyPIC3D.boundary_conditions.ghost_cells import (
     update_tiled_ghost_cells,
 )
 from PyPIC3D.deposition.shapes import get_first_order_weights, get_second_order_weights
-from PyPIC3D.particles.particle_class import TiledParticles
 from PyPIC3D.particles.particle_batching import (
     number_of_particle_batches,
     particle_batch_indices,
     prepare_particle_batches,
 )
 from PyPIC3D.utilities.filters import tiled_digital_filter
-from PyPIC3D.boundary_conditions.grid_and_stencil import (
-    collapse_axis_stencil,
-    prepare_particle_axis_stencil,
-)
 
-
-def _collapse_tiled_axis_stencil(points, weights, local_n, reduced_axis, g):
-    if reduced_axis:
-        collapsed_points = jnp.full((1, points.shape[1]), int(g), dtype=points.dtype)
-        collapsed_weights = jnp.sum(weights, axis=0, keepdims=True)
-        return collapsed_points, collapsed_weights
-    return collapse_axis_stencil(points, weights, local_n, ghost_cells=True)
 
 @partial(jax.jit, static_argnames="static_parameters")
 def compute_rho(
@@ -159,9 +145,9 @@ def compute_rho(
             z_weights_node = jnp.asarray(z_weights_node)
             # convert the stencil points and weights to JAX arrays for further processing
 
-            xpts, x_weights_node = _collapse_tiled_axis_stencil(xpts, x_weights_node, local_Nx, reduced_x, g)
-            ypts, y_weights_node = _collapse_tiled_axis_stencil(ypts, y_weights_node, local_Ny, reduced_y, g)
-            zpts, z_weights_node = _collapse_tiled_axis_stencil(zpts, z_weights_node, local_Nz, reduced_z, g)
+            xpts, x_weights_node = collapse_tiled_axis_stencil(xpts, x_weights_node, local_Nx, reduced_x, g)
+            ypts, y_weights_node = collapse_tiled_axis_stencil(ypts, y_weights_node, local_Ny, reduced_y, g)
+            zpts, z_weights_node = collapse_tiled_axis_stencil(zpts, z_weights_node, local_Nz, reduced_z, g)
             # collapse the stencil points and weights for each axis, taking into account any reduced axes and guard cells
 
             for i in range(xpts.shape[0]):

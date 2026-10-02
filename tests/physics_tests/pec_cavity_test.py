@@ -15,9 +15,6 @@ from PyPIC3D.solvers.yee.first_order_yee import (
 from tests.kernel_fixtures import initialized_fields, kernel_parameters
 
 
-jax.config.update("jax_enable_x64", True)
-
-
 def _magnitude_squared(vector):
     return sum(jnp.sum(component**2) for component in vector)
 

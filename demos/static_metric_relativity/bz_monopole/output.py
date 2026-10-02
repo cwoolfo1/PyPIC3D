@@ -9,7 +9,7 @@ import numpy as np
 
 @dataclass
 class RadialBoundaryBudget:
-    """Cumulative two-species budget, packed in the historical eleven-slot order."""
+    """Cumulative two-species radial absorption budget, packed into eleven slots by as_array."""
     absorbed_count: np.ndarray = field(default_factory=lambda: np.zeros((2, 2)))
     absorbed_charge: np.ndarray = field(default_factory=lambda: np.zeros((2, 2)))
     removed_grid_charge: float = 0.0
@@ -28,7 +28,7 @@ class RadialBoundaryBudget:
                                [self.removed_grid_charge], self.radial_current_outflow))
 
 
-def plot_diagnostics(snapshot, p, output):
+def plot_diagnostics(snapshot, output):
     if __package__:
         from .plot_entity_bz import Normalization, make_figure
     else:

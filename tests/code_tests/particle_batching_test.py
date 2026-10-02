@@ -16,9 +16,6 @@ from tests.kernel_fixtures import (
 )
 
 
-jax.config.update("jax_enable_x64", True)
-
-
 class TestParticleBatching(unittest.TestCase):
     def assert_tree_allclose(self, actual, expected):
         actual_leaves = jax.tree_util.tree_leaves(actual)

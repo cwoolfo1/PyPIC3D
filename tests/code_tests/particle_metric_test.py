@@ -33,8 +33,6 @@ from tests.support.particle_metric_fixtures import (
     consumer_runtime,
 )
 
-jax.config.update("jax_enable_x64", True)
-
 
 class TestHermite(unittest.TestCase):
     def test_tensor_quadratic_reproduction(self):
@@ -317,31 +315,6 @@ class TestParticleMetricConsumers(unittest.TestCase):
                                      for a, b in zip(jax.tree.leaves(original), jax.tree.leaves(different))
                                      if a.dtype != jnp.bool_)
                     self.assertGreater(difference, 1e-6)
-
-    def test_birth_momentum_uses_shared_metric_and_masks_unused_slots(self):
-        from demos.static_metric_relativity.bz_monopole.plasma_injector import birth_covariant_momentum
-
-        s, d, m, _, _, p, _ = consumer_runtime()
-        grid = tuple(a[0, 0, 0] for a in d.grids.tiled_center_grid)
-        tile = jax.tree.map(lambda a: a[0, 0, 0], m.center)
-        q = p.x.reshape(-1, 3).at[1].set(jnp.nan)
-        momentum = p.u.reshape(-1, 3).at[1].set(jnp.nan)
-        active = jnp.array([True, False])
-        birth = jax.jit(checkify.checkify(
-            lambda metric: birth_covariant_momentum(momentum, q, active, metric, grid, s)))
-        err, original = birth(tile)
-        err.throw()
-        sampled = interpolate_metric(tile, q[:1], grid, s.metric, (True, True, False), (3, 3, 3))
-        np.testing.assert_allclose(original[0], jnp.linalg.cholesky(sampled.gamma[0]) @ momentum[0], atol=1e-14)
-        np.testing.assert_array_equal(original[1], 0.)
-        poisoned = tile._replace(gamma_inv=jnp.full_like(tile.gamma_inv, jnp.nan),
-                                 sqrt_gamma=jnp.full_like(tile.sqrt_gamma, jnp.nan))
-        err, same = birth(poisoned)
-        err.throw()
-        self.assert_same_tree(same, original)
-        err, scaled = birth(tile._replace(gamma=2.*tile.gamma))
-        err.throw()
-        np.testing.assert_allclose(scaled, jnp.sqrt(2.)*original, atol=1e-14)
 
     def test_midpoint_sampling_agrees_across_tile_seam(self):
         results = []

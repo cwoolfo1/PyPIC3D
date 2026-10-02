@@ -2,7 +2,6 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-import jax
 import jax.numpy as jnp
 
 from PyPIC3D.boundary_conditions import ghost_cells
@@ -11,77 +10,11 @@ from PyPIC3D.deposition.rho import compute_rho
 from PyPIC3D.diagnostics.output_adapters import assemble_tiled_scalar_field
 from PyPIC3D.diagnostics.static_metric import node_weights
 from tests.kernel_fixtures import build_tiled_particles, particle_parameters_from_tile_values, particle_species
-from tests.kernel_fixtures import kernel_parameters_from_values
+from tests.kernel_fixtures import kernel_parameters_from_values, tile_scalar_field
 from PyPIC3D.utilities.grids import build_tiled_yee_grids, build_yee_grid
 from PyPIC3D.utilities.filters import digital_filter
 
-
-jax.config.update("jax_enable_x64", True)
-
-
 REPO_ROOT = Path(__file__).resolve().parents[2]
-
-
-def _tile_axis_count(n_cells, cells_per_tile):
-    if int(n_cells) % int(cells_per_tile) != 0:
-        raise ValueError("Shared tile sizes must divide the physical grid dimensions exactly.")
-    return int(n_cells) // int(cells_per_tile)
-
-
-def tile_scalar_field(field, parameter_set, tile_shape, num_guard_cells=2):
-    tile_nx, tile_ny, tile_nz = [int(width) for width in tile_shape]
-    g = int(num_guard_cells)
-    Nx = int(field.shape[0]) - 2
-    Ny = int(field.shape[1]) - 2
-    Nz = int(field.shape[2]) - 2
-    ntx = _tile_axis_count(Nx, tile_nx)
-    nty = _tile_axis_count(Ny, tile_ny)
-    ntz = _tile_axis_count(Nz, tile_nz)
-
-    if g != 1:
-        field_tiles = jnp.zeros(
-            (
-                ntx,
-                nty,
-                ntz,
-                tile_nx + 2 * g,
-                tile_ny + 2 * g,
-                tile_nz + 2 * g,
-            ),
-            dtype=field.dtype,
-        )
-        for tx in range(ntx):
-            for ty in range(nty):
-                for tz in range(ntz):
-                    ix = 1 + tx * tile_nx
-                    iy = 1 + ty * tile_ny
-                    iz = 1 + tz * tile_nz
-                    interior = field[ix:ix + tile_nx, iy:iy + tile_ny, iz:iz + tile_nz]
-                    field_tiles = field_tiles.at[tx, ty, tz, g:-g, g:-g, g:-g].set(interior)
-        parameter_set = dict(parameter_set)
-        parameter_set["tile_shape"] = tuple(int(width) for width in tile_shape)
-        parameter_set["field_mesh"] = ghost_cells.make_field_mesh((ntx, nty, ntz))
-        static_parameters, _ = kernel_parameters_from_values(parameter_set)
-        return ghost_cells.update_tiled_ghost_cells(field_tiles, static_parameters, g)
-
-    def tile_at(tx, ty, tz):
-        start = (tx * tile_nx, ty * tile_ny, tz * tile_nz)
-        size = (tile_nx + 2, tile_ny + 2, tile_nz + 2)
-        return jax.lax.dynamic_slice(field, start, size)
-
-    return jnp.stack(
-        [
-            jnp.stack(
-                [
-                    jnp.stack([tile_at(tx, ty, tz) for tz in range(ntz)], axis=0)
-                    for ty in range(nty)
-                ],
-                axis=0,
-            )
-            for tx in range(ntx)
-        ],
-        axis=0,
-    )
 
 
 class TestTiledRho(unittest.TestCase):
@@ -115,7 +48,6 @@ class TestTiledRho(unittest.TestCase):
             simulation_parameters["particle_tile_ny"],
             simulation_parameters["particle_tile_nz"],
         )
-        g = int(parameter_set["guard_cells"])
         parameter_set = dict(parameter_set)
         grids = dict(parameter_set["grids"])
         parameter_set["tile_shape"] = tile_shape

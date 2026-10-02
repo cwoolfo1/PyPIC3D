@@ -11,6 +11,10 @@ from PyPIC3D.boundary_conditions.grid_and_stencil import (
     wrap_periodic_position,
 )
 from PyPIC3D.boundary_conditions.ghost_cells import MESH_AXES
+from PyPIC3D.boundary_conditions.halo_exchange import (
+    _send_negative_permutation,
+    _send_positive_permutation,
+)
 from PyPIC3D.particles.particle_class import TiledParticles
 from PyPIC3D.utilities.grids import grid_domain_bounds
 
@@ -86,20 +90,6 @@ def update_tiled_particle_positions(tiled_particles, species_config, dt):
     x = x.at[..., 2].set(jnp.where(tiled_particles.active & update_x[..., 2], x[..., 2] + dz, x[..., 2]))
 
     return tiled_particles._replace(x=x)
-
-
-def _send_positive_permutation(axis_size, boundary_condition):
-    axis_size = int(axis_size)
-    if boundary_condition == 0:
-        return tuple((i, (i + 1) % axis_size) for i in range(axis_size))
-    return tuple((i, i + 1) for i in range(axis_size - 1))
-
-
-def _send_negative_permutation(axis_size, boundary_condition):
-    axis_size = int(axis_size)
-    if boundary_condition == 0:
-        return tuple((i, (i - 1) % axis_size) for i in range(axis_size))
-    return tuple((i, i - 1) for i in range(1, axis_size))
 
 
 def _send_axis_stream(stream, offset, axis_name, axis_size, permutation):
@@ -522,17 +512,6 @@ def make_distributed_particle_refresher(static_parameters):
     return _cached_distributed_particle_refresher(static_parameters)
 
 
-def _refresh_tiled_particle_tiles_sparse(tiled_particles, static_parameters, dynamic_parameters):
-    """
-    Move active particles into owning tiles using compact staged face packets.
-    """
-
-    refresher = make_distributed_particle_refresher(
-        static_parameters,
-    )
-    return refresher(tiled_particles, dynamic_parameters)
-
-
 def refresh_tiled_particle_tiles(tiled_particles, static_parameters, dynamic_parameters):
     """
     Move active particles into their owning tiles while preserving static shape.
@@ -546,4 +525,5 @@ def refresh_tiled_particle_tiles(tiled_particles, static_parameters, dynamic_par
     non-adjacent jump, are dropped and reported through the overflow flag.
     """
 
-    return _refresh_tiled_particle_tiles_sparse(tiled_particles, static_parameters, dynamic_parameters)
+    refresher = make_distributed_particle_refresher(static_parameters)
+    return refresher(tiled_particles, dynamic_parameters)

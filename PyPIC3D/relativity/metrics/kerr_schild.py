@@ -77,28 +77,15 @@ def _kerr_schild_spherical_metric_at_position(position, mass=1.0, spin=0.0):
     return lapse, shift, gamma, gamma_inv, sqrt_gamma
 
 
-def _build_kerr_schild_metric(static_parameters, dynamic_parameters, metric_at_position, mass=1.0, spin=0.0):
-    del static_parameters
-    metric_at_position = partial(
-        metric_at_position,
-        mass=mass,
-        spin=spin,
-    )
-
-    return build_yee_metric(dynamic_parameters, metric_at_position)
-
-
 def initialize_kerr_schild_cartesian_metric(static_parameters, dynamic_parameters, mass=1.0, spin=0.0):
     """
     Build the ingoing Cartesian Kerr-Schild 3+1 metric on the tiled Yee grid.
     """
 
-    return _build_kerr_schild_metric(
-        static_parameters,
+    del static_parameters
+    return build_yee_metric(
         dynamic_parameters,
-        _kerr_schild_cartesian_metric_at_position,
-        mass=mass,
-        spin=spin,
+        partial(_kerr_schild_cartesian_metric_at_position, mass=mass, spin=spin),
     )
 
 
@@ -107,10 +94,8 @@ def initialize_kerr_schild_spherical_metric(static_parameters, dynamic_parameter
     Build the spherical Kerr-Schild 3+1 metric on the tiled Yee grid.
     """
 
-    return _build_kerr_schild_metric(
-        static_parameters,
+    del static_parameters
+    return build_yee_metric(
         dynamic_parameters,
-        _kerr_schild_spherical_metric_at_position,
-        mass=mass,
-        spin=spin,
+        partial(_kerr_schild_spherical_metric_at_position, mass=mass, spin=spin),
     )

@@ -26,20 +26,6 @@ from tests.kernel_fixtures import (
 )
 
 
-def _tile_axis_count(n_cells, cells_per_tile):
-    if int(n_cells) % int(cells_per_tile) != 0:
-        raise ValueError("Shared tile sizes must divide the physical grid dimensions exactly.")
-    return int(n_cells) // int(cells_per_tile)
-
-
-def tile_scalar_field(field, static_parameters, dynamic_parameters, num_guard_cells=None):
-    return field_tiles_from_global(field, static_parameters, dynamic_parameters, num_guard_cells)
-
-
-def tile_vector_field(field, static_parameters, dynamic_parameters, num_guard_cells=None):
-    return vector_tiles_from_global(field, static_parameters, dynamic_parameters, num_guard_cells)
-
-
 class FakeRecord:
     def __init__(self):
         self.shape = None
@@ -378,14 +364,14 @@ class OpenPMDDiagnosticsTests(unittest.TestCase):
         }
         static_parameters, dynamic_parameters = kernel_parameters_from_values(parameter_values)
         tiled_fields = (
-            tile_vector_field(E, static_parameters, dynamic_parameters),
-            tile_vector_field(B, static_parameters, dynamic_parameters),
-            tile_vector_field(J, static_parameters, dynamic_parameters),
-            tile_scalar_field(rho, static_parameters, dynamic_parameters),
-            tile_scalar_field(phi, static_parameters, dynamic_parameters),
+            vector_tiles_from_global(E, static_parameters, dynamic_parameters),
+            vector_tiles_from_global(B, static_parameters, dynamic_parameters),
+            vector_tiles_from_global(J, static_parameters, dynamic_parameters),
+            field_tiles_from_global(rho, static_parameters, dynamic_parameters),
+            field_tiles_from_global(phi, static_parameters, dynamic_parameters),
             (
-                tile_vector_field(external_fields[0], static_parameters, dynamic_parameters),
-                tile_vector_field(external_fields[1], static_parameters, dynamic_parameters),
+                vector_tiles_from_global(external_fields[0], static_parameters, dynamic_parameters),
+                vector_tiles_from_global(external_fields[1], static_parameters, dynamic_parameters),
             ),
             None,
         )
@@ -412,9 +398,9 @@ class OpenPMDDiagnosticsTests(unittest.TestCase):
         E_global = tuple(rho_global + offset for offset in (10.0, 20.0, 30.0))
         tile_shape = tuple(int(width) for width in static_parameters.tile_shape)
         field_map = {
-            "E": tile_vector_field(E_global, static_parameters, dynamic_parameters),
-            "rho": tile_scalar_field(rho_global, static_parameters, dynamic_parameters),
-            "phi": tile_scalar_field(phi_global, static_parameters, dynamic_parameters),
+            "E": vector_tiles_from_global(E_global, static_parameters, dynamic_parameters),
+            "rho": field_tiles_from_global(rho_global, static_parameters, dynamic_parameters),
+            "phi": field_tiles_from_global(phi_global, static_parameters, dynamic_parameters),
         }
         snapshot = async_writer.make_tiled_field_snapshot(
             field_map,

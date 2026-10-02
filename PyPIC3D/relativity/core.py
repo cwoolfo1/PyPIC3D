@@ -9,13 +9,7 @@ B_FIELD_LOCATIONS = (("C", "V", "V"), ("V", "C", "V"), ("V", "V", "C"))
 
 
 class Metric(NamedTuple):
-    """
-    3+1 metric data sampled on one Yee-grid location.
-
-    Particles store covariant spatial four-velocity components ``u_i`` in the
-    existing three-component ``particles.u`` slot.  ``gamma_inv`` converts
-    those covariant components into contravariant spatial velocities.
-    """
+    """3+1 metric sampled on one Yee location."""
 
     lapse: object
     shift: object

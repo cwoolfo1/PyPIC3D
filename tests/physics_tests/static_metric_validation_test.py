@@ -30,8 +30,6 @@ import unittest
 import jax
 import jax.numpy as jnp
 
-jax.config.update("jax_enable_x64", True)
-
 from PyPIC3D.deposition.GR_direct_deposition import GR_direct_deposition
 from PyPIC3D.particles.particle_class import SpeciesConfig, TiledParticles
 from PyPIC3D.pusher.hybrid_boris_geodesic import (

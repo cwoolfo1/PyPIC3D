@@ -1,7 +1,8 @@
 """Local metric projections for coordinate-aligned, stationary FIDO walls.
 
-The algebra acts on co-located contravariant vectors. Writing individual rows
-back to a Yee grid is an explicit interpolation, not a coupled boundary solve.
+Each native wall row is projected from a co-located reconstruction of the
+contravariant vector. Where two walls meet and off-diagonal gamma couples
+them, the coupled D edge rows and B edge ghosts are solved exactly.
 """
 from functools import partial
 from itertools import combinations
@@ -13,24 +14,6 @@ from .ghost_cells import update_tiled_vector_ghost_cells
 from .ownership import boundary_plane, face_mask, staggered_mirror
 from PyPIC3D.relativity.core import B_FIELD_LOCATIONS, D_FIELD_LOCATIONS
 from PyPIC3D.relativity.field_interpolation import metric_at_location, reconstruct_vector
-
-
-def normal_projector(gamma_inv, covector):
-    """Return G=n^i n_j for an arbitrary (not necessarily unit) covector."""
-    raised = jnp.einsum('...ij,...j->...i', gamma_inv, covector)
-    norm2 = jnp.einsum('...i,...i->...', covector, raised)
-    return raised[..., :, None] * covector[..., None, :] / norm2[..., None, None]
-
-
-def tangent_intersection_projector(gamma_inv, covectors):
-    """Project onto the common tangent space of independent surface normals.
-
-    ``covectors`` has shape (..., number_of_faces, 3). The Gram matrix uses
-    the inverse spatial metric; normalization of its rows is unnecessary.
-    """
-    raised = jnp.einsum('...ij,...aj->...ia', gamma_inv, covectors)
-    gram = jnp.einsum('...ai,...ib->...ab', covectors, raised)
-    return jnp.eye(3) - raised @ jnp.linalg.solve(gram, covectors)
 
 
 def _normal_component(inverse, vector, axis, component):
@@ -101,7 +84,11 @@ def _prepare_normal_D(snapshot, static, axes):
 
 
 def _project_native_nodes(snapshot, static, locations, field_kind, metric, axes):
-    """Project faces first, then overwrite intersections with joint constraints."""
+    """Project faces first, then zero D at intersections of two walls.
+
+    Each B component has exactly one C axis, so only D components (two C
+    axes) reach an intersection.
+    """
     shape = snapshot[0].shape
     projected = []
     for component, location in enumerate(locations):
@@ -117,11 +104,8 @@ def _project_native_nodes(snapshot, static, locations, field_kind, metric, axes)
                 if count == 1:
                     normal = _normal_component(inverse, at_target, faces[0], component)
                     constrained = normal if field_kind == 'D' else at_target[component] - normal
-                elif field_kind == 'D':
-                    constrained = 0.
                 else:
-                    projector = tangent_intersection_projector(inverse, jnp.eye(3)[jnp.array(faces)])
-                    constrained = sum(projector[..., component, j] * at_target[j] for j in range(3))
+                    constrained = 0.
                 value = jnp.where(mask, constrained, value)
         projected.append(value)
     return tuple(projected)
@@ -245,10 +229,9 @@ def _reflect_exterior_axis(snapshot, static, locations, field_kind, metric, axis
     return tuple(result)
 
 
-def _pec_setup(vector, static, locations):
+def _pec_setup(shape, static, locations):
     """Conducting axes and the wall-preserving halo exchange for one field."""
     axes = tuple(axis for axis, bc in enumerate(static.boundary_conditions) if bc == BC_CONDUCTING)
-    shape = vector[0].shape
     guard = static.guard_cells
     # Narrow distributed axes need multiple neighbor passes; reduced periodic
     # directions are filled in one pass.
@@ -266,7 +249,7 @@ def enforce_pec_D(vector, static, locations, metric):
     solved together. Exterior ghosts are then reflected in x/y/z order.
     Internal boundaries are communicated, never projected.
     """
-    axes, exchange = _pec_setup(vector, static, locations)
+    axes, exchange = _pec_setup(vector[0].shape, static, locations)
 
     snapshot = exchange(vector)
     snapshot = exchange(_prepare_normal_D(snapshot, static, axes))
@@ -282,12 +265,13 @@ def enforce_pec_D(vector, static, locations, metric):
 def enforce_pec_B(vector, static, locations, metric):
     """Project B onto conducting walls: zero normal flux.
 
-    Native wall rows remove the normal component and intersections keep the
-    common tangent. Exterior ghosts are reflected in x/y/z order; where two
+    Each B component has native nodes on only one wall family, where it is
+    the normal component and is set to zero; no B component lies on a wall
+    intersection. Exterior ghosts are reflected in x/y/z order; where two
     walls meet, the coupled ghost pair is solved from two reflection sweeps.
     Internal boundaries are communicated, never projected.
     """
-    axes, exchange = _pec_setup(vector, static, locations)
+    axes, exchange = _pec_setup(vector[0].shape, static, locations)
 
     def sweep(fields):
         for position, axis in enumerate(axes):

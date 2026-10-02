@@ -620,9 +620,6 @@ def write_openpmd_initial_particles(
     output_path = os.path.join(output_dir, "data", "initial_particles")
     os.makedirs(output_path, exist_ok=True)
 
-    def make_array_writable(arr):
-        return _ensure_openpmd_array(arr, dtype=np.float64)
-
     for species in particles:
         species_name = species.name.replace(" ", "_")
         series_filename = f"{species_name}_{filename}"
@@ -653,10 +650,10 @@ def write_openpmd_initial_particles(
             momentum_per_mass = velocities
             # covariant u_i already includes the Lorentz factor
 
-        x = make_array_writable(x)
-        y = make_array_writable(y)
-        z = make_array_writable(z)
-        gamma = make_array_writable(gamma)
+        x = _ensure_openpmd_array(x)
+        y = _ensure_openpmd_array(y)
+        z = _ensure_openpmd_array(z)
+        gamma = _ensure_openpmd_array(gamma)
 
         num_particles = x.shape[0]
         particle_mass = species.mass
@@ -696,7 +693,7 @@ def write_openpmd_initial_particles(
 
         momentum = species_group["momentum"]
         for component, data in zip(("x", "y", "z"), momentum_per_mass.T):
-            data = make_array_writable(data * masses)
+            data = _ensure_openpmd_array(data * masses)
             record_component = momentum[component]
             record_component.reset_dataset(io.Dataset(data.dtype, [num_particles]))
             record_component.store_chunk(data, [0], [num_particles])

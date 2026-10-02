@@ -8,8 +8,6 @@ from PyPIC3D.boundary_conditions.grid_and_stencil import BC_CONDUCTING, BC_CONST
 from PyPIC3D.boundary_conditions import ghost_cells
 from tests.kernel_fixtures import kernel_parameters
 
-jax.config.update("jax_enable_x64", True)
-
 
 def _assert_allclose(test_case, actual, expected, **kwargs):
     test_case.assertTrue(

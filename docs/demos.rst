@@ -69,7 +69,7 @@ The configuration uses two x-directed tiles and therefore needs two visible
 JAX devices. The analysis command reads ``data/fields.pmd`` and writes
 ``analysis/field_lines.mp4``. The movie shows the full x domain and supported
 cell-centered z extent, with normalized coordinates, time, and magnetic
-magnitude. A labeled two-cell Gaussian display filter smooths the field lines;
+magnitude. A two-cell Gaussian display filter smooths the field lines;
 the color scale stays fixed throughout the movie. Only the magnetic mesh is
 required. Use ``--fields``, ``--output-dir``, ``--fps``, and ``--dpi`` to override
 the input, output directory, frame rate (10), and resolution (150).
@@ -91,8 +91,8 @@ runner takes no arguments.
 The run writes snapshots, ``diagnostics.npz`` and ``final_state.npz`` to
 ``data/`` and stops if the exterior Gauss or divergence-of-B residuals exceed
 their tolerances. ``plot_entity_bz.py`` redraws the Figure 6 panels from the
-saved snapshots. Figures and animations use the saved angular coordinates;
-legacy full-sphere snapshots remain readable.
+saved snapshots. Figures and animations take their angular extent from each
+snapshot's saved theta coordinates.
 
 The demo uses the general static-metric finite-difference field updates and
 standard metric-weighted E/H interpolation. Set ``theta_start`` and
@@ -107,17 +107,8 @@ guard nodes must remain above r=0. These checks precede metric initialization.
 
 The particle metric uses Hermite reconstruction. Source filtering acts on
 conformal charge/current and is checked with the same finite-difference
-divergence as the field solver. The former polar finite-volume runtime has
-been removed. Legacy ``polar`` boundaries and numeric boundary code 4 are
-rejected; use conducting field boundaries and reflecting particles with
-explicit regular angular bounds.
-
-The historical ``STANDARD_200M_REPORT.md`` records a 200 M run using standard constitutive
-interpolation **and polar finite-volume evolution**; it is not evidence for
-a 200 M finite-difference run. The metric-projector boundaries are checked by
-a four-step 16-by-16 CPU BZ regression at ``dt=0.004``, with the existing
-finite-state and constraint tolerances. Long production runs with these
-boundaries remain to be validated.
+divergence as the field solver. Long production runs with the conducting
+angular boundaries remain to be validated.
 
 For a short CPU diagnostic, call the runner from the repository root with
 an unused output directory:

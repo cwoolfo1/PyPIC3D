@@ -13,9 +13,6 @@ from PyPIC3D.boundary_conditions import ghost_cells
 from tests.kernel_fixtures import kernel_parameters
 
 
-jax.config.update("jax_enable_x64", True)
-
-
 def _mesh(mesh_shape):
     n_devices = int(jnp.prod(jnp.asarray(mesh_shape)))
     devices = jax.devices()
