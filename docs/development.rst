@@ -25,12 +25,14 @@ Run numerical and convergence tests separately:
 
    python -m unittest tests/physics_tests/*.py
 
-Distributed tile tests need enough JAX devices for their mesh. For example:
+Distributed tile tests need one JAX device per tile. ``tests/__init__.py``
+configures this before any test runs: 64-bit floats, the CPU platform, and 16
+CPU devices. Setting ``JAX_PLATFORMS`` or ``JAX_NUM_CPU_DEVICES`` yourself
+overrides the defaults, for example to run a single-tile test on a GPU:
 
 .. code-block:: bash
 
-   XLA_FLAGS=--xla_force_host_platform_device_count=8 \
-     python -m unittest tests/code_tests/distributed_ghost_cells_test.py
+   JAX_PLATFORMS=cuda python -m unittest tests/code_tests/yee_test.py
 
 Build Docs
 ----------
