@@ -12,7 +12,7 @@ from PyPIC3D.boundary_conditions.staggered import refresh_fields
 from PyPIC3D.boundary_conditions.ghost_cells import apply_tiled_pec_boundary
 from PyPIC3D.relativity.core import Metric, YeeMetric, D_FIELD_LOCATIONS, B_FIELD_LOCATIONS, build_yee_metric
 from PyPIC3D.relativity.field_interpolation import metric_weighted_interpolate
-from PyPIC3D.solvers.gr_static.static_metric import compute_covariant_E, compute_covariant_H, update_B_relativity, update_D_relativity
+from PyPIC3D.solvers.GR_yee.static_metric import compute_covariant_E, compute_covariant_H, update_B_relativity, update_D_relativity
 from PyPIC3D.diagnostics.static_metric import divergence
 from tests.kernel_fixtures import kernel_parameters
 
@@ -232,7 +232,7 @@ class TestStaggeredProjectors(unittest.TestCase):
 
     def test_particle_gather_and_previous_levels_are_projected(self):
         from unittest.mock import patch
-        from PyPIC3D.solvers.gr_static.time_loop import time_loop_static_metric
+        from PyPIC3D.solvers.GR_yee.time_loop import time_loop_static_metric
         s,d,m=make_setup()
         value=jnp.ones(m.center.lapse.shape);z=(value*0,)*3
         # the loop expects every incoming D and B to be refreshed already

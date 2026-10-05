@@ -18,11 +18,11 @@ from PyPIC3D.relativity.field_interpolation import reconstruct_vector
 from PyPIC3D.relativity.field_state import (
     densitize_vector, physical_vector, densitize_fields, physical_fields,
 )
-from PyPIC3D.solvers.gr_static.static_metric import (
+from PyPIC3D.solvers.GR_yee.static_metric import (
     compute_covariant_E_densitized, compute_covariant_H_densitized,
     update_D_densitized, update_B_densitized, refresh_densitized_fields,
 )
-from PyPIC3D.solvers.gr_static.time_loop import time_loop_static_metric
+from PyPIC3D.solvers.GR_yee.time_loop import time_loop_static_metric
 from tests.code_tests.pec_projector_test import coupled_setup
 
 

@@ -7,7 +7,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from PyPIC3D.relativity.core import build_yee_metric, D_FIELD_LOCATIONS, B_FIELD_LOCATIONS, location_grid
-from PyPIC3D.solvers.gr_static.static_metric import compute_covariant_E, compute_covariant_H
+from PyPIC3D.solvers.GR_yee.static_metric import compute_covariant_E, compute_covariant_H
 
 
 def geometry(q):

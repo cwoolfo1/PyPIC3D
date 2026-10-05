@@ -42,8 +42,8 @@ from PyPIC3D.relativity.metrics.kerr_schild import (
     initialize_kerr_schild_cartesian_metric,
     initialize_kerr_schild_spherical_metric,
 )
-from PyPIC3D.solvers.gr_static.static_metric import update_D_relativity
-from PyPIC3D.solvers.gr_static.time_loop import time_loop_static_metric
+from PyPIC3D.solvers.GR_yee.static_metric import update_D_relativity
+from PyPIC3D.solvers.GR_yee.time_loop import time_loop_static_metric
 from tests.kernel_fixtures import (
     empty_tiled_scalar,
     empty_tiled_vector,

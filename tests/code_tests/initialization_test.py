@@ -20,7 +20,7 @@ from PyPIC3D.initialization import (
     validate_field_solver,
 )
 from PyPIC3D.solvers.electrostatic.time_loop import time_loop_electrostatic
-from PyPIC3D.solvers.gr_static.time_loop import time_loop_static_metric
+from PyPIC3D.solvers.GR_yee.time_loop import time_loop_static_metric
 from PyPIC3D.solvers.yee.time_loop import time_loop_electrodynamic
 from PyPIC3D.boundary_conditions.grid_and_stencil import (
     BC_ABSORBING,

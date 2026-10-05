@@ -11,7 +11,7 @@ import jax.numpy as jnp
 from PyPIC3D.boundary_conditions.ghost_cells import BC_TYPE_PARTICLE
 from PyPIC3D.deposition.GR_direct_deposition import GR_direct_deposition
 from PyPIC3D.deposition.J_from_rhov import J_from_rhov
-from PyPIC3D.solvers.gr_static.time_loop import time_loop_static_metric
+from PyPIC3D.solvers.GR_yee.time_loop import time_loop_static_metric
 from PyPIC3D.initialization import (
     _encode_current_calculation,
     _validate_tiled_yee_configuration,
@@ -42,7 +42,7 @@ from PyPIC3D.relativity.metrics.kerr_schild import (
     initialize_kerr_schild_cartesian_metric,
     initialize_kerr_schild_spherical_metric,
 )
-from PyPIC3D.solvers.gr_static.static_metric import (
+from PyPIC3D.solvers.GR_yee.static_metric import (
     compute_covariant_E,
     compute_covariant_H,
     update_D_relativity,

@@ -57,14 +57,14 @@ from PyPIC3D.relativity.metrics.kerr_schild import (
     _kerr_schild_spherical_metric_at_position,
 )
 from PyPIC3D.relativity.interpolate_metric import interpolate_metric
-from PyPIC3D.solvers.gr_static.static_metric import (
+from PyPIC3D.solvers.GR_yee.static_metric import (
     compute_covariant_E,
     compute_covariant_H,
     update_B_relativity,
     update_D_relativity,
 )
 from PyPIC3D.relativity.field_state import densitize_fields, physical_fields
-from PyPIC3D.solvers.gr_static.time_loop import time_loop_static_metric
+from PyPIC3D.solvers.GR_yee.time_loop import time_loop_static_metric
 from tests.kernel_fixtures import empty_tiled_scalar, empty_tiled_vector, kernel_parameters
 
 

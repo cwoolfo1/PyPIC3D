@@ -19,10 +19,10 @@ from tqdm import tqdm
 
 from PyPIC3D.boundary_conditions.staggered import refresh_fields as refresh_vector
 from PyPIC3D.relativity.core import B_FIELD_LOCATIONS, D_FIELD_LOCATIONS
-from PyPIC3D.solvers.gr_static.static_metric import (
+from PyPIC3D.solvers.GR_yee.static_metric import (
     compute_covariant_E, compute_covariant_H, update_B_relativity,
     update_D_relativity)
-from PyPIC3D.solvers.gr_static.time_loop import time_loop_static_metric
+from PyPIC3D.solvers.GR_yee.time_loop import time_loop_static_metric
 if __package__:
     from .simulation_parameters import SimulationParameters, build_runtime, shard_array
     from .current_filter import filter_current

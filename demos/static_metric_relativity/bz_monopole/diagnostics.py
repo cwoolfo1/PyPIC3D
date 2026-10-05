@@ -11,7 +11,7 @@ from PyPIC3D.diagnostics.static_metric import densitized_divergence, node_weight
 from PyPIC3D.relativity.field_state import physical_vector
 from PyPIC3D.relativity.core import B_FIELD_LOCATIONS, D_FIELD_LOCATIONS
 from PyPIC3D.relativity.field_interpolation import location_interpolate as _location_interpolate
-from PyPIC3D.solvers.gr_static.static_metric import (compute_covariant_E_densitized,
+from PyPIC3D.solvers.GR_yee.static_metric import (compute_covariant_E_densitized,
     compute_covariant_H_densitized, update_B_densitized, refresh_densitized_fields)
 
 if __package__:

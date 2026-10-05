@@ -19,7 +19,7 @@ from PyPIC3D.relativity.core import (
 )
 from PyPIC3D.relativity.field_state import densitize_vector, physical_vector
 from PyPIC3D.relativity.interpolate_metric import interpolate_metric
-from PyPIC3D.solvers.gr_static.static_metric import (
+from PyPIC3D.solvers.GR_yee.static_metric import (
     compute_covariant_E_densitized, compute_covariant_H_densitized,
     update_B_densitized, update_D_densitized,
 )
