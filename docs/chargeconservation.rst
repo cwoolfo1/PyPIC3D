@@ -56,10 +56,14 @@ altered.
 Fixed-metric schemes
 --------------------
 
-The ``static_metric`` solver evolves the contravariant densities ``D^i`` and
-``B^i``, and both of its deposition schemes work with the *conformal* current
-``sqrt(gamma) J^i``, returning the physical ``J^i`` that
-``update_D_relativity`` consumes.
+The ``static_metric`` solver stores and evolves the native Yee densities
+``sqrt(gamma) D^i`` and ``sqrt(gamma) B^i``, including their previous time
+levels. Its stored current and current time averages are ``sqrt(gamma) J^i``.
+``GR_Esirkepov_densitized_current`` returns that density directly;
+``GR_Esirkepov_current`` retains its physical-current compatibility API.
+``GR_direct_deposition`` also returns physical current, which the time loop
+converts at the deposition boundary. Optional ``current_transform`` callbacks
+continue to receive and return physical current.
 
 ``GR_direct_deposition`` is a metric-weighted volume deposit. It samples the
 lapse, shift and covariant metric through the shared Hermite reconstruction,
@@ -93,7 +97,7 @@ coordinate velocity the position update actually produced -- so the kernel needs
 no metric interpolation at particle positions at all.
 
 Because the backward-difference divergence of the backward-difference curl in
-``update_D_relativity`` vanishes identically, satisfying discrete continuity
+``update_D_densitized`` vanishes identically, satisfying discrete continuity
 preserves
 
 .. math::

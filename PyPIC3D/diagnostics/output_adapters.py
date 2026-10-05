@@ -3,6 +3,7 @@ from typing import NamedTuple
 import jax
 import jax.numpy as jnp
 
+from PyPIC3D.relativity.field_state import physical_fields
 from PyPIC3D.deposition.rho import compute_rho
 from PyPIC3D.diagnostics.fluid_quantities import compute_velocity_field
 from PyPIC3D.particles.particle_class import TiledParticles
@@ -132,6 +133,8 @@ def build_field_output_map(
     requested.
     """
 
+    if getattr(static_parameters, "solver", None) == "static_metric":
+        fields = physical_fields(fields)
     E, B, J, rho, *_rest = fields
     field_map = {
         "E": E,
@@ -191,6 +194,8 @@ def fields_for_output(fields, static_parameters):
     in the returned output tuple.
     """
 
+    if getattr(static_parameters, "solver", None) == "static_metric":
+        fields = physical_fields(fields)
     E, B, J, rho, phi, external_fields, *rest = fields
     external_E, external_B = external_fields
 

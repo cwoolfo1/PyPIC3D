@@ -4,7 +4,8 @@ from PyPIC3D.boundary_conditions.supergaussian import apply_tiled_supergaussian_
 from PyPIC3D.relativity.core import B_FIELD_LOCATIONS, D_FIELD_LOCATIONS
 from PyPIC3D.boundary_conditions.staggered import refresh_fields
 from PyPIC3D.boundary_conditions.ownership import owned_nodes
-from PyPIC3D.relativity.field_interpolation import reconstruct_vector
+from PyPIC3D.relativity.field_interpolation import location_interpolate, metric_at_location
+from PyPIC3D.relativity.field_state import densitize_vector, physical_vector
 
 
 def _shift_cross_component(beta, vector_components, component):
@@ -20,9 +21,9 @@ def _shift_cross_component(beta, vector_components, component):
     return beta_x * vector_y - beta_y * vector_x
 
 
-def compute_covariant_E(D_tiles, B_tiles, metric):
+def compute_covariant_E_densitized(D_tiles, B_tiles, metric):
     """
-    Compute covariant E_i on the D component locations using FPIC Eq. (10).
+    Compute covariant E_i from densitized D/B using FPIC Eq. (10).
 
     Uses standard metric-density-weighted transfers on a regular coordinate
     domain. All source and target metric samples, including halos, must have
@@ -31,11 +32,11 @@ def compute_covariant_E(D_tiles, B_tiles, metric):
 
     E_cov = []
     for i, target_location in enumerate(D_FIELD_LOCATIONS):
-        D_on_target = reconstruct_vector(
-            D_tiles, D_FIELD_LOCATIONS, metric, target_location, preserve_native=False
+        D_on_target = _reconstruct_density(
+            D_tiles, D_FIELD_LOCATIONS, metric, target_location
         )
-        B_on_target = reconstruct_vector(
-            B_tiles, B_FIELD_LOCATIONS, metric, target_location, preserve_native=False
+        B_on_target = _reconstruct_density(
+            B_tiles, B_FIELD_LOCATIONS, metric, target_location
         )
 
         D_lower_i = 0.0
@@ -50,9 +51,9 @@ def compute_covariant_E(D_tiles, B_tiles, metric):
     return tuple(E_cov)
 
 
-def compute_covariant_H(D_tiles, B_tiles, metric):
+def compute_covariant_H_densitized(D_tiles, B_tiles, metric):
     """
-    Compute covariant H_i on the B component locations using FPIC Eq. (9).
+    Compute covariant H_i from densitized D/B using FPIC Eq. (9).
 
     Uses the same standard transfers and regular-domain requirements as
     ``compute_covariant_E``.
@@ -60,11 +61,11 @@ def compute_covariant_H(D_tiles, B_tiles, metric):
 
     H_cov = []
     for i, target_location in enumerate(B_FIELD_LOCATIONS):
-        B_on_target = reconstruct_vector(
-            B_tiles, B_FIELD_LOCATIONS, metric, target_location, preserve_native=False
+        B_on_target = _reconstruct_density(
+            B_tiles, B_FIELD_LOCATIONS, metric, target_location
         )
-        D_on_target = reconstruct_vector(
-            D_tiles, D_FIELD_LOCATIONS, metric, target_location, preserve_native=False
+        D_on_target = _reconstruct_density(
+            D_tiles, D_FIELD_LOCATIONS, metric, target_location
         )
 
         B_lower_i = 0.0
@@ -79,8 +80,8 @@ def compute_covariant_H(D_tiles, B_tiles, metric):
     return tuple(H_cov)
 
 
-def update_D_relativity(D_tiles, H_tiles, J_tiles, metric, static_parameters, dynamic_parameters, dt):
-    """Advance contravariant D and enforce its FIDO surface projection."""
+def update_D_densitized(D_tiles, H_tiles, J_tiles, metric, static_parameters, dynamic_parameters, dt):
+    """Advance densitized D and enforce the physical FIDO surface projection."""
     Dx, Dy, Dz = D_tiles
     Jx, Jy, Jz = J_tiles
     Hx, Hy, Hz = H_tiles
@@ -94,24 +95,20 @@ def update_D_relativity(D_tiles, H_tiles, J_tiles, metric, static_parameters, dy
     dHy_dx = (Hy - jnp.roll(Hy, 1, axis=3)) / dx
     dHx_dy = (Hx - jnp.roll(Hx, 1, axis=4)) / dy
 
-    sqrt_Dx = metric.D[0].sqrt_gamma
-    sqrt_Dy = metric.D[1].sqrt_gamma
-    sqrt_Dz = metric.D[2].sqrt_gamma
-
     # Update owned nodes, including conducting upper C endpoints.
     Dx = jnp.where(
         owned_nodes(Dx.shape, D_FIELD_LOCATIONS[0], static_parameters),
-        Dx + dt * ((dHz_dy - dHy_dz) / sqrt_Dx - 4.0 * jnp.pi * Jx),
+        Dx + dt * ((dHz_dy - dHy_dz) - 4.0 * jnp.pi * Jx),
         Dx,
     )
     Dy = jnp.where(
         owned_nodes(Dy.shape, D_FIELD_LOCATIONS[1], static_parameters),
-        Dy + dt * ((dHx_dz - dHz_dx) / sqrt_Dy - 4.0 * jnp.pi * Jy),
+        Dy + dt * ((dHx_dz - dHz_dx) - 4.0 * jnp.pi * Jy),
         Dy,
     )
     Dz = jnp.where(
         owned_nodes(Dz.shape, D_FIELD_LOCATIONS[2], static_parameters),
-        Dz + dt * ((dHy_dx - dHx_dy) / sqrt_Dz - 4.0 * jnp.pi * Jz),
+        Dz + dt * ((dHy_dx - dHx_dy) - 4.0 * jnp.pi * Jz),
         Dz,
     )
 
@@ -119,11 +116,11 @@ def update_D_relativity(D_tiles, H_tiles, J_tiles, metric, static_parameters, dy
         (Dx, Dy, Dz), static_parameters, dynamic_parameters, dt,
         locations=D_FIELD_LOCATIONS,
     )
-    return refresh_fields(D_tiles, static_parameters, D_FIELD_LOCATIONS, 'D', metric)
+    return refresh_densitized_fields(D_tiles, static_parameters, D_FIELD_LOCATIONS, 'D', metric)
 
 
-def update_B_relativity(E_tiles, B_tiles, metric, static_parameters, dynamic_parameters, dt):
-    """Advance contravariant B and remove its normal surface component."""
+def update_B_densitized(E_tiles, B_tiles, metric, static_parameters, dynamic_parameters, dt):
+    """Advance densitized B and remove its physical normal surface component."""
     Bx, By, Bz = B_tiles
     Ex, Ey, Ez = E_tiles
     dx, dy, dz = dynamic_parameters.dx, dynamic_parameters.dy, dynamic_parameters.dz
@@ -136,24 +133,20 @@ def update_B_relativity(E_tiles, B_tiles, metric, static_parameters, dynamic_par
     dEy_dx = (jnp.roll(Ey, -1, axis=3) - Ey) / dx
     dEx_dy = (jnp.roll(Ex, -1, axis=4) - Ex) / dy
 
-    sqrt_Bx = metric.B[0].sqrt_gamma
-    sqrt_By = metric.B[1].sqrt_gamma
-    sqrt_Bz = metric.B[2].sqrt_gamma
-
     # Update owned nodes, including conducting upper C endpoints.
     Bx = jnp.where(
         owned_nodes(Bx.shape, B_FIELD_LOCATIONS[0], static_parameters),
-        Bx + dt * (-(dEz_dy - dEy_dz) / sqrt_Bx),
+        Bx + dt * (-(dEz_dy - dEy_dz)),
         Bx,
     )
     By = jnp.where(
         owned_nodes(By.shape, B_FIELD_LOCATIONS[1], static_parameters),
-        By + dt * (-(dEx_dz - dEz_dx) / sqrt_By),
+        By + dt * (-(dEx_dz - dEz_dx)),
         By,
     )
     Bz = jnp.where(
         owned_nodes(Bz.shape, B_FIELD_LOCATIONS[2], static_parameters),
-        Bz + dt * (-(dEy_dx - dEx_dy) / sqrt_Bz),
+        Bz + dt * (-(dEy_dx - dEx_dy)),
         Bz,
     )
 
@@ -161,4 +154,44 @@ def update_B_relativity(E_tiles, B_tiles, metric, static_parameters, dynamic_par
         (Bx, By, Bz), static_parameters, dynamic_parameters, dt,
         locations=B_FIELD_LOCATIONS,
     )
-    return refresh_fields(B_tiles, static_parameters, B_FIELD_LOCATIONS, 'B', metric)
+    return refresh_densitized_fields(B_tiles, static_parameters, B_FIELD_LOCATIONS, 'B', metric)
+
+
+def _reconstruct_density(vector, locations, metric, target):
+    volume = metric_at_location(metric, target).sqrt_gamma
+    return tuple(location_interpolate(value, source, target) / volume
+                 for value, source in zip(vector, locations))
+
+
+def refresh_densitized_fields(vector, static, locations, field_kind, metric):
+    """Apply physical halo/wall/horizon policies, then restore native densities."""
+    samples = metric.D if field_kind == 'D' else metric.B
+    physical = physical_vector(vector, samples)
+    return densitize_vector(refresh_fields(physical, static, locations, field_kind, metric), samples)
+
+
+def compute_covariant_E(D_tiles, B_tiles, metric):
+    """Physical-input compatibility API for the covariant electric field."""
+    return compute_covariant_E_densitized(densitize_vector(D_tiles, metric.D),
+                                         densitize_vector(B_tiles, metric.B), metric)
+
+
+def compute_covariant_H(D_tiles, B_tiles, metric):
+    """Physical-input compatibility API for the covariant magnetic field."""
+    return compute_covariant_H_densitized(densitize_vector(D_tiles, metric.D),
+                                         densitize_vector(B_tiles, metric.B), metric)
+
+
+def update_D_relativity(D_tiles, H_tiles, J_tiles, metric, static_parameters, dynamic_parameters, dt):
+    """Advance physical D through the densitized Maxwell kernel."""
+    result = update_D_densitized(densitize_vector(D_tiles, metric.D), H_tiles,
+                                densitize_vector(J_tiles, metric.D), metric,
+                                static_parameters, dynamic_parameters, dt)
+    return physical_vector(result, metric.D)
+
+
+def update_B_relativity(E_tiles, B_tiles, metric, static_parameters, dynamic_parameters, dt):
+    """Advance physical B through the densitized Maxwell kernel."""
+    result = update_B_densitized(E_tiles, densitize_vector(B_tiles, metric.B), metric,
+                                static_parameters, dynamic_parameters, dt)
+    return physical_vector(result, metric.B)

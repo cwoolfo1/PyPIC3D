@@ -4,6 +4,7 @@ from types import SimpleNamespace
 import jax
 import jax.numpy as jnp
 
+from PyPIC3D.relativity.field_state import densitize_fields
 from PyPIC3D.particles.particle_initialization import load_particles_from_toml
 from PyPIC3D.pusher.particle_push import seed_leapfrog_velocity
 from PyPIC3D.particles.particle_tile_communication import shard_tiled_particles
@@ -759,7 +760,7 @@ def initialize_simulation(toml_file):
 
     overflow = jnp.asarray(False)
     if static_metric:
-        fields = (E, B, J, rho, phi, external_fields, metric, static_metric_state, overflow)
+        fields = densitize_fields((E, B, J, rho, phi, external_fields, metric, static_metric_state, overflow))
     elif electrostatic:
         fields = (E, B, J, rho, phi, external_fields, None, overflow)
     else:

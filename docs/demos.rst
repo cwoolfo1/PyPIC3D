@@ -124,6 +124,22 @@ an unused output directory:
 The production endpoint remains ``end_time=200``. Validation through t=1 M
 establishes startup behavior, not long-time stability.
 
+For a numerical regression comparison, run the original and modified solver
+with identical parameters, seed, backend, and device count into separate
+directories, using ``end_time=1.`` and ``output_interval=.1``. Then run:
+
+.. code-block:: bash
+
+   python demos/static_metric_relativity/bz_monopole/compare_runs.py \
+       /tmp/bz_baseline_t1 /tmp/bz_densitized_t1 --output /tmp/bz_comparison.json
+
+The comparison checks every diagnostic snapshot and the physical final
+field/particle arrays. It requires identical active masks and discrete
+particle outcomes, a per-array error below ``1e-9 * max(1, max(abs(reference)))``,
+and the existing ``1e-10`` exterior constraint limits. Nonfinite diagnostic
+masks must agree. The final endpoint must be exactly t=1 M. Runtime Maxwell
+state is densitized; saved D/B/J arrays remain physical contravariant values.
+
 Notes
 -----
 

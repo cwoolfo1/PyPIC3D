@@ -1,6 +1,8 @@
 """Surface placement and distributed staggered PEC contracts."""
 import unittest
 
+from PyPIC3D.relativity.field_state import densitize_fields, physical_fields
+
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -236,7 +238,7 @@ class TestStaggeredProjectors(unittest.TestCase):
         # the loop expects every incoming D and B to be refreshed already
         vD=refresh_fields((value,)*3,s,D_FIELD_LOCATIONS,'D',m)
         vB=refresh_fields((value,)*3,s,B_FIELD_LOCATIONS,'B',m)
-        fields=(vD,vB,z,value*0,value*0,(vD,vB),m,(vD,vB),False)
+        fields=densitize_fields((vD,vB,z,value*0,value*0,(vD,vB),m,(vD,vB),False))
         captured=[]
         def push(particles,species,D,B,*args):
             captured.append((D,B));return particles,particles
@@ -245,6 +247,7 @@ class TestStaggeredProjectors(unittest.TestCase):
              patch(module+'GR_direct_deposition',return_value=z), \
              patch(module+'refresh_tiled_particle_tiles',side_effect=lambda p,*args:(p,False)):
             _,result=time_loop_static_metric(None,None,fields,s,d)
+        result = physical_fields(result)
         for D,B in (*captured,(result[0],result[1]),result[7]):
             for wall in (s.guard_cells,s.guard_cells+s.tile_shape[0]):
                 idx=(0,0,0,wall,s.guard_cells+2,s.guard_cells)

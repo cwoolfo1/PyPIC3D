@@ -18,6 +18,8 @@ is preserved exactly in time with no divergence cleaning.
 
 import unittest
 
+from PyPIC3D.relativity.field_state import densitize_fields, physical_fields
+
 import jax
 import jax.numpy as jnp
 
@@ -437,7 +439,7 @@ class TestGaussConstraintPreservation(unittest.TestCase):
         J = empty_tiled_vector(static_parameters, dynamic_parameters)
         rho = jnp.zeros_like(J[0])
         phi = jnp.zeros_like(J[0])
-        fields = (D, B, J, rho, phi, (D, B), metric, (D, B), jnp.asarray(False))
+        fields = densitize_fields((D, B, J, rho, phi, (D, B), metric, (D, B), jnp.asarray(False)))
 
         position = jnp.asarray([(0.30, -0.70, 1.10)]).reshape((1, 1, 1, 1, 1, 3))
         velocity = jnp.asarray([(0.45, -0.30, 0.20)]).reshape((1, 1, 1, 1, 1, 3))
@@ -481,7 +483,7 @@ class TestGaussConstraintPreservation(unittest.TestCase):
         )
 
         initial = self._gauss_residual(
-            fields[0], particles, species, metric, static_parameters, dynamic_parameters
+            physical_fields(fields)[0], particles, species, metric, static_parameters, dynamic_parameters
         )
         scale = float(jnp.max(jnp.abs(initial)))
 
@@ -489,7 +491,7 @@ class TestGaussConstraintPreservation(unittest.TestCase):
         for _ in range(steps):
             particles, fields = step(particles, species, fields, dynamic_parameters)
             residual = self._gauss_residual(
-                fields[0], particles, species, metric, static_parameters, dynamic_parameters
+                physical_fields(fields)[0], particles, species, metric, static_parameters, dynamic_parameters
             )
             drift = max(drift, float(jnp.max(jnp.abs(residual - initial))))
         return drift, scale
@@ -581,7 +583,7 @@ class TestDepositionDispatch(unittest.TestCase):
         B = empty_tiled_vector(static_parameters, dynamic_parameters)
         J = empty_tiled_vector(static_parameters, dynamic_parameters)
         rho = jnp.zeros_like(J[0])
-        fields = (D, B, J, rho, jnp.zeros_like(J[0]), (D, B), metric, (D, B), jnp.asarray(False))
+        fields = densitize_fields((D, B, J, rho, jnp.zeros_like(J[0]), (D, B), metric, (D, B), jnp.asarray(False)))
         particles = TiledParticles(
             x=jnp.asarray([(0.30, -0.70, 1.10)]).reshape((1, 1, 1, 1, 1, 3)),
             u=jnp.asarray([(0.45, -0.30, 0.20)]).reshape((1, 1, 1, 1, 1, 3)),

@@ -5,6 +5,8 @@ from unittest.mock import patch
 
 import numpy as np
 import toml
+from PyPIC3D.relativity.field_state import physical_fields
+
 import jax
 import jax.numpy as jnp
 from PyPIC3D.initialization import (
@@ -348,7 +350,7 @@ class TestInitializationFunctions(unittest.TestCase):
 
             self.assertIs(loop, time_loop_static_metric)
             g = int(static_parameters.guard_cells)
-            D, B, _J, _rho, _phi, _external_fields, _metric, previous_fields, _overflow = fields
+            D, B, _J, _rho, _phi, _external_fields, _metric, previous_fields, _overflow = physical_fields(fields)
             D_previous, B_previous = previous_fields
             interior = (0, 0, 0, slice(g, -g), slice(g, -g), slice(g, -g))
             self.assertTrue(jnp.allclose(D[1][interior], 2.0))

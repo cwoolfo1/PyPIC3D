@@ -7,11 +7,11 @@ from PyPIC3D.deposition.Esirkepov import _deposit_esirkepov_tiles
 from PyPIC3D.particles.particle_class import SpeciesConfig, TiledParticles
 
 
-__all__ = ["GR_Esirkepov_current"]
+__all__ = ["GR_Esirkepov_current", "GR_Esirkepov_densitized_current"]
 
 
 @partial(jax.jit, static_argnames="static_parameters")
-def GR_Esirkepov_current(
+def GR_Esirkepov_densitized_current(
     particles_old: TiledParticles,
     particles_new: TiledParticles,
     species_config: SpeciesConfig,
@@ -23,9 +23,9 @@ def GR_Esirkepov_current(
     """
     Charge-conserving Esirkepov current deposition for a fixed 3+1 metric.
 
-    The scheme deposits the conformal current ``sqrt(gamma) J^i`` and returns the
-    physical contravariant current ``J^i`` that ``update_D_relativity`` consumes,
-    matching the convention of ``GR_direct_deposition``.
+    The scheme deposits the conformal current ``sqrt(gamma) J^i`` and returns it
+    directly for the densitized Maxwell update. The physical-current API
+    ``GR_Esirkepov_current`` converts this result at its boundary.
 
     Unlike the direct deposit, this one satisfies the discrete continuity
     equation exactly.  The conformal charge density carries no metric,
@@ -38,7 +38,7 @@ def GR_Esirkepov_current(
 
     is the flat Esirkepov identity verbatim and the ordinary density
     decomposition applies unchanged.  Because the backward-difference divergence
-    of the backward-difference curl in ``update_D_relativity`` vanishes
+    of the backward-difference curl in ``update_D_densitized`` vanishes
     identically, satisfying that equation preserves
 
         d_i( sqrt(gamma) D^i ) = 4 pi sqrt(gamma) rho
@@ -63,8 +63,7 @@ def GR_Esirkepov_current(
         particles_old.x, particles_new.x, particles_new.active, species_config, J,
         static_parameters, dynamic_parameters, trajectory=_gr_trajectory,
     )
-    # Divide by the same Yee density that the field update differences.
-    return tuple(value / sample.sqrt_gamma for value, sample in zip(conformal_current, metric.D))
+    return conformal_current
 
 
 def _gr_trajectory(old_position, endpoint, update_axes, dt):
@@ -80,3 +79,13 @@ def _gr_trajectory(old_position, endpoint, update_axes, dt):
     )
     velocity = tuple((new - old) / dt for new, old in zip(new_position, old_position))
     return new_position, velocity
+
+
+@partial(jax.jit, static_argnames="static_parameters")
+def GR_Esirkepov_current(particles_old, particles_new, species_config, J, metric,
+                         static_parameters, dynamic_parameters):
+    """Compatibility API returning physical contravariant current J^i."""
+    from PyPIC3D.relativity.field_state import physical_vector
+    return physical_vector(GR_Esirkepov_densitized_current(
+        particles_old, particles_new, species_config, J, metric,
+        static_parameters, dynamic_parameters), metric.D)

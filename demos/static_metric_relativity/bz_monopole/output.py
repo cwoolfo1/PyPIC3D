@@ -64,6 +64,8 @@ def output_metadata(p, static, dynamic):
 
 def save_final_state(path, particles, species, fields, step, metadata, dynamic, budget):
     """Write analysis arrays without recovery history or executable objects."""
+    from PyPIC3D.relativity.field_state import physical_fields
+    fields = physical_fields(fields)
     arrays = dict(metadata, x=particles.x, u=particles.u, active=particles.active,
                   step=np.asarray(step), time=np.asarray(step*float(dynamic.dt)),
                   rho=fields[3], phi=fields[4], boundary_budget=budget)

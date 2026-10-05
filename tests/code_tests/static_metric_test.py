@@ -3,6 +3,8 @@ from unittest.mock import patch
 import importlib
 import itertools
 
+from PyPIC3D.relativity.field_state import densitize_fields
+
 import jax
 import jax.numpy as jnp
 
@@ -1125,9 +1127,9 @@ class TestStaticMetricTimeLoop(StaticMetricTestCase):
                 species = SpeciesConfig(jnp.zeros(1), jnp.ones(1), jnp.ones(1),
                                         jnp.ones((1, 3), dtype=bool))
                 zero = empty_tiled_vector(s, d)
-                fields = (zero, zero, zero, jnp.zeros_like(zero[0]),
+                fields = densitize_fields((zero, zero, zero, jnp.zeros_like(zero[0]),
                           jnp.zeros_like(zero[0]), (zero, zero), metric,
-                          (zero, zero), jnp.asarray(True))
+                          (zero, zero), jnp.asarray(True)))
                 if checked:
                     errors, (new, updated) = jax.jit(lambda p, f: time_loop_static_metric(
                         p, species, f, s, d, return_errors=True))(particles, fields)
@@ -1180,7 +1182,7 @@ class TestStaticMetricTimeLoop(StaticMetricTestCase):
                 J = empty_tiled_vector(static_parameters, dynamic_parameters)
                 rho = jnp.zeros_like(J[0])
                 phi = jnp.zeros_like(J[0])
-                fields = (D, B, J, rho, phi, (D, B), metric, (D, B), jnp.asarray(False))
+                fields = densitize_fields((D, B, J, rho, phi, (D, B), metric, (D, B), jnp.asarray(False)))
 
                 module = importlib.import_module('PyPIC3D.solvers.gr_static.time_loop')
                 with patch.object(module, 'refresh_tiled_particle_tiles',
@@ -1251,7 +1253,7 @@ class TestStaticMetricTimeLoop(StaticMetricTestCase):
                 J = empty_tiled_vector(static_parameters, dynamic_parameters)
                 rho = jnp.zeros_like(J[0])
                 phi = jnp.zeros_like(J[0])
-                fields = (D, B, J, rho, phi, (D, B), metric, (D, B), jnp.asarray(False))
+                fields = densitize_fields((D, B, J, rho, phi, (D, B), metric, (D, B), jnp.asarray(False)))
 
                 particles, fields = jax.jit(lambda p, f: time_loop_static_metric(
                     p, species, f, static_parameters, dynamic_parameters
@@ -1283,7 +1285,7 @@ class TestStaticMetricTimeLoop(StaticMetricTestCase):
         phi = jnp.zeros_like(J[0])
         external_fields = (D, B)
         static_metric_state = (D, B)
-        fields = (D, B, J, rho, phi, external_fields, metric, static_metric_state, jnp.asarray(False))
+        fields = densitize_fields((D, B, J, rho, phi, external_fields, metric, static_metric_state, jnp.asarray(False)))
 
         particles, fields = time_loop_static_metric(
             particles,
@@ -1334,7 +1336,7 @@ class TestStaticMetricTimeLoop(StaticMetricTestCase):
         phi = jnp.zeros_like(J[0])
         external_fields = (D, B)
         static_metric_state = (D, B)
-        fields = (D, B, J, rho, phi, external_fields, metric, static_metric_state, jnp.asarray(False))
+        fields = densitize_fields((D, B, J, rho, phi, external_fields, metric, static_metric_state, jnp.asarray(False)))
 
         particles, fields = time_loop_static_metric(
             particles,

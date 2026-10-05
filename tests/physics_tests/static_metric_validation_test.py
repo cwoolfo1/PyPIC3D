@@ -63,6 +63,7 @@ from PyPIC3D.solvers.gr_static.static_metric import (
     update_B_relativity,
     update_D_relativity,
 )
+from PyPIC3D.relativity.field_state import densitize_fields, physical_fields
 from PyPIC3D.solvers.gr_static.time_loop import time_loop_static_metric
 from tests.kernel_fixtures import empty_tiled_scalar, empty_tiled_vector, kernel_parameters
 
@@ -1189,7 +1190,7 @@ def consistent_initial_field_state(static_parameters, dynamic_parameters, metric
         empty_tiled_vector(static_parameters, dynamic_parameters),
         empty_tiled_vector(static_parameters, dynamic_parameters),
     )
-    return (
+    return densitize_fields((
         D_0,
         B_minus_half,
         zero_current,
@@ -1199,7 +1200,7 @@ def consistent_initial_field_state(static_parameters, dynamic_parameters, metric
         metric,
         (D_minus_one, B_minus_three_half),
         jnp.asarray(False),
-    )
+    ))
 
 
 def evolve_vacuum(metric_at_position, metric_name, N, wind, mins, dt, T, D_field, B_field):
@@ -1222,7 +1223,7 @@ def evolve_vacuum(metric_at_position, metric_name, N, wind, mins, dt, T, D_field
     (particles, fields), _ = jax.lax.scan(
         body, (particles, fields), None, length=int(round(T / dt))
     )
-    return static_parameters, dynamic_parameters, fields
+    return static_parameters, dynamic_parameters, physical_fields(fields)
 
 
 PERIODIC_LOOP_CASES = (
@@ -1301,7 +1302,7 @@ class TestTimeLoopConvergence(unittest.TestCase):
             (particles, fields), _ = jax.lax.scan(body, (particles, fields), None, length=steps)
             positions = location_positions(D_FIELD_LOCATIONS[2], dynamic_parameters)
             exact = jnp.sin(positions[..., 0] - steps * dt)
-            errors.append(interior_rms(fields[0][2] - exact, guard))
+            errors.append(interior_rms(physical_fields(fields)[0][2] - exact, guard))
         orders = [convergence_order(errors[i], errors[i + 1]) for i in range(len(errors) - 1)]
         for order in orders:
             self.assertGreater(order, 1.85, f"errors={errors} orders={orders}")

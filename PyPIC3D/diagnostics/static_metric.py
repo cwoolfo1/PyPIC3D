@@ -6,12 +6,17 @@ from PyPIC3D.boundary_conditions.grid_and_stencil import BC_ABSORBING, BC_CONDUC
 
 
 def divergence(vector, metrics, dynamic, *, forward=False):
+    """Conformal divergence of a physical contravariant vector."""
+    from PyPIC3D.relativity.field_state import densitize_vector
+    return densitized_divergence(densitize_vector(vector, metrics), dynamic, forward=forward)
+
+
+def densitized_divergence(vector, dynamic, *, forward=False):
+    """Coordinate divergence of native densities; no metric multiplication."""
     result = jnp.zeros_like(vector[0])
-    for axis, (value, metric, spacing) in enumerate(zip(
-            vector, metrics, (dynamic.dx, dynamic.dy, dynamic.dz))):
-        weighted = value*metric.sqrt_gamma
-        difference = (jnp.roll(weighted, -1, axis=axis+3)-weighted if forward else
-                      weighted-jnp.roll(weighted, 1, axis=axis+3))
+    for axis, (value, spacing) in enumerate(zip(vector, (dynamic.dx, dynamic.dy, dynamic.dz))):
+        difference = (jnp.roll(value, -1, axis=axis+3)-value if forward else
+                      value-jnp.roll(value, 1, axis=axis+3))
         result = result+difference/spacing
     return result
 

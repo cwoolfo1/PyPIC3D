@@ -84,6 +84,35 @@ update.
 Particles interpolate the sum of evolved and prescribed external fields.
 Maxwell updates use only evolved fields.
 
+Static-Metric Maxwell State
+--------------------------
+
+The static-GR runtime tuple keeps its existing layout. Slots 0, 1, and 2 now
+store ``sqrt(gamma) D^i``, ``sqrt(gamma) B^i``, and ``sqrt(gamma) J^i`` on their
+native Yee component locations. Slot 7 stores the previous densitized D/B.
+External fields, rho, phi, the metric, and the overflow flag keep their
+existing conventions. ``relativity.field_state`` provides explicit vector
+and complete-state conversions; manually constructed physical input states
+must pass through ``densitize_fields`` once before evolution.
+
+``update_D_densitized`` and ``update_B_densitized`` advance coordinate curls
+without dividing the increments by the metric volume. The constitutive
+``compute_covariant_E_densitized`` and ``compute_covariant_H_densitized``
+transfer densities and recover physical components using the target metric.
+Time centering operates on stored densities. Physical particle forces and
+prescribed external fields meet only after converting the evolved fields.
+
+The existing ``update_D_relativity``, ``update_B_relativity``,
+``compute_covariant_E``, and ``compute_covariant_H`` remain physical-input
+compatibility APIs. Conducting projectors and horizon extrapolation also
+operate in physical variables; ``refresh_densitized_fields`` handles their
+conversion boundary. Absorbers keep their existing order and physical target.
+File inputs and outputs retain physical D/B/J values and existing names,
+including the static-GR displacement field written as ``E``.
+
+This state convention prepares Maxwell evolution for a changing metric;
+the solver still prescribes a fixed metric and does not evolve spacetime.
+
 Static-Metric Particle Sampling
 --------------------------------
 

@@ -8,6 +8,7 @@ Diagnostic snapshots and final particle/field arrays are saved as NumPy files.
 Runtime metric, finite-state, displacement, capacity, and exterior field-constraint
 checks remain enabled. Interruptions leave completed snapshots in place.
 """
+from PyPIC3D.relativity.field_state import densitize_fields, physical_vector, densitize_vector
 import math
 import time
 
@@ -82,7 +83,7 @@ def initialize_fields(p, static, dynamic, metric):
     previous = (at(D0, dD, ddD, -dt), at(B0, dB, ddB, -1.5*dt))
     # add_external_fields expects a pair of vectors (D_external, B_external).
     external = (D0, D0)
-    return (D0, Bhalf, D0, zero, zero, external, metric, previous, jnp.asarray(False)), B0
+    return densitize_fields((D0, Bhalf, D0, zero, zero, external, metric, previous, jnp.asarray(False))), B0
 
 
 def apply_sponge(fields, background, p, static, dynamic):
@@ -91,7 +92,8 @@ def apply_sponge(fields, background, p, static, dynamic):
     This is an absorbing numerical layer, not a charge-conserving physical source.
     Constraint diagnostics therefore exclude it and its adjacent stencil cells.
     """
-    D, B = fields[:2]
+    D = physical_vector(fields[0], fields[6].D)
+    B = physical_vector(fields[1], fields[6].B)
     def damp(vector, baseline, locations):
         result = []
         for i, loc in enumerate(locations):
@@ -102,7 +104,8 @@ def apply_sponge(fields, background, p, static, dynamic):
             result.append(baseline[i]+factor*(vector[i]-baseline[i]))
         return refresh_fields(tuple(result), locations, static, fields[6])
     zero = tuple(jnp.zeros_like(x) for x in D)
-    return (damp(D, zero, D_FIELD_LOCATIONS), damp(B, background, B_FIELD_LOCATIONS))+fields[2:]
+    return (densitize_vector(damp(D, zero, D_FIELD_LOCATIONS), fields[6].D),
+            densitize_vector(damp(B, background, B_FIELD_LOCATIONS), fields[6].B))+fields[2:]
 
 
 def make_step(p, species, static, dynamic, background, *,
@@ -115,8 +118,10 @@ def make_step(p, species, static, dynamic, background, *,
     @jax.jit
     def inject(particles, fields, key, index):
         metric = fields[6]
-        mag = measure_magnetization(particles, species, fields[1], metric, static, dynamic)
-        return inject_pairs(particles, species, mag, fields[0], fields[1], metric,
+        D = physical_vector(fields[0], metric.D)
+        B = physical_vector(fields[1], metric.B)
+        mag = measure_magnetization(particles, species, B, metric, static, dynamic)
+        return inject_pairs(particles, species, mag, D, B, metric,
                             static, dynamic, p, key, index)
     def evolve(particles, fields):
         transform = None
