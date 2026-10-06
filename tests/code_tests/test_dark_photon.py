@@ -17,15 +17,17 @@ import toml
 import openpmd_api as pmd
 
 from PyPIC3D.__main__ import run_PyPIC3D
+from PyPIC3D.boundary_conditions.ghost_cells import update_tiled_ghost_cells, update_tiled_vector_ghost_cells
 from PyPIC3D.initialization import initialize_simulation, initialize_fields, _dark_timestep, default_parameters
 from PyPIC3D.diagnostics.diagnostic_quantities import compute_dark_energy
 from PyPIC3D.diagnostics.output_adapters import build_field_output_map, fields_for_output, scalar_field_for_output
 from PyPIC3D.solvers.dark_matter_yee.dark_photon_fields import (
-    advance_dark_photon_fields, compute_dark_B, dark_divergence, dark_gradient,
-    initialize_dark_photon_fields, synchronized_dark_fields, update_dark_E,
+    compute_dark_B, dark_divergence, dark_gradient, initialize_dark_photon_fields,
+    synchronized_dark_fields, update_dark_A, update_dark_E, update_dark_phi,
 )
 from PyPIC3D.solvers.dark_matter_yee.time_loop import time_loop_dark_photon, dark_photon_push_fields
 from PyPIC3D.solvers.yee.time_loop import time_loop_electrodynamic, _filter_electric_field_for_particles
+from PyPIC3D.relativity.core import D_FIELD_LOCATIONS
 from PyPIC3D.utilities.parameters import build_static_parameters, static_parameters_for_output
 from PyPIC3D.utilities.toml_helpers import load_dark_fields_from_toml
 from tests.kernel_fixtures import kernel_parameters, build_tiled_particles, particle_species
@@ -64,10 +66,18 @@ def wave(s, d, longitudinal, t=0., discrete=False):
 
 
 def evolve(state, s, d, steps):
+    """Jitted source-free Proca steps in the same order as time_loop_dark_photon."""
     J = tuple(jnp.zeros_like(v) for v in state[0])
-    return jax.jit(lambda state: jax.lax.fori_loop(
-        0, steps, lambda _, value: advance_dark_photon_fields(value, J, s, d), state,
-    ))(state)
+
+    def step(_, state):
+        E, A, phi = state
+        A = update_dark_A(E, A, phi, J, s, d, d.dt)
+        B = compute_dark_B(A, s, d)
+        phi = update_dark_phi(E, A, phi, J, s, d, d.dt)
+        E = update_dark_E(E, B, A, J, s, d, d.dt)
+        return E, A, phi
+
+    return jax.jit(lambda state: jax.lax.fori_loop(0, steps, step, state))(state)
 
 
 def wave_errors(s, d, result, longitudinal, discrete=False):
@@ -149,7 +159,9 @@ class TestDarkPhoton(unittest.TestCase):
             s, d = kernel_parameters(Nx=8, Ny=6, Nz=4, guard_cells=g, dark_mu=.7, dt=.001)
             zero = initialize_fields(s, d)[3]
             noise = jnp.asarray(np.random.default_rng(42).normal(size=zero.shape))
+            noise = update_tiled_ghost_cells(noise, s, g, location=("C", "C", "C"))
             E = dark_gradient(noise, s, d)
+            E = update_tiled_vector_ghost_cells(E, s, g, locations=D_FIELD_LOCATIONS)
             for component in compute_dark_B(E, s, d):
                 np.testing.assert_allclose(component[interior(s)], 0., atol=4e-14)
             phi = -dark_divergence(E, s, d)/s.dark_mu**2
@@ -166,9 +178,12 @@ class TestDarkPhoton(unittest.TestCase):
             s, d = parameters(tiles=tiles)
             state = initialize_dark_photon_fields(s, d, *wave(s, d, True))
             J = tuple(jnp.zeros_like(v) for v in state[0])
-            eager = advance_dark_photon_fields(state, J, s, d)
-            compiled = jax.jit(lambda v: advance_dark_photon_fields(v, J, s, d))(state)
-            self.assert_tree_close(eager, compiled)
+            E, A, phi = state
+            A = update_dark_A(E, A, phi, J, s, d, d.dt)
+            B = compute_dark_B(A, s, d)
+            phi = update_dark_phi(E, A, phi, J, s, d, d.dt)
+            E = update_dark_E(E, B, A, J, s, d, d.dt)
+            self.assert_tree_close((E, A, phi), evolve(state, s, d, 1))
             result = evolve(state, s, d, 16)
             results.append(jax.tree.map(lambda v: scalar_field_for_output(v, s)[1:-1, 1:-1, 1:-1], result))
         self.assert_tree_close(*results)
@@ -189,22 +204,32 @@ class TestDarkPhoton(unittest.TestCase):
                 self.assert_tree_close(push_E, tuple(ext-mixing*e for ext, e in zip(current, filtered)))
                 self.assert_tree_close(push_B, tuple(ext-mixing*b for ext, b in zip(current, dark_B)))
 
-    def test_zero_mixing_matches_yee_for_both_current_depositions(self):
-        for deposition, filter_name in (("direct", "bilinear"), ("esirkepov", "none")):
-            s, d = parameters(n=8, current_deposition=deposition, current_filter=filter_name)
-            particles, species = build_tiled_particles([
-                particle_species("p", charge=.01, mass=1., x1=[-.4, .4], u1=[.02, -.03]),
-            ], s, d)
-            E, B, J, phi, rho = initialize_fields(s, d)
-            external = (tuple(jnp.ones_like(e)*.01 for e in E), B)
-            base = (E, B, J, rho, phi, external, None, jnp.asarray(False))
-            dark = initialize_dark_photon_fields(s, d, *wave(s, d, False))
-            fields = base[:-1]+(dark, base[-1])
-            expected = time_loop_electrodynamic(particles, species, base, s, d)
-            actual = time_loop_dark_photon(particles, species, fields, s, d)
-            compiled = jax.jit(lambda p, f: time_loop_dark_photon(p, species, f, s, d))(particles, fields)
-            self.assert_tree_close(actual, compiled)
-            self.assert_tree_close(expected, (actual[0], actual[1][:7]+(actual[1][-1],)))
+    def test_zero_mixing_time_loop_matches_yee(self):
+        steps = 5
+        for deposition, filter_name in (("direct", "bilinear"), ("direct", "digital"), ("esirkepov", "none")):
+            with self.subTest(deposition=deposition, filter=filter_name):
+                s, d = parameters(n=8, sin_chi=0., current_deposition=deposition,
+                                  current_filter=filter_name, alpha=.5)
+                particles, species = build_tiled_particles([
+                    particle_species("p", charge=.01, mass=1., x1=[-.4, .4], u1=[.02, -.03]),
+                ], s, d)
+                E, B, J, phi, rho = initialize_fields(s, d)
+                external = (tuple(jnp.ones_like(e)*.01 for e in E), B)
+                dark = initialize_dark_photon_fields(s, d, *wave(s, d, False))
+                yee_state = (particles, (E, B, J, rho, phi, external, None, jnp.asarray(False)))
+                dark_state = (particles, (E, B, J, rho, phi, external, None, dark, jnp.asarray(False)))
+
+                yee_step = jax.jit(lambda p, f: time_loop_electrodynamic(p, species, f, s, d))
+                dark_step = jax.jit(lambda p, f: time_loop_dark_photon(p, species, f, s, d))
+                eager = time_loop_dark_photon(dark_state[0], species, dark_state[1], s, d)
+                self.assert_tree_close(eager, dark_step(*dark_state))
+                for _ in range(steps):
+                    yee_state = yee_step(*yee_state)
+                    dark_state = dark_step(*dark_state)
+
+                dark_particles, dark_fields = dark_state
+                self.assert_tree_close(yee_state, (dark_particles, dark_fields[:7] + (dark_fields[8],)))
+                self.assert_tree_close(dark_fields[7], evolve(dark, s, d, steps))
 
     def test_particle_electric_force_is_scaled_and_signed(self):
         for deposition in ("direct", "esirkepov"):
