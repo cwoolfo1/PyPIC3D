@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 from matplotlib import animation, colors
 import numpy as np
 import openpmd_api as io
-from parameters import B0, CYCLOTRON_FREQUENCY, SKIN_DEPTH
+from demos.standard_yee.reconnection_2d.parameters import B0, CYCLOTRON_FREQUENCY, SKIN_DEPTH
 
 
 SMOOTHING_SIGMA_CELLS = 2.0

@@ -3,7 +3,7 @@
 from pathlib import Path
 import numpy as np
 
-from parameters import (
+from demos.standard_yee.reconnection_2d.parameters import (
     B0,
     DEBYE_LENGTH,
     DRIFT_SPEED,
