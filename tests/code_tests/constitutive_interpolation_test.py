@@ -7,6 +7,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from PyPIC3D.relativity.core import build_yee_metric, D_FIELD_LOCATIONS, B_FIELD_LOCATIONS, location_grid
+from PyPIC3D.relativity.field_state import densitize_vector
 from PyPIC3D.solvers.GR_yee.static_metric import compute_covariant_E, compute_covariant_H
 
 
@@ -46,6 +47,8 @@ class TestRegularConstitutiveInterpolation(unittest.TestCase):
                       for i, loc in enumerate(D_FIELD_LOCATIONS))
             B = tuple(on_grid(location_grid(c, v, loc), lambda q, i=i: vectors(q)[1][i])
                       for i, loc in enumerate(B_FIELD_LOCATIONS))
+            # The constitutive kernels consume native densities sqrt(gamma) V^i.
+            D, B = densitize_vector(D, m.D), densitize_vector(B, m.B)
             total = 0.
             for fields, locs, magnetic in ((compute_covariant_E(D, B, m), D_FIELD_LOCATIONS, False),
                                             (compute_covariant_H(D, B, m), B_FIELD_LOCATIONS, True)):

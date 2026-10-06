@@ -245,8 +245,10 @@ def seed_leapfrog_velocity(
     Args:
         particles (TiledParticles): Particle state holding the physical ``u(0)``.
         species_config (SpeciesConfig): Per-species charge, mass, weight and masks.
-        E_tiles (tuple): Electric (or contravariant ``D^i``) gather field at ``t=0``.
-        B_tiles (tuple): Magnetic gather field at ``t=0``.
+        E_tiles (tuple): Electric gather field at ``t=0``; the ``static_metric``
+            solver passes the native density ``sqrt(gamma) D^i``.
+        B_tiles (tuple): Magnetic gather field at ``t=0``; a native density
+            for the ``static_metric`` solver.
         static_parameters (StaticParameters): Compile-time simulation parameters.
         dynamic_parameters (DynamicParameters): Runtime parameters, including ``dt``.
         metric (YeeMetric or None): Prescribed metric, required by the

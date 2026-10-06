@@ -1,7 +1,6 @@
 """Surface placement and distributed staggered PEC contracts."""
 import unittest
-
-from PyPIC3D.relativity.field_state import densitize_fields, physical_fields
+from functools import partial
 
 import jax
 import jax.numpy as jnp
@@ -11,8 +10,9 @@ from PyPIC3D.boundary_conditions.pec import _pec_setup, _prepare_normal_D, _proj
 from PyPIC3D.boundary_conditions.staggered import refresh_fields
 from PyPIC3D.boundary_conditions.ghost_cells import apply_tiled_pec_boundary
 from PyPIC3D.relativity.core import Metric, YeeMetric, D_FIELD_LOCATIONS, B_FIELD_LOCATIONS, build_yee_metric
-from PyPIC3D.relativity.field_interpolation import metric_weighted_interpolate
-from PyPIC3D.solvers.GR_yee.static_metric import compute_covariant_E, compute_covariant_H, update_B_relativity, update_D_relativity
+from PyPIC3D.relativity.field_interpolation import copy_densities, reconstruct_vector
+from PyPIC3D.relativity.field_state import densitize_fields, physical_fields
+from PyPIC3D.solvers.GR_yee.static_metric import compute_covariant_E, compute_covariant_H, update_B, update_D
 from PyPIC3D.diagnostics.static_metric import divergence
 from tests.kernel_fixtures import kernel_parameters
 
@@ -75,8 +75,10 @@ class TestEdgeCoupledProjection(unittest.TestCase):
         s, d, m = coupled_setup((16, 8, 1), (8, 8, 1), (1, 1, 0))
         vector = tuple(jnp.asarray(np.random.default_rng(1).normal(size=m.center.lapse.shape)) for _ in range(3))
         refreshed = refresh_fields(vector, s, D_FIELD_LOCATIONS, 'D', m)
-        axes, exchange = _pec_setup(refreshed[0].shape, s, D_FIELD_LOCATIONS)
-        snapshot = exchange(_prepare_normal_D(exchange(refreshed), s, axes))
+        axes, exchange = _pec_setup(refreshed[0].shape, s, D_FIELD_LOCATIONS, m)
+        volumes = tuple(sample.sqrt_gamma for sample in m.D)
+        prepare = partial(_prepare_normal_D, static=s, axes=axes)
+        snapshot = exchange(copy_densities(prepare, exchange(refreshed), volumes))
         one_pass = _project_native_nodes(snapshot, s, D_FIELD_LOCATIONS, 'D', m, axes)
         g = s.guard_cells
         for component in (0, 1):
@@ -127,7 +129,7 @@ class TestStaggeredProjectors(unittest.TestCase):
         np.testing.assert_array_equal(Er[1][0,0,0,:g,g+2,g],E[1][0,0,0,:g,g+2,g])
         for i in range(3):
             np.testing.assert_array_equal(D[i],(2.,7.,8.)[i]);np.testing.assert_array_equal(B[i],(3.,0.,4.)[i])
-        with self.assertRaisesRegex(ValueError,'require a Yee metric'):
+        with self.assertRaisesRegex(ValueError,'requires a Yee metric'):
             refresh_fields(D,s,D_FIELD_LOCATIONS,'D')
 
     def test_corners_intersect_and_yee_last_interior_is_free(self):
@@ -193,8 +195,7 @@ class TestStaggeredProjectors(unittest.TestCase):
             m=build_yee_metric(d,metric_at)
             v=tuple(jnp.ones_like(m.center.lapse)*(i+1) for i in range(3))
             result=refresh_fields(v,s,D_FIELD_LOCATIONS,'D',m)
-            collocated=jnp.stack([metric_weighted_interpolate(result[i],m.D[i],m.center,loc,('C',)*3)
-                                 for i,loc in enumerate(D_FIELD_LOCATIONS)],axis=-1)
+            collocated=jnp.stack(reconstruct_vector(result,D_FIELD_LOCATIONS,('C',)*3),axis=-1)/m.center.sqrt_gamma[...,None]
             residual=jnp.einsum('...ij,...j->...i',m.center.gamma,collocated)[...,1:]
             errors.append(float(jnp.max(jnp.abs(residual[0,0,0,2,3:2+n-1,2]))))
         for coarse,fine in zip(errors,errors[1:]):self.assertGreater(coarse/fine,3.5,errors)
@@ -205,19 +206,19 @@ class TestStaggeredProjectors(unittest.TestCase):
         s=s._replace(supergaussian_active=True,supergaussian_layers=((1,1,2,4.,2.),))
         shape=m.center.lapse.shape;g=s.guard_cells;n=s.tile_shape[0]
         fields=tuple(jnp.ones(shape)*(i+1.) for i in range(3));zero=(jnp.zeros(shape),)*3
-        B=update_B_relativity(zero,fields,m,s,d,.01)
-        D=update_D_relativity(fields,zero,zero,m,s,d,.01)
+        B=update_B(zero,fields,m,s,d,.01)
+        D=update_D(fields,zero,zero,m,s,d,.01)
         for wall in (g,g+n):
             np.testing.assert_array_equal(B[0][0,0,0,wall,g:-g,g],0.)
             for i in (1,2):np.testing.assert_array_equal(D[i][0,0,0,wall,g:-g,g],0.)
         projected_B=refresh_fields(fields,s,B_FIELD_LOCATIONS,'B',m)
         projected_D=refresh_fields(fields,s,D_FIELD_LOCATIONS,'D',m)
         # Zeroing the uniform tangential D^y, D^z on the walls leaves Gauss's law unchanged.
-        gauss=divergence(projected_D,m.D,d,forward=False)-divergence(fields,m.D,d,forward=False)
+        gauss=divergence(projected_D,d)-divergence(fields,d)
         np.testing.assert_allclose(gauss[0,0,0,g:-g,g:-g,g],0.,atol=1e-12)
         # Zeroing normal B^x=1 on the wall nodes changes div B by +-B^x/dx in the
         # first and last interior cells only.
-        change=(divergence(projected_B,m.B,d,forward=True)-divergence(fields,m.B,d,forward=True))
+        change=divergence(projected_B,d,forward=True)-divergence(fields,d,forward=True)
         expected=np.zeros((n,s.tile_shape[1]))
         expected[0],expected[-1]=1./d.dx,-1./d.dx
         np.testing.assert_allclose(change[0,0,0,g:-g,g:-g,g],expected,rtol=1e-12,atol=1e-12)
@@ -242,7 +243,7 @@ class TestStaggeredProjectors(unittest.TestCase):
         captured=[]
         def push(particles,species,D,B,*args):
             captured.append((D,B));return particles,particles
-        module='PyPIC3D.solvers.gr_static.time_loop.'
+        module='PyPIC3D.solvers.GR_yee.time_loop.'
         with patch(module+'hybrid_boris_geodesic_push',side_effect=push), \
              patch(module+'GR_direct_deposition',return_value=z), \
              patch(module+'refresh_tiled_particle_tiles',side_effect=lambda p,*args:(p,False)):
@@ -256,7 +257,7 @@ class TestStaggeredProjectors(unittest.TestCase):
                 self.assertEqual(float(D[2][idx]),0.)
 
     def test_flat_stages_agree_with_yee_for_compatible_fields(self):
-        from PyPIC3D.solvers.yee.first_order_yee import update_E, update_B
+        from PyPIC3D.solvers.yee.first_order_yee import update_E as yee_update_E, update_B as yee_update_B
         s,d,m=make_setup((8,8,1),2,(1,1,0))
         shape=m.center.lapse.shape
         x=d.grids.tiled_center_grid[0][..., :,None,None]
@@ -266,10 +267,10 @@ class TestStaggeredProjectors(unittest.TestCase):
         E=apply_tiled_pec_boundary(E,s);D=refresh_fields(E,s,D_FIELD_LOCATIONS,'D',m)
         By=(z,)*3;Bg=By;J=By
         for _ in range(3):
-            By,_=update_B(E,By,s,d)
-            Bg=update_B_relativity(compute_covariant_E(D,Bg,m),Bg,m,s,d,d.dt/2)
-            E,_=update_E(E,By,J,s,d)
-            D=update_D_relativity(D,compute_covariant_H(D,Bg,m),J,m,s,d,d.dt)
+            By,_=yee_update_B(E,By,s,d)
+            Bg=update_B(compute_covariant_E(D,Bg,m),Bg,m,s,d,d.dt/2)
+            E,_=yee_update_E(E,By,J,s,d)
+            D=update_D(D,compute_covariant_H(D,Bg,m),J,m,s,d,d.dt)
             for a,b in zip((*E,*By),(*compute_covariant_E(D,Bg,m),*Bg)):
                 np.testing.assert_allclose(a[:,:,:,2:-2,2:-2,2],b[:,:,:,2:-2,2:-2,2],atol=1e-12)
 

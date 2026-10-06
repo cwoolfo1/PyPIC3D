@@ -7,7 +7,7 @@ variables,
     ( sqrt(gamma) rho^{n+1} - sqrt(gamma) rho^n ) / dt
         + d-_i( sqrt(gamma) J^i ) = 0,
 
-where ``d-`` is the backward difference that ``update_D_relativity`` uses for its
+where ``d-`` is the backward difference that ``update_D`` uses for its
 curl.  When that holds, and because the backward-difference divergence of a
 backward-difference curl vanishes identically, the Gauss constraint
 
@@ -18,7 +18,7 @@ is preserved exactly in time with no divergence cleaning.
 
 import unittest
 
-from PyPIC3D.relativity.field_state import densitize_fields, physical_fields
+from PyPIC3D.relativity.field_state import densitize_fields
 
 import jax
 import jax.numpy as jnp
@@ -42,7 +42,7 @@ from PyPIC3D.relativity.metrics.kerr_schild import (
     initialize_kerr_schild_cartesian_metric,
     initialize_kerr_schild_spherical_metric,
 )
-from PyPIC3D.solvers.GR_yee.static_metric import update_D_relativity
+from PyPIC3D.solvers.GR_yee.static_metric import update_D
 from PyPIC3D.solvers.GR_yee.time_loop import time_loop_static_metric
 from tests.kernel_fixtures import (
     empty_tiled_scalar,
@@ -76,7 +76,7 @@ def _interior(static_parameters):
 
 def _backward_divergence(vector_tiles, static_parameters, dynamic_parameters):
     """
-    ``d-_i V^i`` at the cell centre, matching ``update_D_relativity``.
+    ``d-_i V^i`` at the cell centre, matching ``update_D``.
 
     The D components live on the faces, so the backward difference of a
     face-centred density lands on the centre -- exactly where ``compute_rho``
@@ -95,12 +95,6 @@ def _backward_divergence(vector_tiles, static_parameters, dynamic_parameters):
         + (Vz[:, :, :, active, active, active] - Vz[:, :, :, active, active, backward])
         / dynamic_parameters.dz
     )
-
-
-def _conformal(J, metric):
-    """Undo the physical-current divide to recover ``sqrt(gamma) J^i``."""
-
-    return tuple(metric.D[i].sqrt_gamma * J[i] for i in range(3))
 
 
 def _tiled_single_particle(x, tile_grid_shape):
@@ -179,9 +173,7 @@ def _continuity_residual(
         rho_new[:, :, :, interior, interior, interior]
         - rho_old[:, :, :, interior, interior, interior]
     ) / dynamic_parameters.dt
-    div_J = _backward_divergence(
-        _conformal(J, metric), static_parameters, dynamic_parameters
-    )
+    div_J = _backward_divergence(J, static_parameters, dynamic_parameters)
 
     residual = d_rho_dt + div_J
     return float(jnp.max(jnp.abs(residual))), float(jnp.max(jnp.abs(div_J)))
@@ -346,11 +338,11 @@ class TestGRESirkepovConventions(unittest.TestCase):
         for component in disabled:
             self.assertTrue(bool(jnp.allclose(component, 0.0)))
 
-    def test_returns_physical_contravariant_current_in_a_spherical_chart(self):
+    def test_returns_densitized_current_in_a_spherical_chart(self):
         """
-        The returned current is the physical J^i, so the conformal flux
+        The returned current is the density sqrt(gamma) J^i, so its flux
         sqrt(gamma) J^i d^3x is radius-independent while the physical current
-        itself is not.  Mirrors the equivalent GR_direct_deposition test.
+        J^i is not.  Mirrors the equivalent GR_direct_deposition test.
         """
 
         static_parameters, dynamic_parameters = kernel_parameters(
@@ -393,10 +385,9 @@ class TestGRESirkepovConventions(unittest.TestCase):
                 static_parameters,
                 dynamic_parameters,
             )
-            physical = jnp.sum(J[0][window])
+            physical = jnp.sum(J[0][window] / metric.D[0].sqrt_gamma[window])
             conformal_flux = jnp.sum(
-                metric.D[0].sqrt_gamma[window]
-                * J[0][window]
+                J[0][window]
                 * dynamic_parameters.dx
                 * dynamic_parameters.dy
                 * dynamic_parameters.dz
@@ -447,7 +438,8 @@ class TestGaussConstraintPreservation(unittest.TestCase):
         particles = TiledParticles(x=position, u=velocity, active=active)
         return static_parameters, dynamic_parameters, metric, fields, particles
 
-    def _gauss_residual(self, D, particles, species, metric, static_parameters, dynamic_parameters):
+    def _gauss_residual(self, D, particles, species, static_parameters, dynamic_parameters):
+        """``D`` is the runtime density ``sqrt(gamma) D^i``."""
         rho = compute_rho(
             particles,
             species,
@@ -458,18 +450,12 @@ class TestGaussConstraintPreservation(unittest.TestCase):
         interior = _interior(static_parameters)
         conformal_rho = rho[:, :, :, interior, interior, interior]
         return (
-            _backward_divergence(_conformal(D, metric), static_parameters, dynamic_parameters)
+            _backward_divergence(D, static_parameters, dynamic_parameters)
             - 4.0 * jnp.pi * conformal_rho
         )
 
     def _constraint_drift(self, current_deposition, steps=4):
-        (
-            static_parameters,
-            dynamic_parameters,
-            metric,
-            fields,
-            particles,
-        ) = self._loop_setup(current_deposition)
+        static_parameters, dynamic_parameters, _, fields, particles = self._loop_setup(current_deposition)
         species = _unit_species()
 
         # jit the step, closing over static_parameters the way
@@ -482,17 +468,13 @@ class TestGaussConstraintPreservation(unittest.TestCase):
             )
         )
 
-        initial = self._gauss_residual(
-            physical_fields(fields)[0], particles, species, metric, static_parameters, dynamic_parameters
-        )
+        initial = self._gauss_residual(fields[0], particles, species, static_parameters, dynamic_parameters)
         scale = float(jnp.max(jnp.abs(initial)))
 
         drift = 0.0
         for _ in range(steps):
             particles, fields = step(particles, species, fields, dynamic_parameters)
-            residual = self._gauss_residual(
-                physical_fields(fields)[0], particles, species, metric, static_parameters, dynamic_parameters
-            )
+            residual = self._gauss_residual(fields[0], particles, species, static_parameters, dynamic_parameters)
             drift = max(drift, float(jnp.max(jnp.abs(residual - initial))))
         return drift, scale
 
@@ -517,7 +499,7 @@ class TestGaussConstraintPreservation(unittest.TestCase):
 
     def test_backward_divergence_annihilates_the_ampere_curl(self):
         """
-        With no current, update_D_relativity cannot change the weighted
+        With no current, update_D cannot change the coordinate
         divergence of D at all.  This is why a charge-conserving deposit is
         sufficient on its own, and why the averaged-current auxiliary chain in
         the time loop cannot leak into the constraint: it only ever reaches the
@@ -540,16 +522,13 @@ class TestGaussConstraintPreservation(unittest.TestCase):
         )
         zero_current = empty_tiled_vector(static_parameters, dynamic_parameters)
 
-        before = _backward_divergence(
-            _conformal(D, metric), static_parameters, dynamic_parameters
-        )
-        D_next = update_D_relativity(
+        # D is the density sqrt(gamma) D^i, the variable update_D advances
+        before = _backward_divergence(D, static_parameters, dynamic_parameters)
+        D_next = update_D(
             D, H, zero_current, metric, static_parameters, dynamic_parameters,
             dynamic_parameters.dt,
         )
-        after = _backward_divergence(
-            _conformal(D_next, metric), static_parameters, dynamic_parameters
-        )
+        after = _backward_divergence(D_next, static_parameters, dynamic_parameters)
 
         curl_scale = float(jnp.max(jnp.abs(after)))
         self.assertGreater(curl_scale, 0.0)

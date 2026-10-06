@@ -1,9 +1,11 @@
-"""Conversions at the boundary of the densitized static-GR solver state.
+"""Conversions at the file boundary of the densitized static-GR solver state.
 
-Runtime slots 0/1/2 contain sqrt(gamma) times D/B/J at their native Yee
-locations. Slot 7 contains the previous densitized D/B. External fields,
-rho, phi, and the metric retain their existing conventions. File inputs and
-outputs and particle forces use physical contravariant vectors.
+Every D/B/J the solver evolves, refreshes, or hands to the particle push is a
+native density sqrt(gamma) V^i at its own Yee location: runtime slots 0/1/2,
+the external D/B in slot 5, and the previous D/B in slot 7. rho, phi and the
+metric keep their own conventions. Only file inputs and outputs use physical
+contravariant vectors, so these converters belong in initialization and
+output adapters, never inside a step.
 """
 
 
@@ -20,16 +22,18 @@ def physical_vector(vector, samples):
 def _convert_fields(fields, convert):
     D, B, J, rho, phi, external, metric, previous, overflow = fields
     return (convert(D, metric.D), convert(B, metric.B), convert(J, metric.D),
-            rho, phi, external, metric,
+            rho, phi,
+            (convert(external[0], metric.D), convert(external[1], metric.B)),
+            metric,
             (convert(previous[0], metric.D), convert(previous[1], metric.B)),
             overflow)
 
 
 def densitize_fields(fields):
-    """Convert a physical initial/input state once into runtime storage."""
+    """Convert a physical file input state into runtime densities."""
     return _convert_fields(fields, densitize_vector)
 
 
 def physical_fields(fields):
-    """Return a physical view of runtime state for diagnostics and output."""
+    """Return a physical view of runtime state for file output."""
     return _convert_fields(fields, physical_vector)

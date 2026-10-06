@@ -3,7 +3,7 @@ from unittest.mock import patch
 import importlib
 import itertools
 
-from PyPIC3D.relativity.field_state import densitize_fields
+from PyPIC3D.relativity.field_state import densitize_fields, densitize_vector, physical_vector
 
 import jax
 import jax.numpy as jnp
@@ -45,7 +45,7 @@ from PyPIC3D.relativity.metrics.kerr_schild import (
 from PyPIC3D.solvers.GR_yee.static_metric import (
     compute_covariant_E,
     compute_covariant_H,
-    update_D_relativity,
+    update_D,
 )
 from PyPIC3D.utilities.filters import tiled_bilinear_filter_vector, tiled_digital_filter_vector
 from tests.kernel_fixtures import active_interior, empty_tiled_vector, kernel_parameters
@@ -299,6 +299,7 @@ class TestConstitutiveFields(StaticMetricTestCase):
         metric = _replace_lapse_shift(metric, lapse=0.7, shift=(0.2, -0.1, 0.15))
         D = _constant_tiled_vector(static_parameters, dynamic_parameters, (1.1, -0.7, 0.3))
         B = _constant_tiled_vector(static_parameters, dynamic_parameters, (0.4, 0.9, -1.2))
+        D, B = densitize_vector(D, metric.D), densitize_vector(B, metric.B)
 
         E = compute_covariant_E(D, B, metric)
         H = compute_covariant_H(D, B, metric)
@@ -885,14 +886,8 @@ class TestGRDirectDeposition(StaticMetricTestCase):
                 slice(g, -g),
                 slice(g, -g),
             )
-            grid_work = sum(
-                jnp.sum(
-                    metric.D[i].sqrt_gamma[interior]
-                    * D[i][interior]
-                    * J[i][interior]
-                )
-                for i in range(3)
-            )
+            # J is the native density sqrt(gamma) J^i, so it already carries the volume factor.
+            grid_work = sum(jnp.sum(D[i][interior] * J[i][interior]) for i in range(3))
             grid_work *= dynamic_parameters.dx * dynamic_parameters.dy * dynamic_parameters.dz
 
             gathered_D = []
@@ -989,7 +984,7 @@ class TestGRDirectDeposition(StaticMetricTestCase):
                     atol=1.0e-12,
                 )
 
-    def test_GR_direct_deposition_returns_physical_spherical_current(self):
+    def test_GR_direct_deposition_returns_conformal_spherical_current(self):
         static_parameters, dynamic_parameters = kernel_parameters(
             guard_cells=3,
             Nx=8,
@@ -1043,10 +1038,9 @@ class TestGRDirectDeposition(StaticMetricTestCase):
                 slice(g, -g),
                 slice(g, -g),
             )
-            physical_current_sum = jnp.sum(J[0][active])
+            physical_current_sum = jnp.sum(physical_vector(J, metric.D)[0][active])
             conformal_flux = jnp.sum(
-                metric.D[0].sqrt_gamma[active]
-                * J[0][active]
+                J[0][active]
                 * dynamic_parameters.dx
                 * dynamic_parameters.dy
                 * dynamic_parameters.dz
@@ -1061,7 +1055,7 @@ class TestGRDirectDeposition(StaticMetricTestCase):
         self.assertTrue(jnp.allclose(outer_flux, expected_flux, rtol=1.0e-5, atol=1.0e-6))
         self.assertGreater(inner_current, outer_current)
 
-    def test_update_D_relativity_consumes_physical_current_without_metric_rescaling(self):
+    def test_update_D_consumes_densitized_current_without_metric_rescaling(self):
         static_parameters, dynamic_parameters = kernel_parameters(
             guard_cells=3,
             Nx=4,
@@ -1085,7 +1079,8 @@ class TestGRDirectDeposition(StaticMetricTestCase):
         H = empty_tiled_vector(static_parameters, dynamic_parameters)
         J = _constant_tiled_vector(static_parameters, dynamic_parameters, (1.0, 0.0, 0.0))
 
-        D_next = update_D_relativity(
+        # D and J are native densities, so the source enters with no sqrt(gamma) factor.
+        D_next = update_D(
             D,
             H,
             J,
@@ -1184,7 +1179,7 @@ class TestStaticMetricTimeLoop(StaticMetricTestCase):
                 phi = jnp.zeros_like(J[0])
                 fields = densitize_fields((D, B, J, rho, phi, (D, B), metric, (D, B), jnp.asarray(False)))
 
-                module = importlib.import_module('PyPIC3D.solvers.gr_static.time_loop')
+                module = importlib.import_module('PyPIC3D.solvers.GR_yee.time_loop')
                 with patch.object(module, 'refresh_tiled_particle_tiles',
                                   wraps=module.refresh_tiled_particle_tiles) as refresh:
                     if checked:

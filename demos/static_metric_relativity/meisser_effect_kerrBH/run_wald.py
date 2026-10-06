@@ -12,17 +12,19 @@ from tqdm import tqdm
 
 import wald_solution as wald
 
-from PyPIC3D.boundary_conditions.ghost_cells import update_tiled_vector_ghost_cells
+from PyPIC3D.boundary_conditions.staggered import refresh_fields
 from PyPIC3D.boundary_conditions.supergaussian import apply_tiled_supergaussian_absorber
 from PyPIC3D.diagnostics.async_writer import (
     create_async_tiled_openpmd_field_writer,
     enqueue_openpmd_field_output,
 )
+from PyPIC3D.relativity.core import B_FIELD_LOCATIONS, D_FIELD_LOCATIONS
+from PyPIC3D.relativity.field_state import physical_vector
 from PyPIC3D.solvers.GR_yee.static_metric import (
     compute_covariant_E,
     compute_covariant_H,
-    update_B_relativity,
-    update_D_relativity,
+    update_B,
+    update_D,
 )
 from PyPIC3D.utilities.simulation_helpers import setup_pmd_files
 
@@ -33,12 +35,14 @@ jax.config.update("jax_enable_x64", True)
 def apply_target_absorber(
     field,
     target,
+    field_kind,
+    metric,
     static_parameters,
     dynamic_parameters,
     absorber_parameters,
     step_dt,
 ):
-    """Damp deviations toward the analytical Kerr field at the outer wall."""
+    """Damp density deviations toward the analytical Kerr field at the outer wall."""
 
     deviation = tuple(
         component - target_component
@@ -54,11 +58,8 @@ def apply_target_absorber(
         target_component + deviation_component
         for target_component, deviation_component in zip(target, deviation)
     )
-    return update_tiled_vector_ghost_cells(
-        matched,
-        static_parameters,
-        num_guard_cells=int(static_parameters.guard_cells),
-    )
+    locations = D_FIELD_LOCATIONS if field_kind == 'D' else B_FIELD_LOCATIONS
+    return refresh_fields(matched, static_parameters, locations, field_kind, metric)
 
 
 def step_vacuum_wald(
@@ -69,7 +70,7 @@ def step_vacuum_wald(
     dynamic_parameters,
     absorber_parameters,
 ):
-    """Advance one production static-metric leapfrog step with zero current."""
+    """Advance one production static-metric leapfrog step of D/B densities with zero current."""
 
     D_n, B_n_minushalf, D_n_minusone, B_n_minusthreehalves = state
     D_target, B_target = target
@@ -88,7 +89,7 @@ def step_vacuum_wald(
         B_n_minushalf,
         metric,
     )
-    B_n = update_B_relativity(
+    B_n = update_B(
         E_n_minusonehalf,
         B_n_minusone,
         metric,
@@ -99,6 +100,8 @@ def step_vacuum_wald(
     B_n = apply_target_absorber(
         B_n,
         B_target,
+        'B',
+        metric,
         static_parameters,
         dynamic_parameters,
         absorber_parameters,
@@ -108,7 +111,7 @@ def step_vacuum_wald(
     E_n = compute_covariant_E(D_n, B_n, metric)
     H_n = compute_covariant_H(D_n, B_n, metric)
 
-    B_n_plushalf = update_B_relativity(
+    B_n_plushalf = update_B(
         E_n,
         B_n_minushalf,
         metric,
@@ -119,6 +122,8 @@ def step_vacuum_wald(
     B_n_plushalf = apply_target_absorber(
         B_n_plushalf,
         B_target,
+        'B',
+        metric,
         static_parameters,
         dynamic_parameters,
         absorber_parameters,
@@ -126,7 +131,7 @@ def step_vacuum_wald(
     )
 
     zero_current = tuple(jnp.zeros_like(component) for component in D_n)
-    D_n_plushalf = update_D_relativity(
+    D_n_plushalf = update_D(
         D_n_minushalf,
         H_n,
         zero_current,
@@ -138,6 +143,8 @@ def step_vacuum_wald(
     D_n_plushalf = apply_target_absorber(
         D_n_plushalf,
         D_target,
+        'D',
+        metric,
         static_parameters,
         dynamic_parameters,
         absorber_parameters,
@@ -145,7 +152,7 @@ def step_vacuum_wald(
     )
 
     H_n_plushalf = compute_covariant_H(D_n_plushalf, B_n_plushalf, metric)
-    D_n_plusone = update_D_relativity(
+    D_n_plusone = update_D(
         D_n,
         H_n_plushalf,
         zero_current,
@@ -157,6 +164,8 @@ def step_vacuum_wald(
     D_n_plusone = apply_target_absorber(
         D_n_plusone,
         D_target,
+        'D',
+        metric,
         static_parameters,
         dynamic_parameters,
         absorber_parameters,
@@ -191,12 +200,12 @@ def advance_steps(
 
 
 def field_map(state, metric, B0):
-    """Select the two requested PyPIC3D mesh diagnostics."""
+    """Select the two requested PyPIC3D mesh diagnostics; files store physical B."""
 
     D, B = state[:2]
     return {
         "E_parallel": wald.parallel_electric_field(D, B, metric, B0),
-        "B": B,
+        "B": physical_vector(B, metric.B),
     }
 
 

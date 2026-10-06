@@ -1,19 +1,23 @@
 """Local metric projections for coordinate-aligned, stationary FIDO walls.
 
-Each native wall row is projected from a co-located reconstruction of the
-contravariant vector. Where two walls meet and off-diagonal gamma couples
-them, the coupled D edge rows and B edge ghosts are solved exactly.
+All vectors are native densities ``sqrt(gamma) V^i``. Each native wall row is
+projected from a co-located density reconstruction; the projector rows are
+homogeneous, so projecting the density projects the physical vector. Where
+two walls meet and off-diagonal gamma couples them, the coupled D edge rows
+and B edge ghosts are solved exactly. Every copy or reflection into another
+node rescales by ``sqrt_gamma(target)/sqrt_gamma(source)``, so the physical
+vector obeys the FIDO wall policy.
 """
 from functools import partial
 from itertools import combinations
 
 import jax.numpy as jnp
 
-from .grid_and_stencil import BC_CONDUCTING
+from .grid_and_stencil import BC_CONDUCTING, BC_CONSTANT
 from .ghost_cells import update_tiled_vector_ghost_cells
 from .ownership import boundary_plane, face_mask, staggered_mirror
 from PyPIC3D.relativity.core import B_FIELD_LOCATIONS, D_FIELD_LOCATIONS
-from PyPIC3D.relativity.field_interpolation import metric_at_location, reconstruct_vector
+from PyPIC3D.relativity.field_interpolation import copy_densities, metric_at_location, reconstruct_vector
 
 
 def _normal_component(inverse, vector, axis, component):
@@ -22,13 +26,18 @@ def _normal_component(inverse, vector, axis, component):
 
 
 def _reflect_vector(vector, metric, location, axis, static, field_kind):
-    """Reflect a co-located vector about one pair of physical faces."""
+    """Reflect a co-located density about one pair of physical faces.
+
+    The reflection acts on the physical vector, so each ghost is the
+    reflected owner density times ``sqrt_gamma(ghost)/sqrt_gamma(owner)``.
+    """
     shape = vector[0].shape
     g, n = static.guard_cells, static.tile_shape[axis]
     total = n*shape[axis]
     surface = list(location)
     surface[axis] = 'C'
     inverse = metric_at_location(metric, tuple(surface)).gamma_inv
+    volume = metric_at_location(metric, location).sqrt_gamma
     result = list(vector)
     for low in (True, False):
         tile = 0 if low else shape[axis]-1
@@ -44,8 +53,9 @@ def _reflect_vector(vector, metric, location, axis, static, field_kind):
                 normal = [_normal_component(wall_inverse, components, axis, j) for j in range(3)]
                 components = [2*normal[j]-components[j] if field_kind == 'D'
                               else components[j]-2*normal[j] for j in range(3)]
+            scale = volume[plane(node)] / volume[plane(g+owner-offset)]
             for j in range(3):
-                result[j] = result[j].at[plane(node)].set(components[j])
+                result[j] = result[j].at[plane(node)].set(scale*components[j])
     return tuple(result)
 
 
@@ -59,11 +69,16 @@ def _exchange_preserving_walls(fields, static, locations, rounds):
     return fields
 
 
+def _volumes(metric, locations):
+    return tuple(metric_at_location(metric, location).sqrt_gamma for location in locations)
+
+
 def _prepare_normal_D(snapshot, static, axes):
     """Supply the identity normal reflection row before reconstructing wall D.
 
     This makes the wall trace depend on current owners rather than stale
-    exterior input. All faces read the same exchanged snapshot.
+    exterior input. All faces read the same exchanged snapshot. The caller
+    applies it through ``copy_densities`` so each ghost carries its own volume.
     """
     shape = snapshot[0].shape
     guard = static.guard_cells
@@ -93,7 +108,7 @@ def _project_native_nodes(snapshot, static, locations, field_kind, metric, axes)
     projected = []
     for component, location in enumerate(locations):
         value = snapshot[component]
-        at_target = reconstruct_vector(snapshot, locations, metric, location)
+        at_target = reconstruct_vector(snapshot, locations, location)
         inverse = metric_at_location(metric, location).gamma_inv
         incident = tuple(axis for axis in axes if location[axis] == 'C')
         for count in range(1, len(incident) + 1):
@@ -145,6 +160,9 @@ def solve_D_edges(projected, snapshot, static, metric, axes):
         a = a1 + alpha (b - b0),    b = b1 + beta (a - a0)
 
     where a1, b1 are the one-pass rows computed from snapshot values a0, b0.
+    In densities, a's reconstruction averages four D^p nodes with weight 1/4,
+    two of which are b and its mirror ghost b_m = b sqrt_gamma(b_m)/sqrt_gamma(b),
+    so alpha is the normal-row ratio times (1 + sqrt_gamma(b_m)/sqrt_gamma(b))/4.
     """
     shape = snapshot[0].shape
     locations = D_FIELD_LOCATIONS
@@ -162,13 +180,13 @@ def solve_D_edges(projected, snapshot, static, metric, axes):
         b, b_mirror = at(p_half, q_wall), at(p_ghost, q_wall)
         inverse_a = metric_a.gamma_inv[a]
         inverse_b = metric_b.gamma_inv[b]
-        # normal-row coefficient times the density-weighted 2x2 transfer weight
+        # normal-row coefficient times the 2x2 density transfer weight of the pair
         alpha = (inverse_a[..., q, p] / inverse_a[..., p, p]
                  * (metric_b.sqrt_gamma[b] + metric_b.sqrt_gamma[b_mirror])
-                 / (4.0 * metric_a.sqrt_gamma[a]))
+                 / (4.0 * metric_b.sqrt_gamma[b]))
         beta = (inverse_b[..., p, q] / inverse_b[..., q, q]
                 * (metric_a.sqrt_gamma[a] + metric_a.sqrt_gamma[a_mirror])
-                / (4.0 * metric_b.sqrt_gamma[b]))
+                / (4.0 * metric_a.sqrt_gamma[a]))
 
         a0, b0 = snapshot[q][a], snapshot[p][b]
         a1, b1 = projected[q][a], projected[p][b]
@@ -192,6 +210,8 @@ def solve_B_edges(first, second, static, metric, axes):
 
     with rests already exact after the first sweep. Solving the pair gives
     c = c2 + alpha beta Delta and d = d2 + beta Delta, Delta = (c2-c1)/(1-alpha beta).
+    In densities, d enters c's owner reconstruction with weight 1/4 and the
+    reflection carries sqrt_gamma(c)/sqrt_gamma(c owner) into the ghost.
     """
     shape = first[0].shape
     locations = B_FIELD_LOCATIONS
@@ -205,8 +225,8 @@ def solve_B_edges(first, second, static, metric, axes):
         inverse = metric_at_location(metric, tuple(surface)).gamma_inv[at(p_wall, q_wall)]
         sqrt_p = metric_at_location(metric, locations[p]).sqrt_gamma
         sqrt_q = metric_at_location(metric, locations[q]).sqrt_gamma
-        alpha = -2.0 * inverse[..., p, q] / inverse[..., q, q] * sqrt_q[d] / (4.0 * sqrt_p[c_owner])
-        beta = -2.0 * inverse[..., q, p] / inverse[..., p, p] * sqrt_p[c] / (4.0 * sqrt_q[d_owner])
+        alpha = -2.0 * inverse[..., p, q] / inverse[..., q, q] * sqrt_p[c] / (4.0 * sqrt_p[c_owner])
+        beta = -2.0 * inverse[..., q, p] / inverse[..., p, p] * sqrt_q[d] / (4.0 * sqrt_q[d_owner])
 
         c1, c2, d2 = first[p][c], second[p][c], second[q][d]
         delta = (c2 - c1) / (1.0 - alpha * beta)
@@ -219,7 +239,7 @@ def _reflect_exterior_axis(snapshot, static, locations, field_kind, metric, axis
     """Reflect one exterior axis, composing earlier reflections at corners."""
     result = []
     for component, location in enumerate(locations):
-        reconstructed = reconstruct_vector(snapshot, locations, metric, location)
+        reconstructed = reconstruct_vector(snapshot, locations, location)
         # Native transfers at corners can leave the allocated halo. Reconstruct
         # at the reflected owner first, then compose co-located reflections.
         for previous in previous_axes:
@@ -229,8 +249,12 @@ def _reflect_exterior_axis(snapshot, static, locations, field_kind, metric, axis
     return tuple(result)
 
 
-def _pec_setup(shape, static, locations):
-    """Conducting axes and the wall-preserving halo exchange for one field."""
+def _pec_setup(shape, static, locations, metric):
+    """Conducting axes and the wall-preserving halo exchange for one field.
+
+    Periodic and tile-seam copies join the same physical point. Constant
+    extrapolation copies the adjacent physical value, so it rescales volumes.
+    """
     axes = tuple(axis for axis, bc in enumerate(static.boundary_conditions) if bc == BC_CONDUCTING)
     guard = static.guard_cells
     # Narrow distributed axes need multiple neighbor passes; reduced periodic
@@ -238,6 +262,8 @@ def _pec_setup(shape, static, locations):
     rounds = max([1] + [(guard + width - 1) // width
                        for axis, width in enumerate(static.tile_shape) if shape[axis] > 1])
     exchange = partial(_exchange_preserving_walls, static=static, locations=locations, rounds=rounds)
+    if BC_CONSTANT in static.boundary_conditions:
+        exchange = partial(copy_densities, exchange, volumes=_volumes(metric, locations))
     return axes, exchange
 
 
@@ -249,10 +275,11 @@ def enforce_pec_D(vector, static, locations, metric):
     solved together. Exterior ghosts are then reflected in x/y/z order.
     Internal boundaries are communicated, never projected.
     """
-    axes, exchange = _pec_setup(vector[0].shape, static, locations)
+    axes, exchange = _pec_setup(vector[0].shape, static, locations, metric)
 
     snapshot = exchange(vector)
-    snapshot = exchange(_prepare_normal_D(snapshot, static, axes))
+    prepare = partial(_prepare_normal_D, static=static, axes=axes)
+    snapshot = exchange(copy_densities(prepare, snapshot, _volumes(metric, locations)))
     projected = _project_native_nodes(snapshot, static, locations, 'D', metric, axes)
     projected = solve_D_edges(projected, snapshot, static, metric, axes)
     result = exchange(projected)
@@ -271,7 +298,7 @@ def enforce_pec_B(vector, static, locations, metric):
     walls meet, the coupled ghost pair is solved from two reflection sweeps.
     Internal boundaries are communicated, never projected.
     """
-    axes, exchange = _pec_setup(vector[0].shape, static, locations)
+    axes, exchange = _pec_setup(vector[0].shape, static, locations, metric)
 
     def sweep(fields):
         for position, axis in enumerate(axes):

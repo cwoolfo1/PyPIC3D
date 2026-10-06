@@ -3,7 +3,8 @@ Analytical Entity/FPIC Wald fields on PyPIC3D's tiled Yee grid.
 
 The initial field is the Schwarzschild Wald solution while the analytical
 comparison field is the stationary solution for the rotating Kerr metric.
-The evolved variables are contravariant ``D^i`` and ``B^i``.
+The evolved variables are the native densities ``sqrt(gamma) D^i`` and
+``sqrt(gamma) B^i`` of the evolution metric.
 """
 
 from pathlib import Path
@@ -19,10 +20,9 @@ os.environ.setdefault("MPLCONFIGDIR", "/tmp/fpic-wald-demo-matplotlib")
 import jax
 import jax.numpy as jnp
 
-from PyPIC3D.boundary_conditions.ghost_cells import (
-    make_field_mesh,
-    update_tiled_vector_ghost_cells,
-)
+from PyPIC3D.boundary_conditions.ghost_cells import make_field_mesh
+from PyPIC3D.boundary_conditions.staggered import refresh_fields
+from PyPIC3D.diagnostics.static_metric import divergence
 from PyPIC3D.boundary_conditions.grid_and_stencil import (
     BC_CONSTANT,
     BC_PERIODIC,
@@ -32,7 +32,8 @@ from PyPIC3D.boundary_conditions.supergaussian import (
 )
 from PyPIC3D.utilities.parameters import DynamicParameters, GridParameters, StaticParameters
 from PyPIC3D.relativity.core import B_FIELD_LOCATIONS, D_FIELD_LOCATIONS
-from PyPIC3D.relativity.field_interpolation import metric_weighted_interpolate
+from PyPIC3D.relativity.field_interpolation import reconstruct_vector
+from PyPIC3D.relativity.field_state import densitize_vector, physical_vector
 from PyPIC3D.relativity.metrics.kerr_schild import initialize_kerr_schild_spherical_metric
 from PyPIC3D.utilities.grids import build_tiled_yee_grids, build_yee_grid
 
@@ -280,8 +281,8 @@ def covariant_E_from_potential(metric_location, dynamic_parameters, B0, spin):
     )
 
 
-def contravariant_B_from_potential(A_spatial, metric, dynamic_parameters):
-    """Compute ``B^i = epsilon^ijk partial_j A_k / sqrt(gamma)``."""
+def B_density_from_potential(A_spatial, dynamic_parameters):
+    """Compute the metric-free density ``sqrt(gamma) B^i = epsilon^ijk partial_j A_k``."""
 
     A_r, A_theta, A_phi = A_spatial
     dr = dynamic_parameters.dx
@@ -296,32 +297,26 @@ def contravariant_B_from_potential(A_spatial, metric, dynamic_parameters):
     dAr_dtheta = (jnp.roll(A_r, -1, axis=4) - A_r) / dtheta
 
     return (
-        (dAphi_dtheta - dAtheta_dphi) / metric.B[0].sqrt_gamma,
-        (dAr_dphi - dAphi_dr) / metric.B[1].sqrt_gamma,
-        (dAtheta_dr - dAr_dtheta) / metric.B[2].sqrt_gamma,
+        dAphi_dtheta - dAtheta_dphi,
+        dAr_dphi - dAphi_dr,
+        dAtheta_dr - dAr_dtheta,
     )
 
 
-def contravariant_D_from_covariant_E(
-    E_on_D_locations,
-    B,
-    metric,
-    static_parameters,
-):
-    """Invert FPIC Eq. (10) locally on each native D location."""
+def contravariant_D_from_covariant_E(E_on_D_locations, B, metric):
+    """Invert FPIC Eq. (10) locally on each native D location.
 
+    ``B`` and the returned ``D`` are physical contravariant vectors in
+    ``metric``; B is transferred through its density in that metric.
+    """
+
+    B_density = densitize_vector(B, metric.B)
     D = []
     for target_component, target_location in enumerate(D_FIELD_LOCATIONS):
         target_metric = metric.D[target_component]
         B_on_target = tuple(
-            metric_weighted_interpolate(
-                B[source_component],
-                metric.B[source_component],
-                target_metric,
-                source_location,
-                target_location,
-            )
-            for source_component, source_location in enumerate(B_FIELD_LOCATIONS)
+            value / target_metric.sqrt_gamma
+            for value in reconstruct_vector(B_density, B_FIELD_LOCATIONS, target_location)
         )
 
         beta = target_metric.shift
@@ -347,12 +342,7 @@ def contravariant_D_from_covariant_E(
             D_covariant,
         )
         D.append(D_contravariant[..., target_component])
-
-    return update_tiled_vector_ghost_cells(
-        tuple(D),
-        static_parameters,
-        num_guard_cells=int(static_parameters.guard_cells),
-    )
+    return tuple(D)
 
 
 def initialize_wald_fields(
@@ -363,7 +353,11 @@ def initialize_wald_fields(
     field_spin,
     constitutive_metric,
 ):
-    """Source a Wald field on the grid for the requested field and metric spins."""
+    """Source densitized Wald D/B for the requested field and metric spins.
+
+    The physical seed fields of the constitutive metric are stored as
+    densities of the evolution metric, the metric the solver divides by.
+    """
 
     B0 = float(config["physics"]["B0"])
     _, A_spatial, A_phi_center = entity_wald_potential(
@@ -372,17 +366,11 @@ def initialize_wald_fields(
         field_spin,
     )
 
-    # The curl uses the evolution-grid determinant so the evolved magnetic
-    # constraint is discrete on the actual Kerr grid.
-    B = contravariant_B_from_potential(
-        A_spatial,
-        evolution_metric,
-        dynamic_parameters,
-    )
-    B = update_tiled_vector_ghost_cells(
-        B,
-        static_parameters,
-        num_guard_cells=int(static_parameters.guard_cells),
+    # The curl is the density itself, so the evolved magnetic constraint is
+    # discrete on the actual Kerr grid.
+    B = refresh_fields(
+        B_density_from_potential(A_spatial, dynamic_parameters),
+        static_parameters, B_FIELD_LOCATIONS, 'B', evolution_metric,
     )
 
     E_on_D_locations = tuple(
@@ -396,9 +384,12 @@ def initialize_wald_fields(
     )
     D = contravariant_D_from_covariant_E(
         E_on_D_locations,
-        B,
+        physical_vector(B, evolution_metric.B),
         constitutive_metric,
-        static_parameters,
+    )
+    D = refresh_fields(
+        densitize_vector(D, evolution_metric.D),
+        static_parameters, D_FIELD_LOCATIONS, 'D', evolution_metric,
     )
     E_native = tuple(
         E_on_D_locations[component][component] for component in range(3)
@@ -450,27 +441,16 @@ def initialize_kerr_target(
 
 
 def center_vector(vector, source_locations, metric):
-    """Metric-weight a native Yee vector onto cell centers."""
+    """Transfer a native Yee density to cell centers as a physical vector."""
 
-    metrics = metric.D if source_locations == D_FIELD_LOCATIONS else metric.B
     return tuple(
-        metric_weighted_interpolate(
-            component,
-            source_metric,
-            metric.center,
-            source_location,
-            ("C", "C", "C"),
-        )
-        for component, source_location, source_metric in zip(
-            vector,
-            source_locations,
-            metrics,
-        )
+        value / metric.center.sqrt_gamma
+        for value in reconstruct_vector(vector, source_locations, ("C", "C", "C"))
     )
 
 
 def parallel_electric_field(D, B, metric, B0):
-    """Compute the FPIC diagnostic ``gamma_ij D^i B^j / B0^2`` at centers."""
+    """Compute the FPIC diagnostic ``gamma_ij D^i B^j / B0^2`` at centers from densities."""
 
     D_center = jnp.stack(center_vector(D, D_FIELD_LOCATIONS, metric), axis=-1)
     B_center = jnp.stack(center_vector(B, B_FIELD_LOCATIONS, metric), axis=-1)
@@ -483,23 +463,9 @@ def parallel_electric_field(D, B, metric, B0):
 
 
 def weighted_magnetic_divergence(B, metric, dynamic_parameters):
-    """Compute ``partial_i(sqrt(gamma) B^i) / sqrt(gamma)`` on vertices."""
+    """Compute ``partial_i(sqrt(gamma) B^i) / sqrt(gamma)`` on vertices from densities."""
 
-    spacings = (
-        dynamic_parameters.dx,
-        dynamic_parameters.dy,
-        dynamic_parameters.dz,
-    )
-    divergence = jnp.zeros_like(metric.vertex.sqrt_gamma)
-    for axis, (component, component_metric, spacing) in enumerate(
-        zip(B, metric.B, spacings)
-    ):
-        weighted = component_metric.sqrt_gamma * component
-        derivative = (
-            jnp.roll(weighted, -1, axis=axis + 3) - weighted
-        ) / spacing
-        divergence = divergence + derivative
-    return divergence / metric.vertex.sqrt_gamma
+    return divergence(B, dynamic_parameters, forward=True) / metric.vertex.sqrt_gamma
 
 
 def physical_center_axes(dynamic_parameters):

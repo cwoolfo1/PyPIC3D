@@ -1,4 +1,4 @@
-"""Density-weighted transfers between the eight C/V metric locations."""
+"""Transfers of native densities between the eight C/V metric locations."""
 import jax.numpy as jnp
 
 from .core import D_FIELD_LOCATIONS, B_FIELD_LOCATIONS
@@ -19,25 +19,35 @@ def location_interpolate(field, source_location, target_location):
     return interpolated
 
 
-def metric_weighted_interpolate(field, source_metric, target_metric, source_location, target_location):
-    weighted = source_metric.sqrt_gamma * field
-    weighted = location_interpolate(weighted, source_location, target_location)
-    return weighted / target_metric.sqrt_gamma
+def reconstruct_vector(vector, locations, target):
+    """Transfer native density components ``sqrt(gamma) V^i`` to one C/V location.
 
-
-def reconstruct_vector(vector, locations, metric, target, *, preserve_native=True):
-    """Transfer vector components to one C/V location using metric densities.
-
-    PEC reconstruction retains native values exactly. Constitutive operators
-    pass ``preserve_native=False`` to retain their density multiply/divide
-    even for a component already at the target location.
+    Averaging densities is the metric-weighted transfer of the physical
+    vector, so the result is the density at ``target``. Dividing by the
+    target ``sqrt_gamma`` recovers the physical vector there.
     """
-    target_metric = metric_at_location(metric, target)
     return tuple(
-        value if preserve_native and source == target else metric_weighted_interpolate(
-            value, metric_at_location(metric, source), target_metric, source, target
-        )
+        value if source == target else location_interpolate(value, source, target)
         for value, source in zip(vector, locations)
+    )
+
+
+def copy_densities(copy, vector, volumes):
+    """Apply a node-copying operation to densities as if to the physical vector.
+
+    Halo exchange, constant extrapolation and horizon freezing copy a value
+    from a source node to a target node. A copied density still carries the
+    source volume, so each copy is rescaled by ``sqrt_gamma(target) /
+    sqrt_gamma(source)``; applying the same copy to the volumes yields the
+    source volume at every node. Owned nodes keep their exact values. Volumes
+    may be signed (sin(theta) < 0 past a pole); nodes the copy zeroes
+    (absorbing halos) have no source volume and stay zero.
+    """
+    copied = copy(vector)
+    sources = copy(volumes)
+    return tuple(
+        value * jnp.where(source != 0, volume / jnp.where(source != 0, source, 1.0), 1.0)
+        for value, volume, source in zip(copied, volumes, sources)
     )
 
 

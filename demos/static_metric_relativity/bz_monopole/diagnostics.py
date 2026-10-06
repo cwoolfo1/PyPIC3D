@@ -7,12 +7,11 @@ import jax.numpy as jnp
 import numpy as np
 
 from PyPIC3D.deposition.rho import compute_rho
-from PyPIC3D.diagnostics.static_metric import densitized_divergence, node_weights
+from PyPIC3D.diagnostics.static_metric import divergence, node_weights
 from PyPIC3D.relativity.field_state import physical_vector
 from PyPIC3D.relativity.core import B_FIELD_LOCATIONS, D_FIELD_LOCATIONS
 from PyPIC3D.relativity.field_interpolation import location_interpolate as _location_interpolate
-from PyPIC3D.solvers.GR_yee.static_metric import (compute_covariant_E_densitized,
-    compute_covariant_H_densitized, update_B_densitized, refresh_densitized_fields)
+from PyPIC3D.solvers.GR_yee.static_metric import compute_covariant_E, compute_covariant_H, update_B
 
 if __package__:
     from .current_filter import smooth_conformal
@@ -57,8 +56,8 @@ def constraint_residuals(particles, species, fields, static, dynamic, p, *, curr
     """Conformal FD residuals, reported dimensionally and in cell-flux units."""
     metric = fields[6]
     charge = conformal_charge(particles, species, fields[3], static, dynamic, current_filter_passes)
-    divD = densitized_divergence(fields[0], dynamic)
-    divB = densitized_divergence(fields[1], dynamic, forward=True)
+    divD = divergence(fields[0], dynamic)
+    divB = divergence(fields[1], dynamic, forward=True)
     return _constraint_residuals(divD, divB, charge, fields[1], metric, static, dynamic, p)
 
 
@@ -121,13 +120,13 @@ def diagnostics(particles, species, fields, p, static, dynamic, *, current_filte
     # Reconstruct B at the integer D/position time using the production field stage.
     Dhalf = tuple((D[i]+previous[0][i])/2 for i in range(3))
     Bminus = tuple((B[i]+previous[1][i])/2 for i in range(3))
-    B = update_B_densitized(compute_covariant_E_densitized(Dhalf, B, metric), Bminus,
-                            metric, static, dynamic, dynamic.dt)
-    B = refresh_densitized_fields(B, static, B_FIELD_LOCATIONS, 'B', metric)
-    E = compute_covariant_E_densitized(D, B, metric)
-    H = compute_covariant_H_densitized(D, B, metric)
+    # update_B returns refreshed densities
+    B = update_B(compute_covariant_E(Dhalf, B, metric), Bminus, metric, static, dynamic, dynamic.dt)
+    E = compute_covariant_E(D, B, metric)
+    H = compute_covariant_H(D, B, metric)
     E = tuple(_location_interpolate(E[i], D_FIELD_LOCATIONS[i], ("C",)*3) for i in range(3))
     H = tuple(_location_interpolate(H[i], B_FIELD_LOCATIONS[i], ("C",)*3) for i in range(3))
+    # the D^2/B^2, D.B and magnetization panels read the physical field
     physical_D = physical_vector(D, metric.D)
     physical_B = physical_vector(B, metric.B)
     bc = collocate_magnetic_field(physical_B)
@@ -146,14 +145,14 @@ def diagnostics(particles, species, fields, p, static, dynamic, *, current_filte
     sector = (theta>=p.theta_start-1e-12)&(theta<=p.theta_end+1e-12)
     flux = assemble_owned((E[1]*H[2]-E[2]*H[1])/(4*jnp.pi))
     luminosity = 2*np.pi*np.trapezoid(flux[:,sector],theta[sector],axis=1)
-    divD = densitized_divergence(D, dynamic)
-    divB = densitized_divergence(B, dynamic, forward=True)
+    divD = divergence(D, dynamic)
+    divB = divergence(B, dynamic, forward=True)
     rho = conformal_charge(particles, species, fields[3], static, dynamic, current_filter_passes)
     constraints = assemble_owned(divD - 4*jnp.pi*rho)
     # Runtime acceptance uses evolved staggered B. Snapshot panels use the
     # integer-time reconstruction above; their magnetic residuals can differ.
     residuals = _constraint_residuals(
-        divD, densitized_divergence(fields[1], dynamic, forward=True), rho,
+        divD, divergence(fields[1], dynamic, forward=True), rho,
         fields[1], metric, static, dynamic, p,
     )
     return dict(r=r, theta=theta, Hphi=assemble_owned(H[2]), omega=assemble_owned(omega),

@@ -31,12 +31,10 @@ def GR_direct_deposition(
     Direct current deposition for a fixed 3+1 metric.
 
     ``particles.u`` stores covariant spatial components ``u_i``.  Deposition,
-    ghost folding, and filtering operate on the conformal current
-    ``sqrt(gamma) J^i``.  The returned source current follows the physical FPIC
-    Maxwell convention
+    ghost folding, and filtering operate on, and return, the conformal current
+    of the densitized Maxwell update
 
-        J^i = (q / (sqrt(gamma) d^3x)) * S(x)
-              * (alpha v^i - beta^i).
+        sqrt(gamma) J^i = (q / d^3x) * S(x) * (alpha v^i - beta^i).
     """
 
     current_filter = static_parameters.current_filter
@@ -279,7 +277,7 @@ def GR_direct_deposition(
             bc_type=BC_TYPE_PARTICLE,
         )
 
-    conformal_J = jax.lax.cond(
+    return jax.lax.cond(
         current_filter == "bilinear",
         bilinear_filtered_current,
         lambda conformal_J: jax.lax.cond(
@@ -294,9 +292,4 @@ def GR_direct_deposition(
             conformal_J,
         ),
         conformal_J,
-    )
-
-    return tuple(
-        conformal_J[i] / metric.D[i].sqrt_gamma
-        for i in range(3)
     )
