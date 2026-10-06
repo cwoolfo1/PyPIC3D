@@ -18,6 +18,7 @@ from PyPIC3D.diagnostics.async_writer import (
 from PyPIC3D.diagnostics.output_adapters import build_field_output_map
 from PyPIC3D.diagnostics.diagnostic_quantities import (
     compute_energy,
+    compute_dark_energy,
     compute_total_momentum,
 )
 from PyPIC3D.utilities.field_helpers import add_external_fields
@@ -85,7 +86,9 @@ def run_PyPIC3D(config_file):
             dynamic_parameters,
             species_config=species_config,
         )
-        initial_energy = e_energy + b_energy + kinetic_energy
+        dark_energy = (compute_dark_energy(fields[7], static_parameters, dynamic_parameters)
+                       if static_parameters.solver == "dark_matter_yee" else 0.0)
+        initial_energy = e_energy + b_energy + kinetic_energy + dark_energy
 
     field_writer = None
     particle_writer = None
@@ -127,7 +130,11 @@ def run_PyPIC3D(config_file):
                         dynamic_parameters,
                         species_config=species_config,
                     )
-                    total_energy = e_energy + b_energy + kinetic_energy
+                    dark_energy = (compute_dark_energy(fields[7], static_parameters, dynamic_parameters)
+                                   if static_parameters.solver == "dark_matter_yee" else 0.0)
+                    total_energy = e_energy + b_energy + kinetic_energy + dark_energy
+                    if static_parameters.solver == "dark_matter_yee":
+                        write_data(f"{output_dir}/data/dark_field_energy.txt", t * dt, dark_energy)
                     write_data(f"{output_dir}/data/total_energy.txt", t * dt, total_energy)
                     write_data(
                         f"{output_dir}/data/energy_error.txt",
@@ -250,7 +257,11 @@ def main():
         print(f"Final Electric Field Energy: {e_energy}")
         print(f"Final Magnetic Field Energy: {b_energy}")
         print(f"Final Kinetic Energy: {kinetic_energy}")
-        print(f"Total Final Energy: {e_energy + b_energy + kinetic_energy}\n")
+        dark_energy = (compute_dark_energy(fields[7], static_parameters, dynamic_parameters)
+                       if static_parameters.solver == "dark_matter_yee" else 0.0)
+        if static_parameters.solver == "dark_matter_yee":
+            print(f"Final Dark Field Energy: {dark_energy}")
+        print(f"Total Final Energy: {e_energy + b_energy + kinetic_energy + dark_energy}\n")
 
     duration = end - start
     Nt = static_parameters.Nt

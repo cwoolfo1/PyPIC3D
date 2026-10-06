@@ -1,3 +1,4 @@
+import math
 import jax.numpy as jnp
 from numbers import Integral
 from typing import NamedTuple
@@ -44,6 +45,8 @@ class StaticParameters(NamedTuple):
     particle_boundary_conditions: tuple
     field_mesh: object
     horizon_field_cells: int = 0
+    sin_chi: float = 0.0
+    dark_mu: float = 0.0
 
 
 class DynamicParameters(NamedTuple):
@@ -98,6 +101,14 @@ def _field_mesh(static_config, tile_shape):
     return make_field_mesh(tile_grid_shape)
 
 
+def validate_dark_parameters(sin_chi, dark_mu):
+    """Validate the dimensionless mixing and inverse-length Proca mass."""
+    if not math.isfinite(float(sin_chi)) or abs(float(sin_chi)) > 1:
+        raise ValueError("sin_chi must be finite and between -1 and 1")
+    if not math.isfinite(float(dark_mu)) or float(dark_mu) < 0:
+        raise ValueError("dark_mu must be a finite nonnegative inverse length")
+
+
 def build_static_parameters(static_config):
     """
     Collect compile-time PIC choices for the timestep kernels.
@@ -108,6 +119,12 @@ def build_static_parameters(static_config):
     """
 
     static_config = dict(static_config)
+    validate_dark_parameters(static_config.get("sin_chi", 0.0), static_config.get("dark_mu", 0.0))
+    if static_config.get("solver") == "dark_matter_yee":
+        if _axis_tuple(static_config["boundary_conditions"]) != (0, 0, 0):
+            raise ValueError("dark_matter_yee requires periodic field boundaries")
+        if static_config.get("pml_active") or static_config.get("supergaussian_active"):
+            raise ValueError("dark_matter_yee does not support PML or supergaussian absorbers")
     horizon_cells = static_config.get('horizon_field_cells', 0)
     if isinstance(horizon_cells, bool) or not isinstance(horizon_cells, Integral) or horizon_cells < 0:
         raise ValueError('horizon_field_cells must be a nonnegative integer')
@@ -161,6 +178,8 @@ def build_static_parameters(static_config):
         particle_boundary_conditions=_axis_tuple(static_config.get("particle_boundary_conditions", (0, 0, 0))),
         field_mesh=_field_mesh(static_config, tile_shape),
         horizon_field_cells=int(horizon_cells),
+        sin_chi=float(static_config.get("sin_chi", 0.0)),
+        dark_mu=float(static_config.get("dark_mu", 0.0)),
     )
 
 

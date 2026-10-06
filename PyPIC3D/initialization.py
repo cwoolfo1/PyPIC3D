@@ -1,4 +1,5 @@
 import os
+import math
 from types import SimpleNamespace
 
 import jax
@@ -8,7 +9,7 @@ from PyPIC3D.relativity.field_state import densitize_fields
 from PyPIC3D.particles.particle_initialization import load_particles_from_toml
 from PyPIC3D.pusher.particle_push import seed_leapfrog_velocity
 from PyPIC3D.particles.particle_tile_communication import shard_tiled_particles
-from PyPIC3D.diagnostics.diagnostic_quantities import compute_energy
+from PyPIC3D.diagnostics.diagnostic_quantities import compute_energy, compute_dark_energy
 from PyPIC3D.utilities.field_helpers import add_external_fields
 from PyPIC3D.utilities.plasma_quantities import build_plasma_parameters_dict
 from PyPIC3D.utilities.simulation_helpers import (
@@ -21,6 +22,7 @@ from PyPIC3D.utilities.simulation_helpers import (
 from PyPIC3D.utilities.toml_helpers import (
     load_external_fields_from_toml,
     load_previous_fields_from_toml,
+    load_dark_fields_from_toml,
     update_parameters_from_toml,
 )
 from PyPIC3D.utilities.grids import (
@@ -42,6 +44,7 @@ from PyPIC3D.boundary_conditions.staggered import refresh_fields
 from PyPIC3D.solvers.electrostatic.time_loop import time_loop_electrostatic
 from PyPIC3D.solvers.GR_yee.time_loop import time_loop_static_metric
 from PyPIC3D.solvers.yee.time_loop import time_loop_electrodynamic
+from PyPIC3D.solvers.dark_matter_yee.time_loop import time_loop_dark_photon, dark_photon_push_fields
 from PyPIC3D.boundary_conditions.grid_and_stencil import (
     BC_ABSORBING,
     BC_CONDUCTING,
@@ -50,7 +53,7 @@ from PyPIC3D.boundary_conditions.grid_and_stencil import (
 )
 from PyPIC3D.boundary_conditions.PML import initialize_tiled_pml_state, load_pml_from_toml
 from PyPIC3D.boundary_conditions.supergaussian import load_supergaussian_from_toml
-from PyPIC3D.utilities.parameters import build_dynamic_parameters, build_static_parameters
+from PyPIC3D.utilities.parameters import build_dynamic_parameters, build_static_parameters, validate_dark_parameters
 from PyPIC3D.relativity.core import B_FIELD_LOCATIONS, D_FIELD_LOCATIONS
 from PyPIC3D.relativity.metrics.flat import (
     initialize_flat_cartesian_metric,
@@ -96,11 +99,36 @@ def validate_field_solver(solver):
     Keep the active field-solver names explicit so stale configs do not silently
     fall through to a different numerical update.
     """
-    supported_solvers = ("electrodynamic_yee", "electrostatic", "static_metric")
+    supported_solvers = ("electrodynamic_yee", "electrostatic", "static_metric", "dark_matter_yee")
     if solver not in supported_solvers:
         raise ValueError(
-            f"Unsupported solver: {solver}. Use 'electrodynamic_yee', 'electrostatic', or 'static_metric'."
+            f"Unsupported solver: {solver}. Use one of {supported_solvers}."
         )
+
+
+def _dark_timestep(static_config, dynamic_config):
+    """Resolve a stable explicit Maxwell-Proca timestep before JAX tracing."""
+    validate_dark_parameters(static_config["sin_chi"], static_config["dark_mu"])
+    c = float(dynamic_config["C"])
+    eps = float(dynamic_config["eps"])
+    if not math.isfinite(c) or c <= 0 or not math.isfinite(eps) or eps <= 0:
+        raise ValueError("dark_matter_yee requires positive finite C and eps")
+    inverse_spacings = [1 / float(dynamic_config["d" + axis]) for axis in "xyz"
+                        if dynamic_config["N" + axis] > 1]
+    frequency = c * math.sqrt(float(static_config["dark_mu"])**2 + 4 * sum(v*v for v in inverse_spacings))
+    limit = 2 / frequency if frequency else math.inf
+    dt = dynamic_config["dt"]
+    if dt is None:
+        cfl = float(static_config["cfl"])
+        if not math.isfinite(cfl) or not 0 < cfl <= 1:
+            raise ValueError("dark_matter_yee requires 0 < cfl <= 1")
+        if not frequency:
+            raise ValueError("Specify dt for a massless dark field with all dimensions collapsed")
+        maxwell_dt = cfl / (c * sum(inverse_spacings)) if inverse_spacings else math.inf
+        dt = min(maxwell_dt, 0.99 * cfl * limit)
+    if not math.isfinite(float(dt)) or not 0 < float(dt) < limit:
+        raise ValueError(f"dark_matter_yee requires positive finite dt < {limit} (Proca stability limit)")
+    return float(dt)
 
 
 def _tile_shape_from_static_config(static_config):
@@ -343,6 +371,8 @@ def default_parameters():
         "name": "Default Simulation",
         "output_dir": os.getcwd(),
         "solver": "electrodynamic_yee",
+        "sin_chi": 0.0,
+        "dark_mu": 0.0,
         "particle_x_bc": "periodic",
         "particle_y_bc": "periodic",
         "particle_z_bc": "periodic",
@@ -458,6 +488,14 @@ def initialize_simulation(toml_file):
     validate_field_solver(solver)
     electrostatic = solver == "electrostatic"
     static_metric = solver == "static_metric"
+    dark_matter = solver == "dark_matter_yee"
+    if dark_matter:
+        if any(static_config[axis + "_bc"] != "periodic" for axis in "xyz"):
+            raise ValueError("dark_matter_yee requires periodic field boundaries")
+        if config.get("pml") or config.get("supergaussian"):
+            raise ValueError("dark_matter_yee does not support PML or supergaussian absorbers")
+    elif any(key.startswith("dark_field") for key in config):
+        raise ValueError("dark_field initial data requires solver='dark_matter_yee'")
     static_config["electrostatic"] = electrostatic
 
     _resolve_axis_bounds(dynamic_config, "x")
@@ -490,7 +528,10 @@ def initialize_simulation(toml_file):
     dynamic_config["dy"] = dy
     dynamic_config["dz"] = dz
 
-    if dynamic_config["dt"] is not None:
+    if dark_matter:
+        dt = _dark_timestep(static_config, dynamic_config)
+        dynamic_config["dt"] = dt
+    elif dynamic_config["dt"] is not None:
         print(f"Using user defined dt: {dynamic_config['dt']}")
         dt = dynamic_config["dt"]
     else:
@@ -668,7 +709,7 @@ def initialize_simulation(toml_file):
     if static_metric:
         E = refresh_fields(E, static_parameters, D_FIELD_LOCATIONS, 'D', metric=metric)
         B = refresh_fields(B, static_parameters, B_FIELD_LOCATIONS, 'B', metric=metric)
-    elif solver == "electrodynamic_yee":
+    elif solver in ("electrodynamic_yee", "dark_matter_yee"):
         E = apply_tiled_pec_boundary(E, static_parameters)
         E = update_tiled_vector_ghost_cells(E, static_parameters, guard_cells, locations=D_FIELD_LOCATIONS)
         B = update_tiled_vector_ghost_cells(B, static_parameters, guard_cells, locations=B_FIELD_LOCATIONS)
@@ -684,6 +725,8 @@ def initialize_simulation(toml_file):
         external_E = update_tiled_vector_ghost_cells(external_E, static_parameters, num_guard_cells=guard_cells)
         external_B = update_tiled_vector_ghost_cells(external_B, static_parameters, num_guard_cells=guard_cells)
     external_fields = (external_E, external_B)
+
+    dark_fields = load_dark_fields_from_toml(config, static_parameters, dynamic_parameters) if dark_matter else None
 
     static_metric_state = None
     if static_metric:
@@ -712,9 +755,14 @@ def initialize_simulation(toml_file):
         print(f"Initial Electric Field Energy: {e_energy:.2e} J")
         print(f"Initial Magnetic Field Energy: {b_energy:.2e} J")
         print(f"Initial Kinetic Energy: {kinetic_energy:.2e} J")
-        print(f"Total Initial Energy: {e_energy + b_energy + kinetic_energy:.2e} J\n")
+        dark_energy = compute_dark_energy(dark_fields, static_parameters, dynamic_parameters) if dark_matter else 0.0
+        if dark_matter:
+            print(f"Initial Dark Field Energy: {dark_energy:.2e} J")
+        print(f"Total Initial Energy: {e_energy + b_energy + kinetic_energy + dark_energy:.2e} J\n")
 
     seed_E, seed_B = add_external_fields(E, B, external_fields)
+    if dark_matter:
+        seed_E, seed_B = dark_photon_push_fields(E, B, dark_fields, external_fields, static_parameters, dynamic_parameters)
     particles = seed_leapfrog_velocity(
         particles,
         species_config,
@@ -743,6 +791,9 @@ def initialize_simulation(toml_file):
     elif electrostatic:
         print("Using electrostatic solver")
         evolve_loop = time_loop_electrostatic
+    elif dark_matter:
+        print("Using dark_matter_yee Maxwell-Proca solver")
+        evolve_loop = time_loop_dark_photon
     else:
         print("Using electrodynamic Yee solver")
         evolve_loop = time_loop_electrodynamic
@@ -763,6 +814,8 @@ def initialize_simulation(toml_file):
         fields = densitize_fields((E, B, J, rho, phi, external_fields, metric, static_metric_state, overflow))
     elif electrostatic:
         fields = (E, B, J, rho, phi, external_fields, None, overflow)
+    elif dark_matter:
+        fields = (E, B, J, rho, phi, external_fields, None, dark_fields, overflow)
     else:
         pml_state = None
         if pml_active:

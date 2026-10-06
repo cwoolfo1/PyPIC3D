@@ -6,6 +6,7 @@ PyPIC3D provides these solver names:
 - ``electrodynamic_yee``
 - ``electrostatic``
 - ``static_metric``
+- ``dark_matter_yee``
 
 Electrodynamic Yee Step
 -----------------------
@@ -45,6 +46,67 @@ The field equations are:
    \mathbf{B}^{n+1} =
    \mathbf{B}^{n+1/2}
    - \frac{\Delta t}{2}\nabla\times\mathbf{E}^{n+1}.
+
+Dark Photon Maxwell-Proca Step
+------------------------------
+
+``dark_matter_yee`` evolves an additional massive vector field alongside the
+ordinary Maxwell fields, using periodic field boundaries. PML, conducting or
+constant field walls, and supergaussian absorbers are not supported in this mode.
+``sin_chi`` is the dimensionless mixing coefficient (default zero, between
+-1 and 1); ``dark_mu`` is a dark photon mass (default zero), distinct
+from the electromagnetic permeability ``mu``.
+
+With :math:`s=\mathtt{sin\_chi}` and :math:`m=\mathtt{dark\_mu}`, the equations are
+
+.. math::
+
+   \dot{\mathbf E}'=c^2\nabla_h\times\mathbf B'
+      +c^2m^2\mathbf A'+s\mathbf J/\epsilon,\qquad
+   \mathbf B'=\nabla_h\times\mathbf A',
+
+.. math::
+
+   \dot{\mathbf A}'=-\mathbf E'-G_h\phi',\qquad
+   \dot\phi'=-c^2 D_h\mathbf A'.
+
+``A`` and ``E`` share componentwise electric-edge locations; ``phi`` lives at
+``(C,C,C)`` nodes. The forward gradient ``G_h`` maps nodes to electric edges;
+the backward divergence ``D_h`` maps those edges back to nodes. The live dark
+state is ``(E^n, A^(n-1/2), phi^n)``. Each step drifts ``A`` once by ``dt`` and
+then kicks both ``E`` and ``phi`` once using the new half-step ``A`` and the
+centered deposited current. The positive mass term gives
+:math:`\omega^2=c^2(k^2+m^2)` for a free wave.
+
+Particles feel ``E - sin_chi*dark_E`` and ``B - sin_chi*dark_B``, plus prescribed
+external fields. For the integer-time particle push, ``dark_B`` is the curl of
+the average of the adjacent half-step vector potentials. The electric gather
+uses the same filter as direct-current deposition. Zero mixing decouples the
+dark field from both particles and Maxwell evolution.
+
+Initial data are supplied at ``t=0``; initialization stores
+``A^(-1/2) = A(0) + dt/2 * (E(0) + G_h phi(0))``. For constraint-compatible
+data, require ``D_h E' + dark_mu**2 * phi' = -sin_chi * rho / eps`` initially.
+The initializer does not solve this constraint. Its discrete preservation with
+particles requires charge-conserving current deposition.
+
+The explicit field stability bound is
+
+.. math::
+
+   \Delta t < \frac{2}{c\sqrt{m^2+4\sum_{N_i>1}\Delta x_i^{-2}}}.
+
+Automatic timesteps take the smaller of the Maxwell CFL timestep and
+``0.99*cfl`` times this bound. A massless, spatially uniform problem requires
+an explicit timestep. The bound concerns field evolution; particle/plasma
+timescales may require a smaller timestep.
+
+Field output includes ``dark_E``, ``dark_A``, ``dark_phi``, and ``dark_B``, all
+synchronized to integer time. Total energy includes
+:math:`\epsilon\int(E'^2+c^2B'^2+c^2m^2A'^2+m^2\phi'^2)\,dV/2`;
+the dark contribution is also written to ``dark_field_energy.txt``. This is a
+second-order physical-energy diagnostic, not an exactly conserved discrete
+leapfrog energy.
 
 Electrostatic Step
 ------------------

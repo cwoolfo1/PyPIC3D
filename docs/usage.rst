@@ -109,7 +109,9 @@ Time and Grid Parameters
 Numerical Choices
 -----------------
 
-- ``solver`` is ``electrodynamic_yee``, ``electrostatic``, or ``static_metric``.
+- ``solver`` is ``electrodynamic_yee``, ``electrostatic``, ``static_metric``, or
+  ``dark_matter_yee``. The dark solver's equations and staggering are described
+  in :doc:`solvers`.
 - ``particle_pusher`` is ``boris`` or ``higuera_cary``. The ``relativistic``
   switch selects relativistic or non-relativistic Boris; Higuera-Cary uses its
   relativistic update.
@@ -232,3 +234,37 @@ positions, and ``plotvelocities = true`` adds the particle-weighted vector mesh
 ``fluid_velocity``. ``dump_fields`` and ``dump_particles`` write initial-state
 openPMD files during initialization. Final run parameters, species metadata,
 and timing statistics are written to ``data/output.toml``.
+
+Dark Photon Initial Data
+------------------------
+
+Select the coupled solver and its static parameters under
+``[simulation_parameters]``. Ordinary ``fieldN`` blocks keep their existing
+meaning. Optional ``dark_fieldN`` blocks initialize the dark sector at ``t=0``:
+
+.. code-block:: toml
+
+   [simulation_parameters]
+   solver = "dark_matter_yee"
+   sin_chi = 0.01
+   dark_mu = 0.7  # inverse length in the configured units
+
+   [dark_field1]
+   name = "initial dark Ay"
+   type = 4
+   path = "dark_Ay.npy"
+
+Dark types 0, 1, 2 select ``Ex``, ``Ey``, ``Ez``; types 3, 4, 5 select
+``Ax``, ``Ay``, ``Az``; type 6 selects ``phi``. Each file contains a finite
+real array shaped ``(Nx, Ny, Nz)``, sampled at the component's Yee locations.
+Unspecified components are zero; repeated blocks add to the selected component.
+All dark fields evolve, so ``evolve=false`` is rejected. ``C`` and ``eps`` follow
+the existing unit configuration. The input ``A`` is automatically shifted to
+``t=-dt/2``; do not pre-stagger the input files.
+
+Python callers can use
+``PyPIC3D.solvers.dark_matter_yee.dark_photon_fields.initialize_dark_photon_fields``
+with ``(static_parameters, dynamic_parameters, E=None, A=None, phi=None)``.
+The optional inputs are full floating-point tiled arrays at ``t=0``; vector
+inputs contain three components. The helper refreshes halos and returns the
+staggered ``(E, A, phi)`` state.

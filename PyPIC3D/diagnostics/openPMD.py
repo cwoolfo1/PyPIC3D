@@ -25,6 +25,10 @@ MESH_UNIT_EXPONENTS = {
     "rho": {"L": -3.0, "T": 1.0, "I": 1.0},
     "phi": {"L": 2.0, "M": 1.0, "T": -3.0, "I": -1.0},
     "fluid_velocity": {"L": 1.0, "T": -1.0},
+    "dark_E": {"L": 1.0, "M": 1.0, "T": -3.0, "I": -1.0},
+    "dark_B": {"M": 1.0, "T": -2.0, "I": -1.0},
+    "dark_A": {"L": 1.0, "M": 1.0, "T": -2.0, "I": -1.0},
+    "dark_phi": {"L": 2.0, "M": 1.0, "T": -3.0, "I": -1.0},
 }
 
 
@@ -108,12 +112,26 @@ def _configure_openpmd_mesh(
     mesh.grid_global_offset = offsets
 
     mesh.unit_SI = 1.0
+    if quantity_name in ("dark_E", "dark_A", "dark_B", "dark_phi"):
+        mesh.time_offset = 0.0  # reconstructed integer-time output
     unit_exponents = MESH_UNIT_EXPONENTS.get(quantity_name)
     if unit_exponents is not None:
         mesh.unit_dimension = {
             getattr(io.Unit_Dimension, symbol): exponent
             for symbol, exponent in unit_exponents.items()
         }
+
+
+def _set_dark_mesh_position(record, name, component, active_dims):
+    """Record Yee positions relative to the base C node for dark quantities."""
+    if name == "dark_phi":
+        offsets = (0.0, 0.0, 0.0)
+    elif name in ("dark_E", "dark_A", "dark_B"):
+        axis = ("x", "y", "z").index(component)
+        offsets = tuple(0.5 if (i != axis if name == "dark_B" else i == axis) else 0.0 for i in range(3))
+    else:
+        return
+    record.position = [value for value, active in zip(offsets, active_dims) if active]
 
 
 def _write_openpmd_scalar_mesh(iteration, name, data, dynamic_parameters, active_dims=(1,1,1)):
@@ -129,6 +147,7 @@ def _write_openpmd_scalar_mesh(iteration, name, data, dynamic_parameters, active
     record.reset_dataset(io.Dataset(array.dtype, array.shape))
     record.store_chunk(array, [0] * array.ndim, array.shape)
     record.unit_SI = 1.0
+    _set_dark_mesh_position(record, name, None, active_dims)
 
 
 def _write_openpmd_vector_mesh(iteration, name, components, dynamic_parameters, active_dims=(1,1,1)):
@@ -145,6 +164,7 @@ def _write_openpmd_vector_mesh(iteration, name, components, dynamic_parameters, 
         record.reset_dataset(io.Dataset(array.dtype, array.shape))
         record.store_chunk(array, [0] * array.ndim, array.shape)
         record.unit_SI = 1.0
+        _set_dark_mesh_position(record, name, component_name, active_dims)
 
 
 def _field_map_to_interior(field_map):
@@ -237,6 +257,7 @@ def _reset_scalar_mesh_record(iteration, name, *, dynamic_parameters, layout):
     record = mesh[io.Mesh_Record_Component.SCALAR]
     record.reset_dataset(io.Dataset(np.dtype(layout.dtype), list(layout.global_shape)))
     record.unit_SI = 1.0
+    _set_dark_mesh_position(record, name, None, layout.active_dims)
     return record
 
 
@@ -251,6 +272,7 @@ def _reset_vector_mesh_record(iteration, name, component_name, *, dynamic_parame
     record = mesh[component_name]
     record.reset_dataset(io.Dataset(np.dtype(layout.dtype), list(layout.global_shape)))
     record.unit_SI = 1.0
+    _set_dark_mesh_position(record, name, component_name, layout.active_dims)
     return record
 
 

@@ -26,7 +26,7 @@ positions, momenta, and active flags. ``SpeciesConfig`` contains metadata
 stored once per species, including charge, mass, weight, and flags for
 whether to update positions and momenta.
 
-Both field solvers use the same field-state tuple:
+The ordinary Yee and electrostatic solvers use this field-state tuple:
 
 .. code-block:: text
 
@@ -37,6 +37,17 @@ are tiled scalar fields. ``external_fields`` contains prescribed electric and
 magnetic fields used by the particle push and energy diagnostics but excluded
 from Maxwell evolution. ``pml_state`` is ``None`` unless PML is active, and
 ``overflow`` reports a failed fixed-capacity particle retile.
+
+The dark photon solver preserves that prefix and inserts its dark state before
+the overflow flag:
+
+.. code-block:: text
+
+   (E, B, J, rho, phi, external_fields, pml_state, dark_fields, overflow)
+
+``dark_fields`` is ``(E_prime, A_prime, phi_prime)`` with ``E_prime`` and
+``phi_prime`` at integer time and ``A_prime`` half a step behind. Output and
+particle gathering reconstruct ``A_prime`` and its curl at integer time.
 
 
 See :doc:`tiling` for the array shapes, guard ownership, and sharding structure.

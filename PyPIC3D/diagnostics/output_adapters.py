@@ -141,6 +141,10 @@ def build_field_output_map(
         "B": B,
         "J": J,
     }
+    if getattr(static_parameters, "solver", None) == "dark_matter_yee":
+        from PyPIC3D.solvers.dark_matter_yee.dark_photon_fields import synchronized_dark_fields
+        dark_E, dark_A, dark_phi, dark_B = synchronized_dark_fields(fields[7], static_parameters, dynamic_parameters)
+        field_map.update(dark_E=dark_E, dark_A=dark_A, dark_phi=dark_phi, dark_B=dark_B)
 
     if include_charge_density:
         field_map["rho"] = compute_rho(
@@ -185,7 +189,7 @@ def field_map_for_output(field_map, static_parameters):
     return output_map
 
 
-def fields_for_output(fields, static_parameters):
+def fields_for_output(fields, static_parameters, dynamic_parameters=None):
     """
     Assemble tile-major fields at the I/O boundary.
 
@@ -218,6 +222,16 @@ def fields_for_output(fields, static_parameters):
         return output_fields
 
     pml_state = rest[0]
+    if getattr(static_parameters, "solver", None) == "dark_matter_yee":
+        if dynamic_parameters is None:
+            raise ValueError("dark_matter_yee output requires dynamic_parameters to synchronize A")
+        from PyPIC3D.solvers.dark_matter_yee.dark_photon_fields import synchronized_dark_fields
+        dark_E, dark_A, dark_phi, _dark_B = synchronized_dark_fields(rest[1], static_parameters, dynamic_parameters)
+        return output_fields + (pml_state, (
+            vector_field_for_output(dark_E, static_parameters),
+            vector_field_for_output(dark_A, static_parameters),
+            scalar_field_for_output(dark_phi, static_parameters),
+        ))
     return output_fields + (pml_state,)
 
 
