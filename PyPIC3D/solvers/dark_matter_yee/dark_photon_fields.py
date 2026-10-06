@@ -20,21 +20,14 @@ def _interior(static_parameters):
     return (slice(None),) * 3 + (slice(g, -g),) * 3
 
 
-def _refresh_vector(vector, static_parameters, locations=D_FIELD_LOCATIONS):
-    return update_tiled_vector_ghost_cells(
-        tuple(vector), static_parameters, static_parameters.guard_cells, locations=locations,
-    )
-
-
-def _refresh_scalar(scalar, static_parameters):
-    return update_tiled_ghost_cells(
-        scalar, static_parameters, static_parameters.guard_cells, location=("C", "C", "C"),
-    )
-
-
 def dark_gradient(phi, static_parameters, dynamic_parameters):
     """Return +grad(phi) on electric edges, including refreshed halos."""
-    phi = _refresh_scalar(phi, static_parameters)
+
+    phi = update_tiled_ghost_cells(
+        phi, static_parameters, static_parameters.guard_cells, location=("C", "C", "C"),
+    )
+    # update phi to full ghost-celled tiles, including the electric Yee edges
+    
     interior = _interior(static_parameters)
     g = static_parameters.guard_cells
     result = []
@@ -43,12 +36,22 @@ def dark_gradient(phi, static_parameters, dynamic_parameters):
         forward[axis + 3] = slice(g + 1, None if g == 1 else -g + 1)
         derivative = (phi[tuple(forward)] - phi[interior]) / spacing
         result.append(jnp.zeros_like(phi).at[interior].set(derivative))
-    return _refresh_vector(result, static_parameters)
 
+    gradient = tuple(result)
+    gradient = update_tiled_vector_ghost_cells(
+        gradient, static_parameters, static_parameters.guard_cells, locations=D_FIELD_LOCATIONS,
+    )
+
+    return gradient
 
 def dark_divergence(A, static_parameters, dynamic_parameters):
     """Return the backward edge-to-node divergence, including halos."""
-    A = _refresh_vector(A, static_parameters)
+
+    A = update_tiled_vector_ghost_cells(
+        A, static_parameters, static_parameters.guard_cells, locations=D_FIELD_LOCATIONS,
+    )
+    # update A to full ghost-celled tiles, including the electric Yee edges
+
     interior = _interior(static_parameters)
     g = static_parameters.guard_cells
     divergence = jnp.zeros_like(A[0][interior])
@@ -56,16 +59,28 @@ def dark_divergence(A, static_parameters, dynamic_parameters):
         backward = list(interior)
         backward[axis + 3] = slice(g - 1, -g - 1)
         divergence = divergence + (A[axis][interior] - A[axis][tuple(backward)]) / spacing
-    return _refresh_scalar(jnp.zeros_like(A[0]).at[interior].set(divergence), static_parameters)
 
+    divergence = jnp.zeros_like(A[0]).at[interior].set(divergence)
+    # add divergence to an interior-only array before applying ghost cell functions
+
+    divergence = update_tiled_ghost_cells(
+        divergence, static_parameters, static_parameters.guard_cells, location=("C", "C", "C"),
+    )
+
+    return divergence
 
 def compute_dark_B(A_n, static_parameters, dynamic_parameters):
     """Compute curl(A) on magnetic Yee faces as full ghost-celled tiles."""
     curl = yee_curl_e_to_b(A_n, static_parameters, dynamic_parameters)
     interior = _interior(static_parameters)
     B = tuple(jnp.zeros_like(a).at[interior].set(c) for a, c in zip(A_n, curl))
-    return _refresh_vector(B, static_parameters, B_FIELD_LOCATIONS)
 
+    B = update_tiled_vector_ghost_cells(
+        B, static_parameters, static_parameters.guard_cells, locations=B_FIELD_LOCATIONS,
+    )
+    # update B to full ghost-celled tiles, including the magnetic Yee faces
+
+    return B
 
 def update_dark_E(E_n, B_half, A_half, J_half, static_parameters, dynamic_parameters, dt):
     """Kick E from n to n+1 with A, B and deposited J at n+1/2."""
@@ -76,8 +91,13 @@ def update_dark_E(E_n, B_half, A_half, J_half, static_parameters, dynamic_parame
     source = static_parameters.sin_chi / dynamic_parameters.eps
     E = tuple(e.at[interior].add(dt * (c2 * (b + mass2 * a[interior]) + source * j[interior]))
               for e, b, a, j in zip(E_n, curl, A_half, J_half))
-    return _refresh_vector(E, static_parameters)
 
+    E = update_tiled_vector_ghost_cells(
+        E, static_parameters, static_parameters.guard_cells, locations=D_FIELD_LOCATIONS,
+    )
+    # update E to full ghost-celled tiles, including the electric Yee edges
+
+    return E
 
 def update_dark_A(E_n, A_half, phi_n, J_n, static_parameters, dynamic_parameters, dt):
     """Drift A with E/phi at the intervening integer time.
@@ -88,7 +108,12 @@ def update_dark_A(E_n, A_half, phi_n, J_n, static_parameters, dynamic_parameters
     interior = _interior(static_parameters)
     A = tuple(a.at[interior].add(-dt * (e[interior] + grad[interior]))
               for a, e, grad in zip(A_half, E_n, gradient))
-    return _refresh_vector(A, static_parameters)
+    A = update_tiled_vector_ghost_cells(
+        A, static_parameters, static_parameters.guard_cells, locations=D_FIELD_LOCATIONS,
+    )
+    # update A to full ghost-celled tiles, including the electric Yee edges
+
+    return A
 
 
 def update_dark_phi(E_n, A_half, phi_n, J_n, static_parameters, dynamic_parameters, dt):
@@ -96,8 +121,13 @@ def update_dark_phi(E_n, A_half, phi_n, J_n, static_parameters, dynamic_paramete
     divergence = dark_divergence(A_half, static_parameters, dynamic_parameters)
     interior = _interior(static_parameters)
     phi = phi_n.at[interior].add(-dt * dynamic_parameters.C**2 * divergence[interior])
-    return _refresh_scalar(phi, static_parameters)
+    # update phi to interior-only tiles, then refresh halos
+    phi = update_tiled_ghost_cells(
+        phi, static_parameters, static_parameters.guard_cells, location=("C", "C", "C")
+    )
+    # update phi to full ghost-celled tiles, including the electric Yee edges
 
+    return phi
 
 def advance_dark_photon_fields(dark_fields, J_half, static_parameters, dynamic_parameters):
     """Advance (E^n, A^{n-1/2}, phi^n) by one complete leapfrog step."""
@@ -148,8 +178,12 @@ def initialize_dark_photon_fields(static_parameters, dynamic_parameters, E=None,
             value = (zero, zero, zero)
         if len(value) != 3:
             raise ValueError("Dark vectors require three components")
-        return _refresh_vector(tuple(scalar(v) for v in value), static_parameters)
+        return update_tiled_vector_ghost_cells(tuple(scalar(v) for v in value), static_parameters, static_parameters.guard_cells, locations=D_FIELD_LOCATIONS)
 
-    E, A, phi = vector(E), vector(A), _refresh_scalar(scalar(phi), static_parameters)
+    E, A = vector(E), vector(A)
+    # tile and refresh E and A to full ghost-celled tiles, including the electric Yee edges
+    phi = update_tiled_ghost_cells(scalar(phi), static_parameters, static_parameters.guard_cells, location=("C", "C", "C"))
+    # tile and refresh phi to full ghost-celled tiles, including the electric Yee edges
     A = update_dark_A(E, A, phi, None, static_parameters, dynamic_parameters, -dynamic_parameters.dt / 2)
+    # seed A to t=-dt/2 with a half drift, then refresh to full ghost-celled tiles, including the electric Yee edges
     return E, A, phi
