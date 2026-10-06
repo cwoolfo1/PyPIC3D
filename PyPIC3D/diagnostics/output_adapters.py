@@ -143,7 +143,9 @@ def build_field_output_map(
     }
     if getattr(static_parameters, "solver", None) == "dark_matter_yee":
         from PyPIC3D.solvers.dark_matter_yee.dark_photon_fields import synchronized_dark_fields
-        dark_E, dark_A, dark_phi, dark_B = synchronized_dark_fields(fields[7], static_parameters, dynamic_parameters)
+        dark_E, dark_A, dark_phi, dark_B = synchronized_dark_fields(
+            fields[7], static_parameters, dynamic_parameters, None if fields[6] is None else fields[6][1],
+        )
         field_map.update(dark_E=dark_E, dark_A=dark_A, dark_phi=dark_phi, dark_B=dark_B)
 
     if include_charge_density:
@@ -226,7 +228,9 @@ def fields_for_output(fields, static_parameters, dynamic_parameters=None):
         if dynamic_parameters is None:
             raise ValueError("dark_matter_yee output requires dynamic_parameters to synchronize A")
         from PyPIC3D.solvers.dark_matter_yee.dark_photon_fields import synchronized_dark_fields
-        dark_E, dark_A, dark_phi, _dark_B = synchronized_dark_fields(rest[1], static_parameters, dynamic_parameters)
+        dark_E, dark_A, dark_phi, _dark_B = synchronized_dark_fields(
+            rest[1], static_parameters, dynamic_parameters, None if pml_state is None else pml_state[1],
+        )
         return output_fields + (pml_state, (
             vector_field_for_output(dark_E, static_parameters),
             vector_field_for_output(dark_A, static_parameters),

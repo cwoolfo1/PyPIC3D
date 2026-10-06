@@ -1,7 +1,7 @@
 import jax.numpy as jnp
 
 
-def compute_dark_energy(dark_fields, static_parameters, dynamic_parameters):
+def compute_dark_energy(dark_fields, static_parameters, dynamic_parameters, pml_state=None):
     """Physical Proca energy at integer time, using reconstructed A and B.
 
     This diagnostic is second-order accurate in time, rather than an exactly
@@ -9,7 +9,7 @@ def compute_dark_energy(dark_fields, static_parameters, dynamic_parameters):
     """
     from PyPIC3D.solvers.dark_matter_yee.dark_photon_fields import synchronized_dark_fields
 
-    E, A, phi, B = synchronized_dark_fields(dark_fields, static_parameters, dynamic_parameters)
+    E, A, phi, B = synchronized_dark_fields(dark_fields, static_parameters, dynamic_parameters, pml_state)
     g = static_parameters.guard_cells
     interior = (slice(None),) * 3 + (slice(g, -g),) * 3
     c2 = dynamic_parameters.C**2

@@ -311,17 +311,17 @@ class TestDarkPhoton(unittest.TestCase):
     def test_configuration_errors_and_timestep_bound(self):
         with tempfile.TemporaryDirectory() as directory, contextlib.redirect_stdout(io.StringIO()):
             for updates in (dict(sin_chi=1.1), dict(sin_chi=float("nan")), dict(dark_mu=-1.),
-                            dict(dark_mu=float("inf")), dict(x_bc="conducting"), dict(y_bc="constant"),
+                            dict(dark_mu=float("inf")), dict(y_bc="constant"),
                             dict(dt=-1.), dict(dt=float("nan")), dict(dt=100.), dict(C=0.), dict(eps=0.)):
                 with self.subTest(updates=updates), self.assertRaises(ValueError):
                     initialize_simulation(self.config(directory, **updates))
-            for absorber in ("pml", "supergaussian"):
+            for absorber in ("supergaussian",):
                 config = self.config(directory)
                 config[absorber] = [{"axis": "x"}]
                 with self.assertRaisesRegex(ValueError, "does not support"):
                     initialize_simulation(config)
-            for updates in (dict(sin_chi=2.), dict(dark_mu=-1.), dict(pml_active=True),
-                            dict(supergaussian_active=True), dict(boundary_conditions=(1, 0, 0))):
+            for updates in (dict(sin_chi=2.), dict(dark_mu=-1.),
+                            dict(supergaussian_active=True), dict(boundary_conditions=(2, 0, 0))):
                 s, _ = parameters()
                 with self.assertRaises(ValueError):
                     build_static_parameters({**s._asdict(), **updates})

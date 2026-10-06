@@ -51,8 +51,9 @@ Dark Photon Maxwell-Proca Step
 ------------------------------
 
 ``dark_matter_yee`` evolves an additional massive vector field alongside the
-ordinary Maxwell fields, using periodic field boundaries. PML, conducting or
-constant field walls, and supergaussian absorbers are not supported in this mode.
+ordinary Maxwell fields, using periodic or conducting field boundaries and
+optional PML layers. The same boundary configuration applies to both sectors.
+Constant field walls and supergaussian absorbers are not supported in this mode.
 ``sin_chi`` is the dimensionless mixing coefficient (default zero, between
 -1 and 1); ``dark_mu`` is a dark photon mass (default zero), distinct
 from the electromagnetic permeability ``mu``.
@@ -89,6 +90,38 @@ Initial data are supplied at ``t=0``; initialization stores
 data, require ``D_h E' + dark_mu**2 * phi' = -sin_chi * rho / eps`` initially.
 The initializer does not solve this constraint. Its discrete preservation with
 particles requires charge-conserving current deposition.
+
+Conducting walls impose homogeneous reflecting Proca conditions: zero scalar
+potential, tangential vector potential and electric field, and normal magnetic
+field. Across each physical wall, ``phi`` and tangential ``A/E`` have odd
+parity, normal ``A/E`` have even parity, and ``B`` has the opposite vector
+parities. Reflections use the actual Yee endpoints, including edges and corners.
+This is an ideal reflecting wall for each sector, not a material model of a
+conductor interacting only with the mixed force field.
+
+The existing ``[[pml]]`` wall configuration also absorbs transverse and
+longitudinal dark waves. The dark solver stretches both curls, the scalar
+gradient, and the vector divergence. Its auxiliary state stores a magnetic
+field at half time and 18 derivative histories, separate from the Maxwell PML
+histories. Conductivity is interpolated from the existing nodal profiles to the
+appropriate Yee derivative locations. Mass and current terms are unchanged.
+
+For a directional derivative ``d``, the dark history satisfies
+``psi_dot = -sigma*(psi + d)``. Each stage integrates this equation exponentially
+with ``d`` at the stage midpoint and uses the interval-averaged stretched
+derivative in the field update. ``A/B`` and their gradient/Faraday histories
+advance between half times; ``E/phi`` and the Ampere/divergence histories advance
+between integer times. Histories start at zero at physical ``t=0`` before the
+backward half-step seed. Nonzero initial fields within the layer therefore
+represent a fresh absorber startup, not an established outgoing-wave history.
+
+Particle gathers, field output, and energy diagnostics preview a half drift of
+``A/B`` without modifying live histories. Inside PML, ``dark_B`` comes from this
+auxiliary magnetic field rather than an ordinary ``curl(A)``. Outside the layer,
+the original Proca equations and staggering apply. PML intentionally removes
+energy; the physical Gauss constraint is assessed outside the layer and away
+from wall surface-charge nodes. Particle boundaries and deposition remain
+independent settings. Place sources away from PML when measuring absorption.
 
 The explicit field stability bound is
 

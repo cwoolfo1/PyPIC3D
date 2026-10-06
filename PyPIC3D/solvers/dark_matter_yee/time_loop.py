@@ -17,14 +17,15 @@ from PyPIC3D.solvers.dark_matter_yee.dark_photon_fields import (
     compute_dark_B,
     synchronized_dark_fields,
 )
+from PyPIC3D.solvers.dark_matter_yee.pml import advance_dark_pml
 
 
 __all__ = ["time_loop_dark_photon"]
 
 
-def dark_photon_push_fields(E, B, dark_fields, external_fields, static_parameters, dynamic_parameters):
+def dark_photon_push_fields(E, B, dark_fields, external_fields, static_parameters, dynamic_parameters, pml_state=None):
     """Build the integer-time force fields, including adjoint current filtering."""
-    dark_E, _A, _phi, dark_B = synchronized_dark_fields(dark_fields, static_parameters, dynamic_parameters)
+    dark_E, _A, _phi, dark_B = synchronized_dark_fields(dark_fields, static_parameters, dynamic_parameters, pml_state)
     mixing = static_parameters.sin_chi
     E = tuple(e - mixing * dark_e for e, dark_e in zip(E, dark_E))
     B = tuple(b - mixing * dark_b for b, dark_b in zip(B, dark_B))
@@ -36,8 +37,9 @@ def time_loop_dark_photon(particles, species_config, fields, static_parameters, 
     """Advance particles and both field sectors by one timestep."""
     E, B, J, rho, phi, external_fields, pml_state, dark_fields, overflow = fields
     dt = dynamic_parameters.dt
+    maxwell_pml, dark_pml = (None, None) if pml_state is None else pml_state
     push_E, push_B = dark_photon_push_fields(
-        E, B, dark_fields, external_fields, static_parameters, dynamic_parameters,
+        E, B, dark_fields, external_fields, static_parameters, dynamic_parameters, dark_pml,
     )
     particles = particle_push(particles, species_config, push_E, push_B, static_parameters, dynamic_parameters)
     # first push the particles with the integer-time force fields, including adjoint current filtering
@@ -56,17 +58,23 @@ def time_loop_dark_photon(particles, species_config, fields, static_parameters, 
     overflow = overflow | new_overflow
     # compute the current density from the updated particle positions, and refresh the particle tiles to ensure consistency across tile boundaries
 
-    B, pml_state = update_B(E, B, static_parameters, dynamic_parameters, pml_state)
-    E, pml_state = update_E(E, B, J, static_parameters, dynamic_parameters, pml_state)
-    B, pml_state = update_B(E, B, static_parameters, dynamic_parameters, pml_state)
+    B, maxwell_pml = update_B(E, B, static_parameters, dynamic_parameters, maxwell_pml)
+    E, maxwell_pml = update_E(E, B, J, static_parameters, dynamic_parameters, maxwell_pml)
+    B, maxwell_pml = update_B(E, B, static_parameters, dynamic_parameters, maxwell_pml)
     # leapfrog integrate the electromagnetic fields with the updated current density, including PML boundary conditions
 
-    E_dark, A_dark, phi_dark = dark_fields
-    A_dark = update_dark_A(E_dark, A_dark, phi_dark, J, static_parameters, dynamic_parameters, dt)
-    B_dark = compute_dark_B(A_dark, static_parameters, dynamic_parameters)
-    phi_dark = update_dark_phi(E_dark, A_dark, phi_dark, J, static_parameters, dynamic_parameters, dt)
-    E_dark = update_dark_E(E_dark, B_dark, A_dark, J, static_parameters, dynamic_parameters, dt)
-    dark_fields = (E_dark, A_dark, phi_dark)
-    # leapfrog integrate the dark photon fields with the updated current density
+    if dark_pml is not None:
+        dark_fields, dark_pml = advance_dark_pml(
+            dark_fields, J, dark_pml, static_parameters, dynamic_parameters,
+        )
+        pml_state = maxwell_pml, dark_pml
+    else:
+        E_dark, A_dark, phi_dark = dark_fields
+        A_dark = update_dark_A(E_dark, A_dark, phi_dark, J, static_parameters, dynamic_parameters, dt)
+        B_dark = compute_dark_B(A_dark, static_parameters, dynamic_parameters)
+        phi_dark = update_dark_phi(E_dark, A_dark, phi_dark, J, static_parameters, dynamic_parameters, dt)
+        E_dark = update_dark_E(E_dark, B_dark, A_dark, J, static_parameters, dynamic_parameters, dt)
+        dark_fields = (E_dark, A_dark, phi_dark)
+        # leapfrog integrate the dark photon fields with the updated current density
 
     return particles, (E, B, J, rho, phi, external_fields, pml_state, dark_fields, overflow)

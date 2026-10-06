@@ -86,7 +86,8 @@ def run_PyPIC3D(config_file):
             dynamic_parameters,
             species_config=species_config,
         )
-        dark_energy = (compute_dark_energy(fields[7], static_parameters, dynamic_parameters)
+        dark_energy = (compute_dark_energy(fields[7], static_parameters, dynamic_parameters,
+                                              None if fields[6] is None else fields[6][1])
                        if static_parameters.solver == "dark_matter_yee" else 0.0)
         initial_energy = e_energy + b_energy + kinetic_energy + dark_energy
 
@@ -130,7 +131,8 @@ def run_PyPIC3D(config_file):
                         dynamic_parameters,
                         species_config=species_config,
                     )
-                    dark_energy = (compute_dark_energy(fields[7], static_parameters, dynamic_parameters)
+                    dark_energy = (compute_dark_energy(fields[7], static_parameters, dynamic_parameters,
+                                                          None if fields[6] is None else fields[6][1])
                                    if static_parameters.solver == "dark_matter_yee" else 0.0)
                     total_energy = e_energy + b_energy + kinetic_energy + dark_energy
                     if static_parameters.solver == "dark_matter_yee":
@@ -257,7 +259,8 @@ def main():
         print(f"Final Electric Field Energy: {e_energy}")
         print(f"Final Magnetic Field Energy: {b_energy}")
         print(f"Final Kinetic Energy: {kinetic_energy}")
-        dark_energy = (compute_dark_energy(fields[7], static_parameters, dynamic_parameters)
+        dark_energy = (compute_dark_energy(fields[7], static_parameters, dynamic_parameters,
+                                              None if fields[6] is None else fields[6][1])
                        if static_parameters.solver == "dark_matter_yee" else 0.0)
         if static_parameters.solver == "dark_matter_yee":
             print(f"Final Dark Field Energy: {dark_energy}")

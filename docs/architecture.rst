@@ -39,7 +39,9 @@ from Maxwell evolution. ``pml_state`` is ``None`` unless PML is active, and
 ``overflow`` reports a failed fixed-capacity particle retile.
 
 The dark photon solver preserves that prefix and inserts its dark state before
-the overflow flag:
+the overflow flag. With PML active, its ``pml_state`` is
+``(maxwell_pml, dark_pml)``; otherwise it is ``None``. The two sectors share wall
+settings but maintain independent histories:
 
 .. code-block:: text
 

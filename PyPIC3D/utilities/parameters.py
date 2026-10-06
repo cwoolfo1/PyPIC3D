@@ -121,10 +121,10 @@ def build_static_parameters(static_config):
     static_config = dict(static_config)
     validate_dark_parameters(static_config.get("sin_chi", 0.0), static_config.get("dark_mu", 0.0))
     if static_config.get("solver") == "dark_matter_yee":
-        if _axis_tuple(static_config["boundary_conditions"]) != (0, 0, 0):
-            raise ValueError("dark_matter_yee requires periodic field boundaries")
-        if static_config.get("pml_active") or static_config.get("supergaussian_active"):
-            raise ValueError("dark_matter_yee does not support PML or supergaussian absorbers")
+        if any(bc not in (0, 1) for bc in _axis_tuple(static_config["boundary_conditions"])):
+            raise ValueError("dark_matter_yee supports periodic or conducting field boundaries")
+        if static_config.get("supergaussian_active"):
+            raise ValueError("dark_matter_yee does not support supergaussian absorbers")
     horizon_cells = static_config.get('horizon_field_cells', 0)
     if isinstance(horizon_cells, bool) or not isinstance(horizon_cells, Integral) or horizon_cells < 0:
         raise ValueError('horizon_field_cells must be a nonnegative integer')

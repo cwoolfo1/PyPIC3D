@@ -490,10 +490,10 @@ def initialize_simulation(toml_file):
     static_metric = solver == "static_metric"
     dark_matter = solver == "dark_matter_yee"
     if dark_matter:
-        if any(static_config[axis + "_bc"] != "periodic" for axis in "xyz"):
-            raise ValueError("dark_matter_yee requires periodic field boundaries")
-        if config.get("pml") or config.get("supergaussian"):
-            raise ValueError("dark_matter_yee does not support PML or supergaussian absorbers")
+        if any(static_config[axis + "_bc"] not in ("periodic", "conducting") for axis in "xyz"):
+            raise ValueError("dark_matter_yee supports periodic or conducting field boundaries")
+        if config.get("supergaussian"):
+            raise ValueError("dark_matter_yee does not support supergaussian absorbers")
     elif any(key.startswith("dark_field") for key in config):
         raise ValueError("dark_field initial data requires solver='dark_matter_yee'")
     static_config["electrostatic"] = electrostatic
@@ -565,7 +565,7 @@ def initialize_simulation(toml_file):
     raw_pml = config.get("pml", [])
     pml_active = bool(raw_pml)
     if pml_active and electrostatic:
-        raise ValueError("PML is only supported for the electrodynamic_yee solver")
+        raise ValueError("PML is only supported for the electrodynamic_yee and dark_matter_yee solvers")
     if pml_active and static_metric:
         raise ValueError("PML is not yet supported for the static_metric solver")
 
@@ -727,6 +727,15 @@ def initialize_simulation(toml_file):
     external_fields = (external_E, external_B)
 
     dark_fields = load_dark_fields_from_toml(config, static_parameters, dynamic_parameters) if dark_matter else None
+    pml_state = None
+    dark_pml = None
+    if pml_active:
+        pml_profiles = pml_config[4]
+        pml_state = initialize_tiled_pml_state(static_parameters, dynamic_parameters, pml_profiles, tile_shape)
+        if dark_matter:
+            from PyPIC3D.solvers.dark_matter_yee.pml import initialize_dark_pml
+            dark_fields, dark_pml = initialize_dark_pml(dark_fields, static_parameters, dynamic_parameters, pml_profiles)
+            pml_state = pml_state, dark_pml
 
     static_metric_state = None
     if static_metric:
@@ -755,14 +764,14 @@ def initialize_simulation(toml_file):
         print(f"Initial Electric Field Energy: {e_energy:.2e} J")
         print(f"Initial Magnetic Field Energy: {b_energy:.2e} J")
         print(f"Initial Kinetic Energy: {kinetic_energy:.2e} J")
-        dark_energy = compute_dark_energy(dark_fields, static_parameters, dynamic_parameters) if dark_matter else 0.0
+        dark_energy = compute_dark_energy(dark_fields, static_parameters, dynamic_parameters, dark_pml) if dark_matter else 0.0
         if dark_matter:
             print(f"Initial Dark Field Energy: {dark_energy:.2e} J")
         print(f"Total Initial Energy: {e_energy + b_energy + kinetic_energy + dark_energy:.2e} J\n")
 
     seed_E, seed_B = add_external_fields(E, B, external_fields)
     if dark_matter:
-        seed_E, seed_B = dark_photon_push_fields(E, B, dark_fields, external_fields, static_parameters, dynamic_parameters)
+        seed_E, seed_B = dark_photon_push_fields(E, B, dark_fields, external_fields, static_parameters, dynamic_parameters, dark_pml)
     particles = seed_leapfrog_velocity(
         particles,
         species_config,
@@ -815,17 +824,8 @@ def initialize_simulation(toml_file):
     elif electrostatic:
         fields = (E, B, J, rho, phi, external_fields, None, overflow)
     elif dark_matter:
-        fields = (E, B, J, rho, phi, external_fields, None, dark_fields, overflow)
+        fields = (E, B, J, rho, phi, external_fields, pml_state, dark_fields, overflow)
     else:
-        pml_state = None
-        if pml_active:
-            _, _, _, _, pml_profiles = pml_config
-            pml_state = initialize_tiled_pml_state(
-                static_parameters,
-                dynamic_parameters,
-                pml_profiles,
-                tile_shape,
-            )
         fields = (E, B, J, rho, phi, external_fields, pml_state, overflow)
 
     field_map = build_field_output_map(
