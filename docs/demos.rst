@@ -74,6 +74,32 @@ the color scale stays fixed throughout the movie. Only the magnetic mesh is
 required. Use ``--fields``, ``--output-dir``, ``--fps``, and ``--dpi`` to override
 the input, output directory, frame rate (10), and resolution (150).
 
+Dark-Field Harris Reconnection
+-----------------------------
+
+``demos/dark_matter/dark_reconnection_2d`` initializes the entire Harris sheet
+and X-point perturbation in the massive dark vector potential. Ordinary fields
+start at zero, and the dark amplitude is scaled so particles initially feel
+the usual Harris magnetic field. This is an evolving Harris-loaded state,
+not a stationary coupled equilibrium. It uses ``sin_chi = 0.3`` and
+``dark_mu*d_e = 0.5``, with Esirkepov deposition and conducting z walls.
+
+From the repository root:
+
+.. code-block:: bash
+
+   python -m demos.dark_matter.dark_reconnection_2d.initial_data \
+     --output-dir runs/dark_harris_001
+   python -m PyPIC3D --config runs/dark_harris_001/run.toml
+   python -m demos.dark_matter.dark_reconnection_2d.analyze_data \
+     --config runs/dark_harris_001/run.toml
+
+Add ``--smoke`` to the generator for a 12-step CPU-sized runtime check.
+Choose a fresh output directory for each run. The analysis compares dark,
+ordinary and effective magnetic fields, and plots dark flux and total energy.
+See the demo's ``README.md`` for normalization, numerical conventions,
+validation commands, and interpretation of the startup transient.
+
 Blandford-Znajek Monopole
 -------------------------
 
