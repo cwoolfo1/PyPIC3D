@@ -140,6 +140,33 @@ and the existing ``1e-10`` exterior constraint limits. Nonfinite diagnostic
 masks must agree. The final endpoint must be exactly t=1 M. Runtime Maxwell
 state is densitized; saved D/B/J arrays remain physical contravariant values.
 
+Vacuum Kerr Superradiant Scattering
+----------------------------------
+
+An inward electromagnetic ``l=m=1`` dipole seed in a Cartesian Kerr-Schild
+box, with no particles or continuing sources. All six faces use the
+production FIDO D/B PEC logic on the evolved densities. A demo-local interior absorber and finite core
+metric remain inside the horizon.
+
+.. code-block:: bash
+
+   python -m demos.static_metric_relativity.superradiant_scattering.run_demo \
+       --config demos/static_metric_relativity/superradiant_scattering/smoke.toml
+
+Use ``kerr.toml`` for the 128^3, 500 M experiment or ``schwarzschild.toml``
+for its nonrotating control. ``--output-dir`` selects the destination;
+``--overwrite`` replaces only this demo's artifacts. The demo runs on one
+JAX device and requires several GB for its full grid.
+
+Outputs include an incrementally flushed ``energy.csv``, run metadata,
+``growth.json``, and ``energy_growth.png``. Diagnostics measure synchronized
+FIDO energy, exterior Killing energy, horizon/wall energy fluxes, and vacuum
+constraints. Growth fits report decay or unresolved/insufficient data as
+appropriate. The 48^3 smoke preset checks startup only. Cartesian walls can
+mix angular modes; physical superradiant growth requires a longer convergence
+and energy-budget study. See the demo's ``README.md`` for equations, numerical
+limitations, configuration options, and analysis commands.
+
 Notes
 -----
 
