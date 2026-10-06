@@ -129,16 +129,6 @@ def update_dark_phi(E_n, A_half, phi_n, J_n, static_parameters, dynamic_paramete
 
     return phi
 
-def advance_dark_photon_fields(dark_fields, J_half, static_parameters, dynamic_parameters):
-    """Advance (E^n, A^{n-1/2}, phi^n) by one complete leapfrog step."""
-    E, A, phi = dark_fields
-    dt = dynamic_parameters.dt
-    A = update_dark_A(E, A, phi, J_half, static_parameters, dynamic_parameters, dt)
-    B = compute_dark_B(A, static_parameters, dynamic_parameters)
-    phi_new = update_dark_phi(E, A, phi, J_half, static_parameters, dynamic_parameters, dt)
-    E = update_dark_E(E, B, A, J_half, static_parameters, dynamic_parameters, dt)
-    return E, A, phi_new
-
 
 def synchronized_dark_fields(dark_fields, static_parameters, dynamic_parameters):
     """Return (E, A, phi, B) at integer time for gathering and diagnostics.

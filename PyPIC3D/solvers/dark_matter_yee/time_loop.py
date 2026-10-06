@@ -10,7 +10,13 @@ from PyPIC3D.pusher.particle_push import particle_push
 from PyPIC3D.utilities.field_helpers import add_external_fields
 from PyPIC3D.solvers.yee.first_order_yee import update_B, update_E
 from PyPIC3D.solvers.yee.time_loop import _filter_electric_field_for_particles
-from .dark_photon_fields import advance_dark_photon_fields, synchronized_dark_fields
+from PyPIC3D.solvers.dark_matter_yee.dark_photon_fields import (
+    update_dark_A,
+    update_dark_E,
+    update_dark_phi,
+    compute_dark_B,
+    synchronized_dark_fields,
+)
 
 
 __all__ = ["time_loop_dark_photon"]
@@ -34,6 +40,8 @@ def time_loop_dark_photon(particles, species_config, fields, static_parameters, 
         E, B, dark_fields, external_fields, static_parameters, dynamic_parameters,
     )
     particles = particle_push(particles, species_config, push_E, push_B, static_parameters, dynamic_parameters)
+    # first push the particles with the integer-time force fields, including adjoint current filtering
+
 
     if static_parameters.current_deposition == "esirkepov":
         J = Esirkepov_current(particles, species_config, J, static_parameters, dynamic_parameters)
@@ -46,10 +54,19 @@ def time_loop_dark_photon(particles, species_config, fields, static_parameters, 
         particles = update_tiled_particle_positions(particles, species_config, dt / 2)
     particles, new_overflow = refresh_tiled_particle_tiles(particles, static_parameters, dynamic_parameters)
     overflow = overflow | new_overflow
+    # compute the current density from the updated particle positions, and refresh the particle tiles to ensure consistency across tile boundaries
 
     B, pml_state = update_B(E, B, static_parameters, dynamic_parameters, pml_state)
     E, pml_state = update_E(E, B, J, static_parameters, dynamic_parameters, pml_state)
     B, pml_state = update_B(E, B, static_parameters, dynamic_parameters, pml_state)
-    dark_fields = advance_dark_photon_fields(dark_fields, J, static_parameters, dynamic_parameters)
+    # leapfrog integrate the electromagnetic fields with the updated current density, including PML boundary conditions
+
+    E_dark, A_dark, phi_dark = dark_fields
+    A_dark = update_dark_A(E_dark, A_dark, phi_dark, J, static_parameters, dynamic_parameters, dt)
+    B_dark = compute_dark_B(A_dark, static_parameters, dynamic_parameters)
+    phi_dark = update_dark_phi(E_dark, A_dark, phi_dark, J, static_parameters, dynamic_parameters, dt)
+    E_dark = update_dark_E(E_dark, B_dark, A_dark, J, static_parameters, dynamic_parameters, dt)
+    dark_fields = (E_dark, A_dark, phi_dark)
+    # leapfrog integrate the dark photon fields with the updated current density
 
     return particles, (E, B, J, rho, phi, external_fields, pml_state, dark_fields, overflow)
