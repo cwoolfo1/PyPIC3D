@@ -64,19 +64,6 @@ def _ensure_openpmd_array(data, dtype=np.float64, squeeze=False):
     return arr
 
 
-def _split_output_parameters(static_parameters, dynamic_parameters):
-    if dynamic_parameters is None:
-        return static_parameters, static_parameters
-    if isinstance(dynamic_parameters, str):
-        return static_parameters, static_parameters
-    if hasattr(dynamic_parameters, "dx"):
-        return static_parameters, dynamic_parameters
-    if "dx" not in dynamic_parameters:
-        static_items = static_parameters._asdict() if hasattr(static_parameters, "_asdict") else static_parameters
-        return static_parameters, {**static_items, **dynamic_parameters}
-    return static_parameters, dynamic_parameters
-
-
 def _open_openpmd_series(output_path, filename, file_extension=".bp"):
     filename = "_".join(filename.split()) + file_extension
     # add file extension
@@ -601,8 +588,8 @@ def write_tiled_particle_snapshot_openpmd(
 def write_openpmd_initial_particles(
     particles,
     static_parameters,
-    dynamic_parameters=None,
-    output_dir=None,
+    dynamic_parameters,
+    output_dir,
     filename="initial_particles.h5",
     species_config=None,
     species_names=None,
@@ -619,7 +606,6 @@ def write_openpmd_initial_particles(
         filename (str): Base name of the openPMD output file (species name is prepended).
         metric (YeeMetric): Static-metric runs pass the grid metric; particle u is then covariant u_i.
     """
-    static_parameters, dynamic_parameters = _split_output_parameters(static_parameters, dynamic_parameters)
 
     static_metric_gamma = None
     if metric is not None:
@@ -748,7 +734,7 @@ def write_openpmd_initial_particles(
         series.flush()
         series.close()
 
-def write_openpmd_initial_fields(field_map, static_parameters, dynamic_parameters=None, output_dir=None, filename="initial_fields.h5"):
+def write_openpmd_initial_fields(field_map, static_parameters, dynamic_parameters, output_dir, filename="initial_fields.h5"):
     """
     Write the initial field states to an openPMD file.
 
@@ -759,10 +745,6 @@ def write_openpmd_initial_fields(field_map, static_parameters, dynamic_parameter
         output_dir (str): Base output directory for the simulation.
         filename (str): openPMD file name.
     """
-    if isinstance(dynamic_parameters, str) and output_dir is None:
-        output_dir = dynamic_parameters
-        dynamic_parameters = static_parameters
-    static_parameters, dynamic_parameters = _split_output_parameters(static_parameters, dynamic_parameters)
 
     field_map = field_map_for_output(field_map, static_parameters)
     field_map = _field_map_to_interior(field_map)

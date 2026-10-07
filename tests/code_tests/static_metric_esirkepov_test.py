@@ -649,7 +649,7 @@ class TestGRESirkepovConfiguration(unittest.TestCase):
             )
 
     def test_removed_configuration_name_points_to_shared_scheme(self):
-        with self.assertRaisesRegex(ValueError, "has been removed; use 'esirkepov'"):
+        with self.assertRaisesRegex(ValueError, "Unsupported current_calculation.*'esirkepov'"):
             _encode_current_calculation("GR_esirkepov")
 
     def test_current_filtering_is_rejected(self):

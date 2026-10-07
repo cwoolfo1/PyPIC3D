@@ -18,7 +18,6 @@ class StaticParameters(NamedTuple):
     output_dir: str
     Nt: int
     verbose: bool
-    GPUs: bool
     benchmark: bool
     solver: str
     electrostatic: bool
@@ -151,7 +150,6 @@ def build_static_parameters(static_config):
         output_dir=static_config.get("output_dir", "."),
         Nt=int(static_config.get("Nt", 0)),
         verbose=bool(static_config.get("verbose", False)),
-        GPUs=bool(static_config.get("GPUs", False)),
         benchmark=bool(static_config.get("benchmark", False)),
         solver=static_config.get("solver", "electrodynamic_yee"),
         electrostatic=bool(static_config.get("electrostatic", False)),

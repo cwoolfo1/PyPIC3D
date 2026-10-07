@@ -19,11 +19,6 @@ from PyPIC3D.boundary_conditions.grid_and_stencil import BC_CONDUCTING, BC_CONST
 from tests.kernel_fixtures import kernel_parameters_from_values, tile_vector_field
 
 
-def _field_static_parameters(parameter_set):
-    static_parameters, _ = kernel_parameters_from_values(parameter_set)
-    return static_parameters
-
-
 def _update_ghost_cells(field, bc_x, bc_y, bc_z):
     field = jax.lax.cond(
         bc_x == BC_PERIODIC,
@@ -97,11 +92,6 @@ class TestYeeTiled(unittest.TestCase):
         tiled_center_grid, tiled_vertex_grid = build_tiled_yee_grids(static_parameters, dynamic_parameters)
         parameter_set["grids"]["tiled_vertex_grid"] = tiled_vertex_grid
         parameter_set["grids"]["tiled_center_grid"] = tiled_center_grid
-        return parameter_set
-
-    def _mixed_bc_parameters(self):
-        parameter_set = self._build_parameter_values()
-        parameter_set["boundary_conditions"] = {"x": BC_PERIODIC, "y": BC_CONDUCTING, "z": BC_CONDUCTING}
         return parameter_set
 
     def _fill_ghosts(self, field, parameter_set):
@@ -193,66 +183,6 @@ class TestYeeTiled(unittest.TestCase):
         E_reference, pml_state = self._reference_update_E(E, B, J, parameter_set, dynamic_values)
         B_reference, pml_state = self._reference_update_B(E_reference, B, parameter_set, dynamic_values)
         return E_reference, B_reference, pml_state
-
-    def _fill_guard_cells(self, field, parameter_set, num_guard_cells):
-        g = num_guard_cells
-        bc_x = parameter_set["boundary_conditions"]["x"]
-        bc_y = parameter_set["boundary_conditions"]["y"]
-        bc_z = parameter_set["boundary_conditions"]["z"]
-
-        if bc_x == BC_PERIODIC:
-            field = field.at[:g, :, :].set(field[-2 * g:-g, :, :])
-            field = field.at[-g:, :, :].set(field[g:2 * g, :, :])
-        else:
-            field = field.at[:g, :, :].set(0.0)
-            field = field.at[-g:, :, :].set(0.0)
-
-        if bc_y == BC_PERIODIC:
-            field = field.at[:, :g, :].set(field[:, -2 * g:-g, :])
-            field = field.at[:, -g:, :].set(field[:, g:2 * g, :])
-        else:
-            field = field.at[:, :g, :].set(0.0)
-            field = field.at[:, -g:, :].set(0.0)
-
-        if bc_z == BC_PERIODIC:
-            field = field.at[:, :, :g].set(field[:, :, -2 * g:-g])
-            field = field.at[:, :, -g:].set(field[:, :, g:2 * g])
-        else:
-            field = field.at[:, :, :g].set(0.0)
-            field = field.at[:, :, -g:].set(0.0)
-
-        return field
-
-    def _tile_scalar_field_with_guard(self, field, tile_shape, num_guard_cells):
-        g = num_guard_cells
-        tile_nx, tile_ny, tile_nz = tile_shape
-        Nx = int(field.shape[0]) - 2 * g
-        Ny = int(field.shape[1]) - 2 * g
-        Nz = int(field.shape[2]) - 2 * g
-        ntx = Nx // tile_nx
-        nty = Ny // tile_ny
-        ntz = Nz // tile_nz
-
-        tiles = []
-        for tx in range(ntx):
-            y_tiles = []
-            for ty in range(nty):
-                z_tiles = []
-                for tz in range(ntz):
-                    ix = tx * tile_nx
-                    iy = ty * tile_ny
-                    iz = tz * tile_nz
-                    z_tiles.append(
-                        field[
-                            ix:ix + tile_nx + 2 * g,
-                            iy:iy + tile_ny + 2 * g,
-                            iz:iz + tile_nz + 2 * g,
-                        ]
-                    )
-                y_tiles.append(jnp.stack(z_tiles, axis=0))
-            tiles.append(jnp.stack(y_tiles, axis=0))
-
-        return jnp.stack(tiles, axis=0)
 
     def test_tile_vector_field_assembles_to_original_ghost_celled_field(self):
         parameter_set = self._build_parameter_values()

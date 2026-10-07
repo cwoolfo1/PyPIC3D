@@ -1,7 +1,6 @@
 import unittest
 from types import SimpleNamespace
 
-import jax
 import jax.numpy as jnp
 
 from PyPIC3D.boundary_conditions import ghost_cells
@@ -18,58 +17,6 @@ from PyPIC3D.particles.particle_tile_communication import refresh_tiled_particle
 from PyPIC3D.diagnostics.output_adapters import assemble_tiled_vector_field
 from PyPIC3D.utilities.grids import build_tiled_yee_grids, build_yee_grid
 from tests.kernel_fixtures import _tile_axis_count, kernel_parameters_from_values
-
-
-def _field_static_parameters(parameter_set):
-    static_parameters, _ = kernel_parameters_from_values(parameter_set)
-    return static_parameters
-
-
-def _update_ghost_cells(field, bc_x, bc_y, bc_z):
-    field = jax.lax.cond(
-        bc_x == BC_PERIODIC,
-        lambda f: f.at[0, :, :].set(f[-2, :, :]).at[-1, :, :].set(f[1, :, :]),
-        lambda f: f.at[0, :, :].set(0.0).at[-1, :, :].set(0.0),
-        operand=field,
-    )
-    field = jax.lax.cond(
-        bc_y == BC_PERIODIC,
-        lambda f: f.at[:, 0, :].set(f[:, -2, :]).at[:, -1, :].set(f[:, 1, :]),
-        lambda f: f.at[:, 0, :].set(0.0).at[:, -1, :].set(0.0),
-        operand=field,
-    )
-    field = jax.lax.cond(
-        bc_z == BC_PERIODIC,
-        lambda f: f.at[:, :, 0].set(f[:, :, -2]).at[:, :, -1].set(f[:, :, 1]),
-        lambda f: f.at[:, :, 0].set(0.0).at[:, :, -1].set(0.0),
-        operand=field,
-    )
-    return field
-
-
-def _fold_ghost_cells(field, bc_x, bc_y, bc_z):
-    field = jax.lax.cond(
-        bc_x == BC_PERIODIC,
-        lambda f: f.at[1, :, :].add(f[-1, :, :]).at[-2, :, :].add(f[0, :, :]),
-        lambda f: f.at[1, :, :].add(-f[0, :, :]).at[-2, :, :].add(-f[-1, :, :]),
-        operand=field,
-    )
-    field = field.at[0, :, :].set(0.0).at[-1, :, :].set(0.0)
-    field = jax.lax.cond(
-        bc_y == BC_PERIODIC,
-        lambda f: f.at[:, 1, :].add(f[:, -1, :]).at[:, -2, :].add(f[:, 0, :]),
-        lambda f: f.at[:, 1, :].add(-f[:, 0, :]).at[:, -2, :].add(-f[:, -1, :]),
-        operand=field,
-    )
-    field = field.at[:, 0, :].set(0.0).at[:, -1, :].set(0.0)
-    field = jax.lax.cond(
-        bc_z == BC_PERIODIC,
-        lambda f: f.at[:, :, 1].add(f[:, :, -1]).at[:, :, -2].add(f[:, :, 0]),
-        lambda f: f.at[:, :, 1].add(-f[:, :, 0]).at[:, :, -2].add(-f[:, :, -1]),
-        operand=field,
-    )
-    field = field.at[:, :, 0].set(0.0).at[:, :, -1].set(0.0)
-    return field
 
 
 class TestDirectDeposition(unittest.TestCase):
@@ -133,10 +80,6 @@ class TestDirectDeposition(unittest.TestCase):
         center_grid, vertex_grid = build_yee_grid(SimpleNamespace(**parameter_set))
         parameter_set["grids"] = {"center": center_grid, "vertex": vertex_grid}
         return parameter_set
-
-    def _empty_J(self, parameter_set):
-        shape = (parameter_set["Nx"] + 2, parameter_set["Ny"] + 2, parameter_set["Nz"] + 2)
-        return (jnp.zeros(shape), jnp.zeros(shape), jnp.zeros(shape))
 
     def _empty_J_tiles(self, parameter_set):
         tile_shape = tuple(int(width) for width in parameter_set["tile_shape"])

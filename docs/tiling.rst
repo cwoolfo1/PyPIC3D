@@ -120,8 +120,8 @@ Confirm the two devices are available to JAX before launching a long run:
      python -c "import jax; print(jax.default_backend(), jax.devices())"
 
 The ``GPUs`` configuration setting is accepted but not used for device
-selection. The JAX environment variables above determine the backend and
-visible devices.
+selection and is not stored in runtime parameters. The JAX environment
+variables above determine the backend and visible devices.
 
 The tile topology must also contain two tiles. For a ``300 x 1 x 300`` x-z
 domain, splitting the periodic x direction keeps the full current-sheet

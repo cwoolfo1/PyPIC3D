@@ -29,17 +29,6 @@ def compute_energy(particles, E, B, static_parameters, dynamic_parameters, speci
     dy = dynamic_parameters.dy
     dz = dynamic_parameters.dz
 
-    Nx = dynamic_parameters.Nx
-    Ny = dynamic_parameters.Ny
-    Nz = dynamic_parameters.Nz
-
-    def nd_trapezoid(arr, dxs):
-        for axis, dx in enumerate(dxs):
-            arr = jnp.trapezoid( jnp.squeeze(arr), dx=dx, axis=-1)
-        return arr
-
-    dxs = tuple(d for d in (dz, dy, dx) if d != 1)
-
     Ex, Ey, Ez = E
     Bx, By, Bz = B
     # Use physical interior slices to exclude ghost cells from the energy

@@ -92,12 +92,6 @@ def update_tiled_particle_positions(tiled_particles, species_config, dt):
     return tiled_particles._replace(x=x)
 
 
-def _send_axis_stream(stream, offset, axis_name, axis_size, permutation):
-    if axis_size == 1 or offset == 0:
-        return stream
-    return jax.lax.ppermute(stream, axis_name, permutation)
-
-
 def _adjacent_tile_offset(dest_tile, source_tile, tile_count):
     """
     Signed adjacent offset from the source tile to the destination tile.
@@ -249,18 +243,14 @@ def _exchange_particle_axis(
             moving_positive & ~invalid,
             packet_capacity,
         )
-        incoming_negative = _send_axis_stream(
+        incoming_negative = jax.lax.ppermute(
             negative_packet,
-            -1,
             axis_name,
-            tile_count,
             negative_permutation,
         )
-        incoming_positive = _send_axis_stream(
+        incoming_positive = jax.lax.ppermute(
             positive_packet,
-            1,
             axis_name,
-            tile_count,
             positive_permutation,
         )
         incoming_packet = jnp.concatenate(

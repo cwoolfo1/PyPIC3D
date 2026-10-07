@@ -78,11 +78,8 @@ def update_dark_E(E_n, B_half, A_half, J_half, static_parameters, dynamic_parame
 
     return E
 
-def update_dark_A(E_n, A_half, phi_n, J_n, static_parameters, dynamic_parameters, dt):
-    """Drift A with E/phi at the intervening integer time.
-
-    J_n is unused, retained for compatibility with the original kernel API.
-    """
+def update_dark_A(E_n, A_half, phi_n, static_parameters, dynamic_parameters, dt):
+    """Drift A with E/phi at the intervening integer time."""
     gradient = dark_gradient(phi_n, static_parameters, dynamic_parameters)
     interior = _interior(static_parameters)
     A = tuple(a.at[interior].add(-dt * (e[interior] + grad[interior]))
@@ -93,8 +90,8 @@ def update_dark_A(E_n, A_half, phi_n, J_n, static_parameters, dynamic_parameters
     return A
 
 
-def update_dark_phi(E_n, A_half, phi_n, J_n, static_parameters, dynamic_parameters, dt):
-    """Kick phi from n to n+1 with A at n+1/2 (E_n/J_n are unused)."""
+def update_dark_phi(A_half, phi_n, static_parameters, dynamic_parameters, dt):
+    """Kick phi from n to n+1 with A at n+1/2."""
     divergence = dark_divergence(A_half, static_parameters, dynamic_parameters)
     interior = _interior(static_parameters)
     phi = phi_n.at[interior].add(-dt * dynamic_parameters.C**2 * divergence[interior])
@@ -120,7 +117,7 @@ def synchronized_dark_fields(dark_fields, static_parameters, dynamic_parameters,
             dark_fields, pml_state, static_parameters, dynamic_parameters, dynamic_parameters.dt / 2,
         )
         return E, A, phi, preview[0]
-    A = update_dark_A(E, A, phi, None, static_parameters, dynamic_parameters, dynamic_parameters.dt / 2)
+    A = update_dark_A(E, A, phi, static_parameters, dynamic_parameters, dynamic_parameters.dt / 2)
     B = dark_field_boundaries(compute_dark_B(A, static_parameters, dynamic_parameters), static_parameters, "B")
     # refresh B halos for the particle gather and field output
     return E, A, phi, B
@@ -158,6 +155,6 @@ def initialize_dark_photon_fields(static_parameters, dynamic_parameters, E=None,
     phi = dark_field_boundaries(scalar(phi), static_parameters, "phi")
     # refresh phi to full ghost-celled tiles on the (C, C, C) nodes
     A = dark_field_boundaries(vector(A), static_parameters)
-    A = update_dark_A(E, A, phi, None, static_parameters, dynamic_parameters, -dynamic_parameters.dt / 2)
+    A = update_dark_A(E, A, phi, static_parameters, dynamic_parameters, -dynamic_parameters.dt / 2)
     # seed A to t=-dt/2 with a half drift, which also refreshes its halos
     return E, A, phi

@@ -16,7 +16,7 @@ from PyPIC3D.boundary_conditions.grid_and_stencil import (
 from PyPIC3D.deposition.Esirkepov import Esirkepov_current
 from PyPIC3D.deposition.rho import compute_rho
 from PyPIC3D.boundary_conditions import ghost_cells
-from PyPIC3D.diagnostics.output_adapters import assemble_tiled_vector_field, fields_for_output
+from PyPIC3D.diagnostics.output_adapters import assemble_tiled_vector_field, vector_field_for_output
 from PyPIC3D.initialization import build_tiled_array, initialize_fields, initialize_simulation
 from PyPIC3D.utilities.parameters import build_static_parameters
 from PyPIC3D.particles.particle_tile_communication import (
@@ -31,28 +31,6 @@ from PyPIC3D.utilities.grids import build_tiled_yee_grids
 from tests.kernel_fixtures import _tile_axis_count, kernel_parameters_from_values, tile_vector_field
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-
-
-def _update_ghost_cells(field, bc_x, bc_y, bc_z):
-    field = jax.lax.cond(
-        bc_x == BC_PERIODIC,
-        lambda f: f.at[0, :, :].set(f[-2, :, :]).at[-1, :, :].set(f[1, :, :]),
-        lambda f: f.at[0, :, :].set(0.0).at[-1, :, :].set(0.0),
-        operand=field,
-    )
-    field = jax.lax.cond(
-        bc_y == BC_PERIODIC,
-        lambda f: f.at[:, 0, :].set(f[:, -2, :]).at[:, -1, :].set(f[:, 1, :]),
-        lambda f: f.at[:, 0, :].set(0.0).at[:, -1, :].set(0.0),
-        operand=field,
-    )
-    field = jax.lax.cond(
-        bc_z == BC_PERIODIC,
-        lambda f: f.at[:, :, 0].set(f[:, :, -2]).at[:, :, -1].set(f[:, :, 1]),
-        lambda f: f.at[:, :, 0].set(0.0).at[:, :, -1].set(0.0),
-        operand=field,
-    )
-    return field
 
 
 class TestTiledEsirkepovCurrent(unittest.TestCase):
@@ -99,10 +77,6 @@ class TestTiledEsirkepovCurrent(unittest.TestCase):
         )
         parameter_set["grids"] = {"center": center_grid, "vertex": center_grid}
         return parameter_set
-
-    def _empty_J(self, parameter_set):
-        shape = (parameter_set["Nx"] + 2, parameter_set["Ny"] + 2, parameter_set["Nz"] + 2)
-        return (jnp.zeros(shape), jnp.zeros(shape), jnp.zeros(shape))
 
     def _species_config(self, charge=-1.0, mass=1.0, weight=0.5):
         return SpeciesConfig(
@@ -383,10 +357,10 @@ class TestTiledEsirkepovCurrent(unittest.TestCase):
         fields = (E_tiles, B_tiles, (Jx, Jy, Jz), rho, phi, (E_tiles, B_tiles), None)
 
         static_parameters = build_static_parameters(parameter_set)
-        output_fields = fields_for_output(fields, static_parameters)
+        output_current = vector_field_for_output(fields[2], static_parameters)
 
-        self.assertEqual(output_fields[2][0].shape, shape)
-        self.assertEqual(float(output_fields[2][0][3, 1, 1]), 7.0)
+        self.assertEqual(output_current[0].shape, shape)
+        self.assertEqual(float(output_current[0][3, 1, 1]), 7.0)
         self.assertEqual(fields[2][0].shape[-3:], (6, 5, 5))
 
     def test_update_E_reads_two_guard_current_interior(self):

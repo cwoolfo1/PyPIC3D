@@ -382,7 +382,7 @@ def default_parameters():
         "particle_pusher": "boris",
         "benchmark": False,
         "verbose": False,
-        "GPUs": False,
+        "GPUs": False,  # Accepted for input compatibility; JAX selects devices.
         "metric": "flat_cartesian",
         "metric_mass": 1.0,
         "metric_spin": 0.0,

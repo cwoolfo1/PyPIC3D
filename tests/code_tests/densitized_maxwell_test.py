@@ -8,7 +8,7 @@ import numpy as np
 from PyPIC3D.boundary_conditions.ownership import owned_nodes
 from PyPIC3D.boundary_conditions.staggered import refresh_fields
 from PyPIC3D.boundary_conditions.supergaussian import apply_tiled_supergaussian_absorber
-from PyPIC3D.diagnostics.output_adapters import build_field_output_map, fields_for_output
+from PyPIC3D.diagnostics.output_adapters import build_field_output_map, field_map_for_output
 from PyPIC3D.diagnostics.static_metric import divergence
 from PyPIC3D.deposition.Esirkepov import Esirkepov_current
 from PyPIC3D.deposition.rho import compute_rho
@@ -67,8 +67,8 @@ class TestDensitizedMaxwell(unittest.TestCase):
         for label, expected in zip(('E', 'B', 'J'), (D, B, J)):
             self.assert_vectors_close(output[label], expected)
         # The assembled output also converts before gathering the tiled mesh.
-        assembled = fields_for_output(state, s)
-        for output_vector, expected in zip(assembled[:3], (D, B, J)):
+        assembled = field_map_for_output(output, s)
+        for output_vector, expected in zip((assembled[name] for name in ("E", "B", "J")), (D, B, J)):
             for a, b in zip(output_vector, expected):
                 np.testing.assert_allclose(a, b[0, 0, 0, 2:-2, 2:-2, 2:-2], atol=3e-13)
 

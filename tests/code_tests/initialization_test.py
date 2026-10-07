@@ -33,10 +33,30 @@ from PyPIC3D.boundary_conditions.grid_and_stencil import (
 from PyPIC3D.particles.particle_class import TiledParticles
 from PyPIC3D.utilities.grids import build_yee_grid
 from PyPIC3D.utilities.parameters import build_static_parameters
+from PyPIC3D.utilities.toml_helpers import update_parameters_from_toml
 from tests.kernel_fixtures import kernel_parameters
 
 
 class TestInitializationFunctions(unittest.TestCase):
+
+    def test_legacy_gpu_setting_is_accepted_without_changing_runtime_parameters(self):
+        template, _ = kernel_parameters()
+        for section in ("simulation_parameters", "static_parameters"):
+            results = []
+            for value in (None, False, True):
+                with self.subTest(section=section, GPUs=value):
+                    plotting, static, dynamic = default_parameters()
+                    static.update(template._asdict())
+                    config = {section: {} if value is None else {"GPUs": value}}
+                    static, dynamic, plotting = update_parameters_from_toml(
+                        toml.loads(toml.dumps(config)), static, dynamic, plotting,
+                    )
+                    self.assertEqual(static["GPUs"], False if value is None else value)
+                    runtime = build_static_parameters(static)
+                    self.assertNotIn("GPUs", runtime._fields)
+                    results.append((runtime, dynamic, plotting))
+            self.assertEqual(results[0], results[1])
+            self.assertEqual(results[0], results[2])
 
     def test_static_metric_rejects_conducting_axes_no_wider_than_the_halo(self):
         from PyPIC3D.initialization import _validate_static_metric_conducting_widths

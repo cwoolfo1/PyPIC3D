@@ -43,8 +43,6 @@ def _boundary_conditions_for_type(static_parameters, bc_type):
     bc_type = int(bc_type)
     if bc_type == BC_TYPE_FIELD:
         return _boundary_tuple(static_parameters.boundary_conditions)
-    if bc_type == BC_TYPE_PARTICLE:
-        return _boundary_tuple(static_parameters.particle_boundary_conditions)
     raise ValueError("bc_type must be 0 for field boundaries or 1 for particle boundaries.")
 
 

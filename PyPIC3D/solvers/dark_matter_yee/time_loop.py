@@ -72,9 +72,9 @@ def time_loop_dark_photon(particles, species_config, fields, static_parameters, 
         pml_state = maxwell_pml, dark_pml
     else:
         E_dark, A_dark, phi_dark = dark_fields
-        A_dark = update_dark_A(E_dark, A_dark, phi_dark, J, static_parameters, dynamic_parameters, dt)
+        A_dark = update_dark_A(E_dark, A_dark, phi_dark, static_parameters, dynamic_parameters, dt)
         B_dark = compute_dark_B(A_dark, static_parameters, dynamic_parameters)
-        phi_dark = update_dark_phi(E_dark, A_dark, phi_dark, J, static_parameters, dynamic_parameters, dt)
+        phi_dark = update_dark_phi(A_dark, phi_dark, static_parameters, dynamic_parameters, dt)
         E_dark = update_dark_E(E_dark, B_dark, A_dark, J, static_parameters, dynamic_parameters, dt)
         dark_fields = (E_dark, A_dark, phi_dark)
         # leapfrog integrate the dark photon fields with the updated current density

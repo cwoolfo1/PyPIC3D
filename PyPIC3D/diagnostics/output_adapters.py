@@ -191,54 +191,6 @@ def field_map_for_output(field_map, static_parameters):
     return output_map
 
 
-def fields_for_output(fields, static_parameters, dynamic_parameters=None):
-    """
-    Assemble tile-major fields at the I/O boundary.
-
-    The live solver state is left untouched.  The particle-retile overflow flag
-    is a Python-driver diagnostic, not a physical field, so it is not included
-    in the returned output tuple.
-    """
-
-    if getattr(static_parameters, "solver", None) == "static_metric":
-        fields = physical_fields(fields)
-    E, B, J, rho, phi, external_fields, *rest = fields
-    external_E, external_B = external_fields
-
-    output_fields = (
-        vector_field_for_output(E, static_parameters),
-        vector_field_for_output(B, static_parameters),
-        vector_field_for_output(J, static_parameters),
-        scalar_field_for_output(rho, static_parameters),
-        scalar_field_for_output(phi, static_parameters),
-        (
-            vector_field_for_output(external_E, static_parameters),
-            vector_field_for_output(external_B, static_parameters),
-        ),
-    )
-
-    if not rest:
-        return output_fields
-
-    if getattr(static_parameters, "solver", None) == "static_metric":
-        return output_fields
-
-    pml_state = rest[0]
-    if getattr(static_parameters, "solver", None) == "dark_matter_yee":
-        if dynamic_parameters is None:
-            raise ValueError("dark_matter_yee output requires dynamic_parameters to synchronize A")
-        from PyPIC3D.solvers.dark_matter_yee.dark_photon_fields import synchronized_dark_fields
-        dark_E, dark_A, dark_phi, _dark_B = synchronized_dark_fields(
-            rest[1], static_parameters, dynamic_parameters, None if pml_state is None else pml_state[1],
-        )
-        return output_fields + (pml_state, (
-            vector_field_for_output(dark_E, static_parameters),
-            vector_field_for_output(dark_A, static_parameters),
-            scalar_field_for_output(dark_phi, static_parameters),
-        ))
-    return output_fields + (pml_state,)
-
-
 def _axis_diagnostic_position(x, u, dt, axis_min, axis_max, bc):
     x_diagnostic = x - u * dt / 2
 

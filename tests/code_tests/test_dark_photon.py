@@ -21,7 +21,7 @@ from PyPIC3D.boundary_conditions.ghost_cells import update_tiled_ghost_cells, up
 from PyPIC3D.initialization import initialize_simulation, initialize_fields, _dark_timestep, default_parameters
 from PyPIC3D.diagnostics.diagnostic_quantities import compute_dark_energy
 from PyPIC3D.deposition.rho import compute_rho
-from PyPIC3D.diagnostics.output_adapters import build_field_output_map, fields_for_output, scalar_field_for_output
+from PyPIC3D.diagnostics.output_adapters import build_field_output_map, field_map_for_output, scalar_field_for_output
 from PyPIC3D.solvers.dark_matter_yee.dark_photon_fields import (
     compute_dark_B, dark_divergence, dark_gradient, initialize_dark_photon_fields,
     synchronized_dark_fields, update_dark_A, update_dark_E, update_dark_phi,
@@ -73,9 +73,9 @@ def evolve(state, s, d, steps):
 
     def step(_, state):
         E, A, phi = state
-        A = update_dark_A(E, A, phi, J, s, d, d.dt)
+        A = update_dark_A(E, A, phi, s, d, d.dt)
         B = compute_dark_B(A, s, d)
-        phi = update_dark_phi(E, A, phi, J, s, d, d.dt)
+        phi = update_dark_phi(A, phi, s, d, d.dt)
         E = update_dark_E(E, B, A, J, s, d, d.dt)
         return E, A, phi
 
@@ -181,9 +181,9 @@ class TestDarkPhoton(unittest.TestCase):
             state = initialize_dark_photon_fields(s, d, *wave(s, d, True))
             J = tuple(jnp.zeros_like(v) for v in state[0])
             E, A, phi = state
-            A = update_dark_A(E, A, phi, J, s, d, d.dt)
+            A = update_dark_A(E, A, phi, s, d, d.dt)
             B = compute_dark_B(A, s, d)
-            phi = update_dark_phi(E, A, phi, J, s, d, d.dt)
+            phi = update_dark_phi(A, phi, s, d, d.dt)
             E = update_dark_E(E, B, A, J, s, d, d.dt)
             self.assert_tree_close((E, A, phi), evolve(state, s, d, 1))
             result = evolve(state, s, d, 16)
@@ -309,7 +309,7 @@ class TestDarkPhoton(unittest.TestCase):
             snapshot = build_field_output_map(fields, particles, species, s, d)
             np.testing.assert_allclose(snapshot["dark_A"][0], .5, atol=1e-15)
             self.assertEqual(set(snapshot), {"E", "B", "J", "dark_E", "dark_A", "dark_phi", "dark_B"})
-            np.testing.assert_allclose(fields_for_output(fields, s, d)[7][1][0], .5, atol=1e-15)
+            np.testing.assert_allclose(field_map_for_output(snapshot, s)["dark_A"][0], .5, atol=1e-15)
             expected_energy = .5*2*(2*math.pi)*(.25**2+1.3**2*.7**2*.5**2+.7**2*.1**2)
             self.assertAlmostEqual(float(compute_dark_energy(fields[7], s, d)), expected_energy, places=12)
             config["plotting"]["dump_fields"] = False
