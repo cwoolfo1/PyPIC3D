@@ -17,6 +17,7 @@ from PyPIC3D.relativity import (
     initialize_kerr_schild_cartesian_metric,
     initialize_kerr_schild_spherical_metric,
 )
+from PyPIC3D.relativity.field_state import densitize_vector
 from PyPIC3D.relativity.interpolate_metric import (
     interpolate_hermite,
     interpolate_metric,
@@ -278,6 +279,8 @@ class TestParticleMetricConsumers(unittest.TestCase):
         for order in (1, 2):
             with self.subTest(shape_factor=order):
                 s, d, m, D, B, p, species = consumer_runtime(order)
+                # The push consumes native densities of the constant physical fields.
+                D, B = densitize_vector(D, m.D), densitize_vector(B, m.B)
                 # Inactive coordinates lie outside the supplied metric stencil.
                 # Keep them finite: deposition's particle-shape weights use x too.
                 p = p._replace(
@@ -320,6 +323,7 @@ class TestParticleMetricConsumers(unittest.TestCase):
         results = []
         for tile_shape in ((8, 8, 1), (4, 8, 1)):
             s, d, m, D, B, p, species = consumer_runtime(tile_shape=tile_shape)
+            D, B = densitize_vector(D, m.D), densitize_vector(B, m.B)
             err, (new, mid) = jax.jit(checkify.checkify(
                 lambda p: hybrid_boris_geodesic_push(p, species, D, B, m, s, d)))(p)
             err.throw()
@@ -360,6 +364,7 @@ class TestCheckedSampling(unittest.TestCase):
 
     def test_checked_pusher_and_seed_preserve_inactive_slots(self):
         s, d, m, D, B = make_runtime("spherical", 16, 32)
+        D, B = densitize_vector(D, m.D), densitize_vector(B, m.B)
         x = jnp.array([[[[[[2.0, 0.7, 0.0], [0.0, 0.0, 0.0]]]]]])
         p = TiledParticles(x, jnp.zeros_like(x), jnp.array([[[[[True, False]]]]]))
         sp = SpeciesConfig(jnp.ones(1), jnp.ones(1), jnp.ones(1), jnp.ones((1, 3), bool))

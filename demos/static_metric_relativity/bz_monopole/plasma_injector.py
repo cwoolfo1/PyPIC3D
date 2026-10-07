@@ -89,6 +89,7 @@ def inject_pairs(particles, species, magnetization, D, B, metric, static, dynami
     Each event proposes n0/r^2 particles per proper volume (both species combined).
     Stochastic rounding preserves this expectation with fixed macroparticle weights.
     Capacity is per species, not per pair. The caller must fail if rejected != 0.
+    D and B are the native densities the leapfrog seed pushes with.
     """
     p = parameters
     g = static.guard_cells

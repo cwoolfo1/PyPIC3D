@@ -13,16 +13,13 @@ import numpy as np
 
 from PyPIC3D.boundary_conditions import pec
 from PyPIC3D.boundary_conditions.staggered import refresh_fields
-from PyPIC3D.diagnostics.static_metric import densitized_divergence
+from PyPIC3D.diagnostics.static_metric import divergence
 from PyPIC3D.relativity.core import (
     B_FIELD_LOCATIONS, D_FIELD_LOCATIONS, build_yee_metric, location_grid,
 )
 from PyPIC3D.relativity.field_state import densitize_vector, physical_vector
 from PyPIC3D.relativity.interpolate_metric import interpolate_metric
-from PyPIC3D.solvers.GR_yee.static_metric import (
-    compute_covariant_E_densitized, compute_covariant_H_densitized,
-    update_B_densitized, update_D_densitized,
-)
+from PyPIC3D.solvers.GR_yee.static_metric import compute_covariant_E, compute_covariant_H, update_B, update_D
 from tests.kernel_fixtures import kernel_parameters
 
 
@@ -76,14 +73,14 @@ def _make_step(static, dynamic):
     # Metric and current are dynamic arguments: both angles share one compilation.
     @jax.jit
     def advance(D, B, charge, amplitude, current, metric):
-        E = compute_covariant_E_densitized(D, B, metric)
-        B = update_B_densitized(E, B, metric, static, dynamic, DT/2)
+        E = compute_covariant_E(D, B, metric)
+        B = update_B(E, B, metric, static, dynamic, DT/2)
         J = tuple(amplitude*value for value in current)
-        H = compute_covariant_H_densitized(D, B, metric)
-        D = update_D_densitized(D, H, J, metric, static, dynamic, DT)
-        E = compute_covariant_E_densitized(D, B, metric)
-        B = update_B_densitized(E, B, metric, static, dynamic, DT/2)
-        charge = charge-DT*densitized_divergence(J, dynamic)
+        H = compute_covariant_H(D, B, metric)
+        D = update_D(D, H, J, metric, static, dynamic, DT)
+        E = compute_covariant_E(D, B, metric)
+        B = update_B(E, B, metric, static, dynamic, DT/2)
+        charge = charge-DT*divergence(J, dynamic)
         return D, B, charge
     return advance
 
@@ -176,7 +173,7 @@ class TestPECObliqueBox(unittest.TestCase):
 
         zero = jnp.zeros_like(metric.center.lapse)
         D = densitize_vector((jnp.ones_like(zero), zero, zero), metric.D)
-        E = compute_covariant_E_densitized(D, (zero,)*3, metric)
+        E = compute_covariant_E(D, (zero,)*3, metric)
         for actual, expected_value in zip(E, (1., expected[1, 0], 0.)):
             np.testing.assert_allclose(actual, expected_value, rtol=0, atol=1.e-13,
                                        err_msg=f'{angle=}: constitutive x/y coupling')
@@ -243,8 +240,8 @@ class TestPECObliqueBox(unittest.TestCase):
                     context = f'{angle=}, {step=}'
                     previous = np.stack([np.asarray(v)[CELL] for v in D])
                     D, B, charge = advance(D, B, charge, jnp.asarray(amplitude), current, metric)
-                    E = compute_covariant_E_densitized(D, B, metric)
-                    H = compute_covariant_H_densitized(D, B, metric)
+                    E = compute_covariant_E(D, B, metric)
+                    H = compute_covariant_H(D, B, metric)
                     physical_D, physical_B = physical_vector(D, metric.D), physical_vector(B, metric.B)
                     for name, vector in (('D', physical_D), ('B', physical_B), ('E', E), ('H', H)):
                         for component, value in enumerate(vector):
@@ -259,9 +256,9 @@ class TestPECObliqueBox(unittest.TestCase):
                     self.assertLess(abs(net), CONSTRAINT_TOL,
                                     f'{context}: current injected net charge={net:.6e}, tol={CONSTRAINT_TOL:.6e}')
                     self.assert_boundaries(E, metric, PEC_TOL, context)
-                    self.assert_constraint((densitized_divergence(D, dynamic)-4*np.pi*charge)[CHARGE],
+                    self.assert_constraint((divergence(D, dynamic)-4*np.pi*charge)[CHARGE],
                                            context+' Gauss')
-                    self.assert_constraint(densitized_divergence(B, dynamic, forward=True)[CELL],
+                    self.assert_constraint(divergence(B, dynamic, forward=True)[CELL],
                                            context+' div B')
                     ue = _energy(D, E, D_FIELD_LOCATIONS, 1/N)
                     ub = _energy(B, H, B_FIELD_LOCATIONS, 1/N)
@@ -390,7 +387,7 @@ class TestPECObliqueBox(unittest.TestCase):
                         np.testing.assert_allclose(again, value, rtol=SYSTEM_TOL, atol=SYSTEM_TOL,
                                                    err_msg=f'{angle=}, {kind=}, {component=}: non-idempotent PEC')
                     if kind == 'D':
-                        E = compute_covariant_E_densitized(densitize_vector(refreshed, metric.D), zero, metric)
+                        E = compute_covariant_E(refreshed, zero, metric)
                         self.assert_boundaries(E, metric, SYSTEM_TOL, f'{angle=}, manufactured D')
                     # z is orthogonal to x/y: its last reflection must have
                     # exact parity even in triple-exterior corner ghosts.

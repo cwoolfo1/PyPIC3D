@@ -5,13 +5,7 @@ from PyPIC3D.utilities.grids import grid_domain_bounds
 from PyPIC3D.boundary_conditions.grid_and_stencil import BC_ABSORBING, BC_CONDUCTING
 
 
-def divergence(vector, metrics, dynamic, *, forward=False):
-    """Conformal divergence of a physical contravariant vector."""
-    from PyPIC3D.relativity.field_state import densitize_vector
-    return densitized_divergence(densitize_vector(vector, metrics), dynamic, forward=forward)
-
-
-def densitized_divergence(vector, dynamic, *, forward=False):
+def divergence(vector, dynamic, *, forward=False):
     """Coordinate divergence of native densities; no metric multiplication."""
     result = jnp.zeros_like(vector[0])
     for axis, (value, spacing) in enumerate(zip(vector, (dynamic.dx, dynamic.dy, dynamic.dz))):
@@ -53,11 +47,12 @@ class BoundaryDiagnostics(NamedTuple):
     invalid_push: object
 
 
-def step_diagnostics(old, new, current, species, metric, static, dynamic):
+def step_diagnostics(old, new, current, species, static, dynamic):
     """Measure radial particle loss, removed cloud charge, and face flux.
 
-    The radial coordinate is axis 0. Keep particle removal separate from
-    current outflow: a lost particle's shape may still overlap the grid.
+    The radial coordinate is axis 0. ``current`` is the densitized J. Keep
+    particle removal separate from current outflow: a lost particle's shape
+    may still overlap the grid.
     """
     from PyPIC3D.deposition.rho import compute_rho
     g = static.guard_cells
@@ -71,7 +66,7 @@ def step_diagnostics(old, new, current, species, metric, static, dynamic):
     rho = compute_rho(lost, species, jnp.zeros_like(current[0]), static, dynamic)
     weights = node_weights(static, rho)
     removed = rho*weights*dynamic.dx*dynamic.dy*dynamic.dz
-    flux = current[0]*metric.D[0].sqrt_gamma*dynamic.dy*dynamic.dz
+    flux = current[0]*dynamic.dy*dynamic.dz
     # Transverse nodal quadrature includes reflecting boundary nodes once.
     last = g+static.tile_shape[0]-1
     out = jnp.array([-jnp.sum(flux[0, :, :, g-1]*weights[0, :, :, g]),

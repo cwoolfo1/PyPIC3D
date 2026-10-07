@@ -16,8 +16,9 @@ def smooth_conformal(value, static, passes, *, component=None):
     return scalar_boundaries(value, static, location, parity)
 
 
-def filter_current(current, metric, static, passes):
+def filter_current(current, static, passes):
+    """Filter the densitized current with the same conformal operator as charge."""
     if passes == 0:
         return current
-    return tuple(smooth_conformal(value*m.sqrt_gamma, static, passes, component=i)/m.sqrt_gamma
-                 for i, (value, m) in enumerate(zip(current, metric.D)))
+    return tuple(smooth_conformal(value, static, passes, component=i)
+                 for i, value in enumerate(current))

@@ -182,28 +182,29 @@ Maxwell updates use only evolved fields.
 Static-Metric Maxwell State
 --------------------------
 
-The static-GR runtime tuple keeps its existing layout. Slots 0, 1, and 2 now
-store ``sqrt(gamma) D^i``, ``sqrt(gamma) B^i``, and ``sqrt(gamma) J^i`` on their
-native Yee component locations. Slot 7 stores the previous densitized D/B.
-External fields, rho, phi, the metric, and the overflow flag keep their
-existing conventions. ``relativity.field_state`` provides explicit vector
-and complete-state conversions; manually constructed physical input states
-must pass through ``densitize_fields`` once before evolution.
+The static-GR solver evolves only native densities. Slots 0, 1, and 2 of the
+runtime tuple store ``sqrt(gamma) D^i``, ``sqrt(gamma) B^i``, and
+``sqrt(gamma) J^i`` on their native Yee component locations; the external
+D/B pair in slot 5 and the previous D/B in slot 7 are densities too. rho,
+phi, the metric, and the overflow flag keep their own conventions.
 
-``update_D_densitized`` and ``update_B_densitized`` advance coordinate curls
-without dividing the increments by the metric volume. The constitutive
-``compute_covariant_E_densitized`` and ``compute_covariant_H_densitized``
-transfer densities and recover physical components using the target metric.
-Time centering operates on stored densities. Physical particle forces and
-prescribed external fields meet only after converting the evolved fields.
+``update_D`` and ``update_B`` advance coordinate curls without dividing the
+increments by the metric volume. The constitutive ``compute_covariant_E`` and
+``compute_covariant_H`` average densities to each target location and divide
+by the target ``sqrt_gamma`` to recover physical components. Time centering,
+current deposition (``GR_esirkepov`` and ``GR_direct`` both return
+``sqrt(gamma) J^i``), any ``current_transform``, and the boundary refresh all
+operate on densities. The particle push receives the density sum of evolved
+and external fields and divides each component by its grid-node
+``sqrt_gamma`` before gathering.
 
-The existing ``update_D_relativity``, ``update_B_relativity``,
-``compute_covariant_E``, and ``compute_covariant_H`` remain physical-input
-compatibility APIs. Conducting projectors and horizon extrapolation also
-operate in physical variables; ``refresh_densitized_fields`` handles their
-conversion boundary. Absorbers keep their existing order and physical target.
-File inputs and outputs retain physical D/B/J values and existing names,
-including the static-GR displacement field written as ``E``.
+Physical contravariant vectors appear only at the file boundary.
+Initialization densitizes TOML D/B/J, external, and previous fields once
+(``relativity.field_state.densitize_vector``), and the output adapters write
+physical D/B/J through ``physical_fields`` with their existing names,
+including the static-GR displacement field written as ``E``. Manually
+constructed physical states can pass through ``densitize_fields`` once
+before evolution.
 
 This state convention prepares Maxwell evolution for a changing metric;
 the solver still prescribes a fixed metric and does not evolve spacetime.
@@ -320,11 +321,21 @@ the opposite wall. Initialization rejects narrower axes.
 The projector algebra is exact at the reconstruction points; interpolating
 the stored staggered fields to a common surface introduces truncation error.
 
-``staggered.refresh_fields`` requires ``metric`` when applying a D/B
-conducting boundary; it freezes any configured horizon layers before the
-projection. D and B are refreshed when they are produced:
-``update_D_relativity`` and ``update_B_relativity`` return refreshed fields,
-and initialization refreshes the initial and previous-time-level D and B.
+``staggered.refresh_fields`` takes D/B densities and always requires
+``metric``; it freezes any configured horizon layers before the projection.
+The boundary policies are defined on the physical vector. Projector rows
+are homogeneous, so wall nodes are projected from co-located density
+reconstructions directly. Every operation that copies or reflects a value
+into another node (horizon freezing, constant extrapolation, PEC exterior
+reflections) rescales it by ``sqrt_gamma(target)/sqrt_gamma(source)``.
+Owned densities are never touched, and the result equals refreshing the
+physical vector to round-off. Volumes may be signed past a polar axis.
+Periodic and tile-seam halos join the same physical point and copy
+densities directly, which assumes a periodic metric on periodic axes.
+
+D and B are refreshed when they are produced: ``update_D`` and ``update_B``
+return refreshed fields, and initialization refreshes the initial and
+previous-time-level D and B.
 External fields are refreshed once at initialization with
 ``refresh_fields(..., 'D')`` and ``refresh_fields(..., 'B')``. The time loop
 relies on this contract. It does not refresh D or B again, and it does not

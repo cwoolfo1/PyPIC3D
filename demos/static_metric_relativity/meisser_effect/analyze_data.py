@@ -20,6 +20,7 @@ import wald_solution as wald
 
 from PyPIC3D.boundary_conditions.ghost_cells import update_tiled_vector_ghost_cells
 from PyPIC3D.relativity.core import B_FIELD_LOCATIONS
+from PyPIC3D.relativity.field_state import densitize_vector
 
 
 plt.rcParams.update({"font.size": 12})
@@ -112,9 +113,9 @@ def restore_tiled_magnetic_field(B, static_parameters):
 
 
 def center_saved_magnetic_field(B, static_parameters, metric):
-    """Apply the production metric-weighted Yee interpolation to saved B."""
+    """Apply the production density Yee interpolation to saved physical B."""
 
-    B_tiled = restore_tiled_magnetic_field(B, static_parameters)
+    B_tiled = densitize_vector(restore_tiled_magnetic_field(B, static_parameters), metric.B)
     B_center = wald.center_vector(B_tiled, B_FIELD_LOCATIONS, metric)
     return tuple(
         np.asarray(wald.physical_component(component, static_parameters))[..., 0]
@@ -510,7 +511,7 @@ def analyze(config):
     final_divergence = np.asarray(
         wald.physical_component(
             wald.weighted_magnetic_divergence(
-                final_B_tiled,
+                densitize_vector(final_B_tiled, metric.B),
                 metric,
                 dynamic_parameters,
             ),

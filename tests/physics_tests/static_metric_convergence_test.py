@@ -12,7 +12,7 @@ from PyPIC3D.pusher.hybrid_boris_geodesic import (
 from PyPIC3D.relativity.metrics.flat import initialize_flat_cartesian_metric
 from PyPIC3D.relativity.interpolate_metric import interpolate_metric
 from PyPIC3D.relativity.metrics.kerr_schild import initialize_kerr_schild_spherical_metric
-from PyPIC3D.solvers.GR_yee.static_metric import update_B_relativity
+from PyPIC3D.solvers.GR_yee.static_metric import update_B
 from tests.kernel_fixtures import empty_tiled_vector, kernel_parameters
 
 
@@ -149,7 +149,8 @@ class TestStaticMetricConvergence(unittest.TestCase):
             Dz_values = jnp.sin(x_center)[:, :, :, :, jnp.newaxis, jnp.newaxis]
             Dz = Dz.at[:, :, :, active, active, active].set(Dz_values)
 
-            _Bx, By, _Bz = update_B_relativity((Dx, Dy, Dz), B, metric, static_parameters, dynamic_parameters, dynamic_parameters.dt)
+            # flat Cartesian: E_i = D^i and the densities equal the physical fields
+            _Bx, By, _Bz = update_B((Dx, Dy, Dz), B, metric, static_parameters, dynamic_parameters, dynamic_parameters.dt)
 
             x_vertex = dynamic_parameters.grids.tiled_vertex_grid[0][:, :, :, active]
             exact_By = dynamic_parameters.dt * jnp.cos(x_vertex)

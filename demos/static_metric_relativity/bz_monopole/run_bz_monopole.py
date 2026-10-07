@@ -8,7 +8,6 @@ Diagnostic snapshots and final particle/field arrays are saved as NumPy files.
 Runtime metric, finite-state, displacement, capacity, and exterior field-constraint
 checks remain enabled. Interruptions leave completed snapshots in place.
 """
-from PyPIC3D.relativity.field_state import densitize_fields, physical_vector, densitize_vector
 import math
 import time
 
@@ -19,9 +18,9 @@ from tqdm import tqdm
 
 from PyPIC3D.boundary_conditions.staggered import refresh_fields as refresh_vector
 from PyPIC3D.relativity.core import B_FIELD_LOCATIONS, D_FIELD_LOCATIONS
+from PyPIC3D.relativity.field_state import physical_vector
 from PyPIC3D.solvers.GR_yee.static_metric import (
-    compute_covariant_E, compute_covariant_H, update_B_relativity,
-    update_D_relativity)
+    compute_covariant_E, compute_covariant_H, update_B, update_D)
 from PyPIC3D.solvers.GR_yee.time_loop import time_loop_static_metric
 if __package__:
     from .simulation_parameters import SimulationParameters, build_runtime, shard_array
@@ -51,18 +50,19 @@ else:
     )
 
 def monopole_field(p, metric, dynamic):
-    """Continuum monopole sampled on the ordinary magnetic Yee locations."""
+    """Continuum monopole density sqrt(gamma) B^r on the magnetic Yee locations."""
     theta = dynamic.grids.tiled_vertex_grid[1][..., None, :, None]
-    Br = p.B0*jnp.sin(theta)/metric.B[0].sqrt_gamma
+    Br = p.B0*jnp.sin(theta)*jnp.ones_like(metric.B[0].sqrt_gamma)
     return (Br, jnp.zeros_like(Br), jnp.zeros_like(Br))
 
 
 def refresh_fields(vector, locations, static, metric):
-    """Refresh D or B halos, including the frozen horizon layers."""
+    """Refresh D or B density halos, including the frozen horizon layers."""
     return refresh_vector(vector, static, locations, 'B' if locations == B_FIELD_LOCATIONS else 'D', metric)
 
 
 def initialize_fields(p, static, dynamic, metric):
+    """Densitized state at t=0 with Taylor-started D^{-1} and B^{-1/2}, B^{-3/2}."""
     B0 = tuple(shard_array(x, static) for x in monopole_field(p, metric, dynamic))
     B0=refresh_fields(B0, B_FIELD_LOCATIONS, static, metric)
     zero = jnp.zeros_like(B0[0])
@@ -70,8 +70,8 @@ def initialize_fields(p, static, dynamic, metric):
     def rhs(D, B):
         E = compute_covariant_E(D, B, metric)
         H = compute_covariant_H(D, B, metric)
-        db = update_B_relativity(E, (zero,)*3, metric, static, dynamic, 1.)
-        dd = update_D_relativity((zero,)*3, H, (zero,)*3, metric, static, dynamic, 1.)
+        db = update_B(E, (zero,)*3, metric, static, dynamic, 1.)
+        dd = update_D((zero,)*3, H, (zero,)*3, metric, static, dynamic, 1.)
         return (refresh_fields(dd, D_FIELD_LOCATIONS, static, metric),
                 refresh_fields(db, B_FIELD_LOCATIONS, static, metric))
     dD, dB = rhs(D0, B0)
@@ -83,7 +83,7 @@ def initialize_fields(p, static, dynamic, metric):
     previous = (at(D0, dD, ddD, -dt), at(B0, dB, ddB, -1.5*dt))
     # add_external_fields expects a pair of vectors (D_external, B_external).
     external = (D0, D0)
-    return densitize_fields((D0, Bhalf, D0, zero, zero, external, metric, previous, jnp.asarray(False))), B0
+    return (D0, Bhalf, D0, zero, zero, external, metric, previous, jnp.asarray(False)), B0
 
 
 def apply_sponge(fields, background, p, static, dynamic):
@@ -91,9 +91,9 @@ def apply_sponge(fields, background, p, static, dynamic):
 
     This is an absorbing numerical layer, not a charge-conserving physical source.
     Constraint diagnostics therefore exclude it and its adjacent stencil cells.
+    The damping is pointwise and linear, so it acts on the densities directly.
     """
-    D = physical_vector(fields[0], fields[6].D)
-    B = physical_vector(fields[1], fields[6].B)
+    D, B = fields[0], fields[1]
     def damp(vector, baseline, locations):
         result = []
         for i, loc in enumerate(locations):
@@ -104,8 +104,7 @@ def apply_sponge(fields, background, p, static, dynamic):
             result.append(baseline[i]+factor*(vector[i]-baseline[i]))
         return refresh_fields(tuple(result), locations, static, fields[6])
     zero = tuple(jnp.zeros_like(x) for x in D)
-    return (densitize_vector(damp(D, zero, D_FIELD_LOCATIONS), fields[6].D),
-            densitize_vector(damp(B, background, B_FIELD_LOCATIONS), fields[6].B))+fields[2:]
+    return (damp(D, zero, D_FIELD_LOCATIONS), damp(B, background, B_FIELD_LOCATIONS))+fields[2:]
 
 
 def make_step(p, species, static, dynamic, background, *,
@@ -118,15 +117,15 @@ def make_step(p, species, static, dynamic, background, *,
     @jax.jit
     def inject(particles, fields, key, index):
         metric = fields[6]
-        D = physical_vector(fields[0], metric.D)
-        B = physical_vector(fields[1], metric.B)
-        mag = measure_magnetization(particles, species, B, metric, static, dynamic)
-        return inject_pairs(particles, species, mag, D, B, metric,
+        # magnetization reads the physical field; the leapfrog seed reads densities
+        mag = measure_magnetization(particles, species, physical_vector(fields[1], metric.B),
+                                    metric, static, dynamic)
+        return inject_pairs(particles, species, mag, fields[0], fields[1], metric,
                             static, dynamic, p, key, index)
     def evolve(particles, fields):
         transform = None
         if current_filter_passes:
-            transform = lambda current: filter_current(current, fields[6], static, current_filter_passes)
+            transform = lambda current: filter_current(current, static, current_filter_passes)
         errors, (particles, fields, boundary) = time_loop_static_metric(
             particles, species, fields, static, dynamic, return_diagnostics=True,
             return_errors=True, current_transform=transform)

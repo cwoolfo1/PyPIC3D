@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import jax
 import jax.numpy as jnp
 
-from PyPIC3D.relativity.field_state import densitize_fields
+from PyPIC3D.relativity.field_state import densitize_vector
 from PyPIC3D.particles.particle_initialization import load_particles_from_toml
 from PyPIC3D.pusher.particle_push import seed_leapfrog_velocity
 from PyPIC3D.particles.particle_tile_communication import shard_tiled_particles
@@ -706,9 +706,25 @@ def initialize_simulation(toml_file):
     )
     E, B, J = field_components[:3], field_components[3:6], field_components[6:9]
 
+    static_metric_state = None
     if static_metric:
-        E = refresh_fields(E, static_parameters, D_FIELD_LOCATIONS, 'D', metric=metric)
-        B = refresh_fields(B, static_parameters, B_FIELD_LOCATIONS, 'B', metric=metric)
+        # TOML fields are physical contravariant vectors; the solver evolves
+        # native densities, so convert once here and refresh the densities.
+        static_metric_state = load_previous_fields_from_toml(
+            (E, B),
+            config,
+            static_parameters,
+            dynamic_parameters,
+        )
+        D_previous, B_previous = static_metric_state
+        D_previous = refresh_fields(densitize_vector(D_previous, metric.D), static_parameters,
+                                    D_FIELD_LOCATIONS, 'D', metric=metric)
+        B_previous = refresh_fields(densitize_vector(B_previous, metric.B), static_parameters,
+                                    B_FIELD_LOCATIONS, 'B', metric=metric)
+        static_metric_state = D_previous, B_previous
+        E = refresh_fields(densitize_vector(E, metric.D), static_parameters, D_FIELD_LOCATIONS, 'D', metric=metric)
+        B = refresh_fields(densitize_vector(B, metric.B), static_parameters, B_FIELD_LOCATIONS, 'B', metric=metric)
+        J = densitize_vector(J, metric.D)
     elif solver in ("electrodynamic_yee", "dark_matter_yee"):
         E = apply_tiled_pec_boundary(E, static_parameters)
         E = update_tiled_vector_ghost_cells(E, static_parameters, guard_cells, locations=D_FIELD_LOCATIONS)
@@ -718,8 +734,10 @@ def initialize_simulation(toml_file):
         B = update_tiled_vector_ghost_cells(B, static_parameters, num_guard_cells=guard_cells)
     external_E, external_B = external_fields
     if static_metric:
-        external_E = refresh_fields(external_E, static_parameters, D_FIELD_LOCATIONS, 'D', metric=metric)
-        external_B = refresh_fields(external_B, static_parameters, B_FIELD_LOCATIONS, 'B', metric=metric)
+        external_E = refresh_fields(densitize_vector(external_E, metric.D), static_parameters,
+                                    D_FIELD_LOCATIONS, 'D', metric=metric)
+        external_B = refresh_fields(densitize_vector(external_B, metric.B), static_parameters,
+                                    B_FIELD_LOCATIONS, 'B', metric=metric)
         # the time loop adds these to refreshed D/B without refreshing the sum
     else:
         external_E = update_tiled_vector_ghost_cells(external_E, static_parameters, num_guard_cells=guard_cells)
@@ -737,19 +755,7 @@ def initialize_simulation(toml_file):
             dark_fields, dark_pml = initialize_dark_pml(dark_fields, static_parameters, dynamic_parameters, pml_profiles)
             pml_state = pml_state, dark_pml
 
-    static_metric_state = None
     if static_metric:
-        static_metric_state = E, B
-        static_metric_state = load_previous_fields_from_toml(
-            static_metric_state,
-            config,
-            static_parameters,
-            dynamic_parameters,
-        )
-        D_previous, B_previous = static_metric_state
-        D_previous = refresh_fields(D_previous, static_parameters, D_FIELD_LOCATIONS, 'D', metric=metric)
-        B_previous = refresh_fields(B_previous, static_parameters, B_FIELD_LOCATIONS, 'B', metric=metric)
-        static_metric_state = D_previous, B_previous
         print("Skipping flat-space energy diagnostics for static_metric fields and covariant particle u_i\n")
     else:
         total_E, total_B = add_external_fields(E, B, external_fields)
@@ -820,7 +826,7 @@ def initialize_simulation(toml_file):
 
     overflow = jnp.asarray(False)
     if static_metric:
-        fields = densitize_fields((E, B, J, rho, phi, external_fields, metric, static_metric_state, overflow))
+        fields = (E, B, J, rho, phi, external_fields, metric, static_metric_state, overflow)
     elif electrostatic:
         fields = (E, B, J, rho, phi, external_fields, None, overflow)
     elif dark_matter:

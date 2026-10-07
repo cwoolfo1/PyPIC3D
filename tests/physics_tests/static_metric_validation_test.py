@@ -31,6 +31,7 @@ import jax
 import jax.numpy as jnp
 
 from PyPIC3D.deposition.GR_direct_deposition import GR_direct_deposition
+from PyPIC3D.diagnostics.static_metric import divergence
 from PyPIC3D.particles.particle_class import SpeciesConfig, TiledParticles
 from PyPIC3D.pusher.hybrid_boris_geodesic import (
     hybrid_boris_geodesic_push,
@@ -60,10 +61,10 @@ from PyPIC3D.relativity.interpolate_metric import interpolate_metric
 from PyPIC3D.solvers.GR_yee.static_metric import (
     compute_covariant_E,
     compute_covariant_H,
-    update_B_relativity,
-    update_D_relativity,
+    update_B,
+    update_D,
 )
-from PyPIC3D.relativity.field_state import densitize_fields, physical_fields
+from PyPIC3D.relativity.field_state import densitize_vector, physical_fields, physical_vector
 from PyPIC3D.solvers.GR_yee.time_loop import time_loop_static_metric
 from tests.kernel_fixtures import empty_tiled_scalar, empty_tiled_vector, kernel_parameters
 
@@ -252,7 +253,8 @@ def location_positions(location, dynamic_parameters):
 
 def build_center_metric(dynamic_parameters, metric_at_position):
     """
-    Only ``center`` is read by the pusher.
+    The pusher interpolates ``center`` and divides the field densities by the
+    ``D``/``B`` samples, which are the same center values here.
     """
     center = analytic_metric_on_grid(
         dynamic_parameters.grids.tiled_center_grid, metric_at_position
@@ -326,8 +328,8 @@ def run_production_pusher(
         (N, N, N), wind, mins, dt, metric_name=metric_name, shape_factor=shape_factor
     )
     metric = build_center_metric(dynamic_parameters, metric_at_position)
-    D = constant_vector(static_parameters, dynamic_parameters, D_values)
-    B = constant_vector(static_parameters, dynamic_parameters, B_values)
+    D = densitize_vector(constant_vector(static_parameters, dynamic_parameters, D_values), metric.D)
+    B = densitize_vector(constant_vector(static_parameters, dynamic_parameters, B_values), metric.B)
     species = one_species(charge)
 
     def half_step(x, u, half_dt):
@@ -860,10 +862,12 @@ class TestFieldSolverConvergence(unittest.TestCase):
         guard = int(static_parameters.guard_cells)
         D_tiles = fill_staggered_vector(dynamic_parameters, smooth_D_field, D_FIELD_LOCATIONS)
         B_tiles = fill_staggered_vector(dynamic_parameters, smooth_B_field, B_FIELD_LOCATIONS)
+        D_density = densitize_vector(D_tiles, metric.D)
+        B_density = densitize_vector(B_tiles, metric.B)
         zero_current = empty_tiled_vector(static_parameters, dynamic_parameters)
 
-        E_computed = compute_covariant_E(D_tiles, B_tiles, metric)
-        H_computed = compute_covariant_H(D_tiles, B_tiles, metric)
+        E_computed = compute_covariant_E(D_density, B_density, metric)
+        H_computed = compute_covariant_H(D_density, B_density, metric)
         E_exact = exact_covariant_E(metric_at_position)
         H_exact = exact_covariant_H(metric_at_position)
 
@@ -882,11 +886,15 @@ class TestFieldSolverConvergence(unittest.TestCase):
             for i in range(3)
         )
 
-        B_next = update_B_relativity(
-            E_computed, B_tiles, metric, static_parameters, dynamic_parameters, dt
+        B_next = physical_vector(
+            update_B(E_computed, B_density, metric, static_parameters, dynamic_parameters, dt),
+            metric.B,
         )
-        D_next = update_D_relativity(
-            D_tiles, H_computed, zero_current, metric, static_parameters, dynamic_parameters, dt
+        D_next = physical_vector(
+            update_D(
+                D_density, H_computed, zero_current, metric, static_parameters, dynamic_parameters, dt
+            ),
+            metric.D,
         )
         curl_E = exact_curl_over_sqrt_gamma(metric_at_position, E_exact)
         curl_H = exact_curl_over_sqrt_gamma(metric_at_position, H_exact)
@@ -1002,14 +1010,14 @@ class TestCurrentDepositionConvergence(unittest.TestCase):
                     u=momenta.reshape(1, 1, 1, 1, count, 3),
                     active=jnp.ones((1, 1, 1, 1, count), dtype=bool),
                 )
-                J = GR_direct_deposition(
+                J = physical_vector(GR_direct_deposition(
                     particles,
                     one_species(1.0),
                     empty_tiled_vector(static_parameters, dynamic_parameters),
                     metric,
                     static_parameters,
                     dynamic_parameters,
-                )
+                ), metric.D)
                 cell_volume = float(dynamic_parameters.dx * dynamic_parameters.dy * dynamic_parameters.dz)
                 lattice_density = self.PER_CELL**3 / cell_volume
                 component_errors = []
@@ -1068,7 +1076,7 @@ class TestCurrentDepositionConvergence(unittest.TestCase):
             window = (slice(None),) * 3 + (slice(guard, -guard),) * 3
             totals = jnp.asarray(
                 [
-                    jnp.sum((J[i] * metric.D[i].sqrt_gamma)[window]) * cell_volume
+                    jnp.sum(J[i][window]) * cell_volume
                     for i in range(3)
                 ]
             )
@@ -1167,22 +1175,23 @@ def consistent_initial_field_state(static_parameters, dynamic_parameters, metric
     """
     Seed both leapfrog chains from one physical state.
 
-    The solver keeps ``D`` at integer steps, ``B`` at half steps, and one extra
-    copy of each, so ``D^{-1}`` and ``B^{-3/2}`` are produced by stepping the
-    same discrete operators backwards from ``t = 0``.
+    The solver keeps the densities ``sqrt(gamma) D`` at integer steps,
+    ``sqrt(gamma) B`` at half steps, and one extra copy of each, so ``D^{-1}``
+    and ``B^{-3/2}`` are produced by stepping the same discrete operators
+    backwards from ``t = 0``.
     """
-    D_0 = fill_staggered_vector(dynamic_parameters, D_field, D_FIELD_LOCATIONS)
-    B_0 = fill_staggered_vector(dynamic_parameters, B_field, B_FIELD_LOCATIONS)
+    D_0 = densitize_vector(fill_staggered_vector(dynamic_parameters, D_field, D_FIELD_LOCATIONS), metric.D)
+    B_0 = densitize_vector(fill_staggered_vector(dynamic_parameters, B_field, B_FIELD_LOCATIONS), metric.B)
     E_0 = compute_covariant_E(D_0, B_0, metric)
     H_0 = compute_covariant_H(D_0, B_0, metric)
     zero_current = empty_tiled_vector(static_parameters, dynamic_parameters)
-    B_minus_half = update_B_relativity(
+    B_minus_half = update_B(
         E_0, B_0, metric, static_parameters, dynamic_parameters, -0.5 * dt
     )
-    B_minus_three_half = update_B_relativity(
+    B_minus_three_half = update_B(
         E_0, B_0, metric, static_parameters, dynamic_parameters, -1.5 * dt
     )
-    D_minus_one = update_D_relativity(
+    D_minus_one = update_D(
         D_0, H_0, zero_current, metric, static_parameters, dynamic_parameters, -dt
     )
     scalar = empty_tiled_scalar(static_parameters, dynamic_parameters)
@@ -1190,7 +1199,7 @@ def consistent_initial_field_state(static_parameters, dynamic_parameters, metric
         empty_tiled_vector(static_parameters, dynamic_parameters),
         empty_tiled_vector(static_parameters, dynamic_parameters),
     )
-    return densitize_fields((
+    return (
         D_0,
         B_minus_half,
         zero_current,
@@ -1200,7 +1209,7 @@ def consistent_initial_field_state(static_parameters, dynamic_parameters, metric
         metric,
         (D_minus_one, B_minus_three_half),
         jnp.asarray(False),
-    ))
+    )
 
 
 def evolve_vacuum(metric_at_position, metric_name, N, wind, mins, dt, T, D_field, B_field):
@@ -1390,7 +1399,8 @@ class TestInvariantsAndConstraints(unittest.TestCase):
     def test_magnetic_constraint_is_preserved_to_round_off(self):
         """
         ``d_i (sqrt(gamma)_i B^i)`` is the divergence the Yee update annihilates
-        identically; the metric weighting must not break that.
+        identically on the native densities; the metric weighting in ``E`` must
+        not break that.
         """
         key = jax.random.PRNGKey(0)
         for name, metric_at_position, wind, mins, metric_name in FIELD_CASES:
@@ -1401,32 +1411,22 @@ class TestInvariantsAndConstraints(unittest.TestCase):
             metric = build_full_metric(dynamic_parameters, metric_at_position)
             guard = int(static_parameters.guard_cells)
             shape = empty_tiled_scalar(static_parameters, dynamic_parameters).shape
-            B_tiles = tuple(
+            B_tiles = densitize_vector(tuple(
                 jax.random.normal(jax.random.fold_in(key, i), shape) for i in range(3)
-            )
-            D_tiles = tuple(
+            ), metric.B)
+            D_tiles = densitize_vector(tuple(
                 jax.random.normal(jax.random.fold_in(key, 10 + i), shape) for i in range(3)
-            )
+            ), metric.D)
             E_tiles = compute_covariant_E(D_tiles, B_tiles, metric)
 
-            def divergence(B):
-                spacings = (dynamic_parameters.dx, dynamic_parameters.dy, dynamic_parameters.dz)
-                total = 0.0
-                for i in range(3):
-                    weighted = metric.B[i].sqrt_gamma * B[i]
-                    total = total + (
-                        jnp.roll(weighted, -1, axis=i + 3) - weighted
-                    ) / spacings[i]
-                return total
-
-            before = divergence(B_tiles)
+            before = divergence(B_tiles, dynamic_parameters, forward=True)
             evolved = B_tiles
             for _ in range(20):
-                evolved = update_B_relativity(
+                evolved = update_B(
                     E_tiles, evolved, metric, static_parameters, dynamic_parameters,
                     dynamic_parameters.dt,
                 )
-            after = divergence(evolved)
+            after = divergence(evolved, dynamic_parameters, forward=True)
             window = (slice(None),) * 3 + (slice(guard + 1, -guard - 1),) * 3
             drift = float(jnp.max(jnp.abs((after - before)[window])))
             scale = float(jnp.max(jnp.abs(before[window])))

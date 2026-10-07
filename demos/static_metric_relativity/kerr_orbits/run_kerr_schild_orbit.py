@@ -233,8 +233,7 @@ def run_orbit(config):
         ) = initialize_simulation(config)
 
     particles = install_exact_initial_state(particles, particle_config)
-    from PyPIC3D.relativity.field_state import physical_fields
-    D, B = physical_fields(fields)[:2]
+    D, B = fields[:2]  # native densities, as the production pusher reads them
     metric = fields[6]
 
     particles = seed_leapfrog_velocity(

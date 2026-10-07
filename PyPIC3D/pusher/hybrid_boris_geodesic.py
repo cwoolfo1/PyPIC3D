@@ -105,7 +105,10 @@ def hybrid_boris_geodesic_push(
     Explicit Strang-split second-order 3+1 particle push.
 
     Particle positions are contravariant coordinates.  ``particles.u`` stores
-    covariant spatial velocity components ``u_i``.
+    covariant spatial velocity components ``u_i``.  ``D_tiles``/``B_tiles``
+    are native densities ``sqrt(gamma) V^i`` (including any external field);
+    each component is divided by its own grid-node ``sqrt_gamma`` before the
+    gather, so particles see the physical contravariant field.
 
     This is a staggered leapfrog.  The incoming ``particles.u`` is
     ``u^{n-1/2}``; the velocity operator ``EM(dt/2) . geodesic(dt) . EM(dt/2)``
@@ -134,8 +137,10 @@ def hybrid_boris_geodesic_push(
         center_grid = tuple(axis[tx, ty, tz] for axis in dynamic_parameters.grids.tiled_center_grid)
         vertex_grid = tuple(axis[tx, ty, tz] for axis in dynamic_parameters.grids.tiled_vertex_grid)
         tile_metric = jax.tree.map(lambda array: array[tx, ty, tz], metric.center)
-        D_tile = tuple(component[tx, ty, tz] for component in D_tiles)
-        B_tile = tuple(component[tx, ty, tz] for component in B_tiles)
+        D_tile = tuple(component[tx, ty, tz] / sample.sqrt_gamma[tx, ty, tz]
+                       for component, sample in zip(D_tiles, metric.D))
+        B_tile = tuple(component[tx, ty, tz] / sample.sqrt_gamma[tx, ty, tz]
+                       for component, sample in zip(B_tiles, metric.B))
 
         live = active[..., jnp.newaxis]
         # update_x freezes individual velocity and coordinate components per species
