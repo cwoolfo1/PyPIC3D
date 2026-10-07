@@ -1,5 +1,5 @@
 """
-Tests for the charge-conserving GR Esirkepov current deposition.
+Tests for shared Esirkepov deposition with static-metric Maxwell.
 
 The property that matters is the discrete continuity equation in conformal
 variables,
@@ -18,6 +18,8 @@ is preserved exactly in time with no divergence cleaning.
 
 import unittest
 
+import numpy as np
+
 from PyPIC3D.relativity.field_state import densitize_fields
 
 import jax
@@ -25,7 +27,6 @@ import jax.numpy as jnp
 
 from PyPIC3D.boundary_conditions.ghost_cells import update_tiled_vector_ghost_cells
 from PyPIC3D.deposition.Esirkepov import Esirkepov_current
-from PyPIC3D.deposition.GR_Esirkepov import GR_Esirkepov_current
 from PyPIC3D.deposition.rho import compute_rho
 from PyPIC3D.initialization import (
     _encode_current_calculation,
@@ -35,12 +36,7 @@ from PyPIC3D.initialization import (
 from PyPIC3D.particles.particle_class import SpeciesConfig, TiledParticles
 from PyPIC3D.relativity.metrics.flat import (
     initialize_flat_cartesian_metric,
-    initialize_flat_cylindrical_metric,
     initialize_flat_spherical_metric,
-)
-from PyPIC3D.relativity.metrics.kerr_schild import (
-    initialize_kerr_schild_cartesian_metric,
-    initialize_kerr_schild_spherical_metric,
 )
 from PyPIC3D.solvers.GR_yee.static_metric import update_D
 from PyPIC3D.solvers.GR_yee.time_loop import time_loop_static_metric
@@ -49,15 +45,6 @@ from tests.kernel_fixtures import (
     empty_tiled_vector,
     kernel_parameters,
 )
-
-
-METRIC_BUILDERS = {
-    "flat_cartesian": initialize_flat_cartesian_metric,
-    "flat_cylindrical": initialize_flat_cylindrical_metric,
-    "flat_spherical": initialize_flat_spherical_metric,
-    "kerr_schild_cartesian": initialize_kerr_schild_cartesian_metric,
-    "kerr_schild_spherical": initialize_kerr_schild_spherical_metric,
-}
 
 
 def _unit_species():
@@ -136,11 +123,10 @@ def _continuity_residual(
         shape_factor=shape_factor,
         solver="static_metric",
         metric=metric_name,
-        current_deposition="GR_esirkepov",
+        current_deposition="esirkepov",
         current_filter="none",
         particle_pusher="hybrid_boris_geodesic",
     )
-    metric = METRIC_BUILDERS[metric_name](static_parameters, dynamic_parameters)
     tile_grid_shape = (
         Nx // tile_shape[0],
         Ny // tile_shape[1],
@@ -154,14 +140,10 @@ def _continuity_residual(
     particles_old = TiledParticles(x=old_position, u=velocity, active=active)
     particles_new = TiledParticles(x=new_position, u=velocity, active=active)
 
-    J = GR_Esirkepov_current(
-        particles_old,
-        particles_new,
-        species,
+    J = Esirkepov_current(
+        particles_old, particles_new, species,
         empty_tiled_vector(static_parameters, dynamic_parameters),
-        metric,
-        static_parameters,
-        dynamic_parameters,
+        static_parameters, dynamic_parameters,
     )
 
     rho_template = empty_tiled_scalar(static_parameters, dynamic_parameters)
@@ -251,7 +233,7 @@ class TestGRESirkepovContinuity(unittest.TestCase):
 
 
 class TestGRESirkepovConventions(unittest.TestCase):
-    """Agreement with the flat kernel, and the sqrt(gamma) convention."""
+    """Coordinate-current invariants and the sqrt(gamma) convention."""
 
     def _flat_setup(self):
         static_parameters, dynamic_parameters = kernel_parameters(
@@ -268,47 +250,71 @@ class TestGRESirkepovConventions(unittest.TestCase):
             current_deposition="esirkepov",
             current_filter="none",
         )
-        metric = initialize_flat_cartesian_metric(static_parameters, dynamic_parameters)
-        return static_parameters, dynamic_parameters, metric
+        return static_parameters, dynamic_parameters
 
-    def test_matches_the_flat_kernel_in_flat_cartesian(self):
-        """
-        With sqrt(gamma) == 1 and the new position supplied as x + u dt, the GR
-        kernel must reproduce the flat kernel exactly.  This pins both the
-        shared-decomposition refactor and the displacement-velocity
-        substitution, which coincide with the flat forms in this limit.
-        """
-
-        static_parameters, dynamic_parameters, metric = self._flat_setup()
-        position = jnp.asarray([(0.30, -0.70, 1.10)]).reshape((1, 1, 1, 1, 1, 3))
-        velocity = jnp.asarray([(1.7, 0.9, -1.3)]).reshape((1, 1, 1, 1, 1, 3))
-        active = jnp.ones((1, 1, 1, 1, 1), dtype=bool)
+    def test_endpoint_current_has_correct_integral_and_ignores_momentum(self):
+        static, dynamic = self._flat_setup()
+        position = jnp.asarray([0.30, -0.70, 1.10]).reshape((1, 1, 1, 1, 1, 3))
+        velocity = jnp.asarray([1.7, 0.9, -1.3])
+        old = TiledParticles(position, jnp.zeros_like(position), jnp.ones(position.shape[:-1], bool))
+        new = old._replace(x=position + velocity * dynamic.dt)
         species = _unit_species()
-        particles = TiledParticles(x=position, u=velocity, active=active)
-        particles_next = TiledParticles(
-            x=position + velocity * dynamic_parameters.dt, u=velocity, active=active
+        template = empty_tiled_vector(static, dynamic)
+        current = Esirkepov_current(old, new, species, template, static, dynamic)
+        changed_momentum = Esirkepov_current(
+            old._replace(u=jnp.full_like(position, 37.0)),
+            new._replace(u=jnp.full_like(position, -19.0)),
+            species, template, static, dynamic,
         )
-        template = empty_tiled_vector(static_parameters, dynamic_parameters)
+        g = static.guard_cells
+        volume = dynamic.dx * dynamic.dy * dynamic.dz
+        for axis, (actual, changed) in enumerate(zip(current, changed_momentum)):
+            np.testing.assert_array_equal(actual, changed)
+            # The integral of coordinate current is charge times mean velocity.
+            np.testing.assert_allclose(
+                jnp.sum(actual[..., g:-g, g:-g, g:-g]) * volume,
+                velocity[axis], rtol=1e-12, atol=1e-12,
+            )
 
-        flat_J = Esirkepov_current(
-            particles, species, template, static_parameters, dynamic_parameters
-        )
-        gr_J = GR_Esirkepov_current(
-            particles,
-            particles_next,
-            species,
-            template,
-            metric,
-            static_parameters,
-            dynamic_parameters,
-        )
-
-        self.assertGreater(float(jnp.max(jnp.abs(flat_J[0]))), 0.0)
-        for component in range(3):
-            self.assertTrue(bool(jnp.array_equal(flat_J[component], gr_J[component])))
+    def test_unresolved_current_uses_coordinate_velocity_or_displacement(self):
+        for ny in (1, 8):
+            for shape in (1, 2):
+                with self.subTest(ny=ny, shape=shape):
+                    static, dynamic = kernel_parameters(
+                        Nx=8, Ny=ny, Nz=1, x_wind=8., y_wind=float(ny), z_wind=1.,
+                        tile_shape=(8, ny, 1), dt=.1, shape_factor=shape,
+                        current_deposition="esirkepov", current_filter="none",
+                    )
+                    x = jnp.zeros((1, 1, 1, 1, 1, 3))
+                    old = TiledParticles(x, jnp.full_like(x, 99.), jnp.ones(x.shape[:-1], bool))
+                    speed = jnp.asarray([.2, -.3, .4]).reshape(x.shape)
+                    new = old._replace(x=x + speed * dynamic.dt)
+                    template = empty_tiled_vector(static, dynamic)
+                    species = _unit_species()
+                    derived = Esirkepov_current(old, new, species, template, static, dynamic)
+                    supplied = Esirkepov_current(
+                        old, new, species, template, static, dynamic, coordinate_velocity=2 * speed,
+                    )
+                    stopped = Esirkepov_current(old, old, species, template, static, dynamic)
+                    inactive = Esirkepov_current(
+                        old._replace(active=jnp.zeros_like(old.active)),
+                        new._replace(active=jnp.zeros_like(new.active)),
+                        species, template, static, dynamic,
+                    )
+                    g = static.guard_cells
+                    volume = dynamic.dx * dynamic.dy * dynamic.dz
+                    for axis in range(3):
+                        np.testing.assert_array_equal(stopped[axis], 0.)
+                        np.testing.assert_array_equal(inactive[axis], 0.)
+                        factor = 2 if (axis == 2 or (axis == 1 and ny == 1)) else 1
+                        np.testing.assert_allclose(supplied[axis], factor * derived[axis], atol=1e-12)
+                        np.testing.assert_allclose(
+                            jnp.sum(derived[axis][..., g:-g, g:-g, g:-g]) * volume,
+                            speed.reshape(3)[axis], rtol=1e-12, atol=1e-12,
+                        )
 
     def test_frozen_axes_deposit_no_current(self):
-        static_parameters, dynamic_parameters, metric = self._flat_setup()
+        static_parameters, dynamic_parameters = self._flat_setup()
         position = jnp.asarray([(0.30, -0.70, 1.10)]).reshape((1, 1, 1, 1, 1, 3))
         displaced = position + jnp.asarray([(0.31, 0.22, -0.18)]).reshape((1, 1, 1, 1, 1, 3))
         velocity = jnp.zeros_like(position)
@@ -318,14 +324,10 @@ class TestGRESirkepovConventions(unittest.TestCase):
         template = empty_tiled_vector(static_parameters, dynamic_parameters)
 
         def deposit(update_x):
-            return GR_Esirkepov_current(
-                particles_old,
-                particles_new,
+            return Esirkepov_current(
+                particles_old, particles_new,
                 _unit_species()._replace(update_x=jnp.asarray([update_x])),
-                template,
-                metric,
-                static_parameters,
-                dynamic_parameters,
+                template, static_parameters, dynamic_parameters,
             )
 
         full = deposit([True, True, True])
@@ -360,7 +362,7 @@ class TestGRESirkepovConventions(unittest.TestCase):
             shape_factor=1,
             solver="static_metric",
             metric="flat_spherical",
-            current_deposition="GR_esirkepov",
+            current_deposition="esirkepov",
             current_filter="none",
             particle_pusher="hybrid_boris_geodesic",
         )
@@ -376,14 +378,10 @@ class TestGRESirkepovConventions(unittest.TestCase):
             velocity = jnp.zeros((1, 1, 1, 1, 1, 3))
             old = jnp.asarray((radius, 0.4, 0.2)).reshape((1, 1, 1, 1, 1, 3))
             new = jnp.asarray((radius + radial_step, 0.4, 0.2)).reshape((1, 1, 1, 1, 1, 3))
-            J = GR_Esirkepov_current(
+            J = Esirkepov_current(
                 TiledParticles(x=old, u=velocity, active=active),
                 TiledParticles(x=new, u=velocity, active=active),
-                species,
-                template,
-                metric,
-                static_parameters,
-                dynamic_parameters,
+                species, template, static_parameters, dynamic_parameters,
             )
             physical = jnp.sum(J[0][window] / metric.D[0].sqrt_gamma[window])
             conformal_flux = jnp.sum(
@@ -487,7 +485,7 @@ class TestGaussConstraintPreservation(unittest.TestCase):
         buys and what direct deposition destroys.
         """
 
-        drift, scale = self._constraint_drift("GR_esirkepov")
+        drift, scale = self._constraint_drift("esirkepov")
         self.assertGreater(scale, 0.0)
         self.assertLess(drift / scale, 1.0e-12)
 
@@ -506,7 +504,7 @@ class TestGaussConstraintPreservation(unittest.TestCase):
         stored field through a curl.
         """
 
-        static_parameters, dynamic_parameters, metric, _, _ = self._loop_setup("GR_esirkepov")
+        static_parameters, dynamic_parameters, metric, _, _ = self._loop_setup("esirkepov")
         key = jax.random.PRNGKey(0)
         shape = empty_tiled_vector(static_parameters, dynamic_parameters)[0].shape
         keys = jax.random.split(key, 6)
@@ -579,7 +577,7 @@ class TestDepositionDispatch(unittest.TestCase):
         return fields
 
     def test_both_schemes_jit_and_stay_finite(self):
-        for current_deposition in ("GR_esirkepov", "GR_direct"):
+        for current_deposition in ("esirkepov", "GR_direct"):
             with self.subTest(current_deposition=current_deposition):
                 fields = self._one_jitted_step(current_deposition)
                 for component in fields[0]:
@@ -593,7 +591,7 @@ class TestDepositionDispatch(unittest.TestCase):
         deposit genuinely different currents for the same particle state.
         """
 
-        esirkepov = self._one_jitted_step("GR_esirkepov")[2]
+        esirkepov = self._one_jitted_step("esirkepov")[2]
         direct = self._one_jitted_step("GR_direct")[2]
         self.assertGreater(float(jnp.max(jnp.abs(esirkepov[0]))), 0.0)
         self.assertGreater(float(jnp.max(jnp.abs(direct[0]))), 0.0)
@@ -609,7 +607,7 @@ class TestGRESirkepovConfiguration(unittest.TestCase):
     def _static_config(self, **overrides):
         config = {
             "solver": "static_metric",
-            "current_calculation": "GR_esirkepov",
+            "current_calculation": "esirkepov",
             "particle_pusher": "hybrid_boris_geodesic",
             "filter_j": "none",
             "particle_tile_nx": 4,
@@ -619,8 +617,8 @@ class TestGRESirkepovConfiguration(unittest.TestCase):
         config.update(overrides)
         return config
 
-    def test_encoder_accepts_gr_esirkepov(self):
-        self.assertEqual(_encode_current_calculation("GR_esirkepov"), "GR_esirkepov")
+    def test_encoder_accepts_shared_esirkepov(self):
+        self.assertEqual(_encode_current_calculation("esirkepov"), "esirkepov")
 
     def test_encoder_still_maps_the_existing_schemes(self):
         self.assertEqual(_encode_current_calculation("GR_direct_deposition"), "GR_direct")
@@ -642,21 +640,28 @@ class TestGRESirkepovConfiguration(unittest.TestCase):
             dynamic_config,
         )
 
-    def test_the_yee_runtime_rejects_the_gr_scheme(self):
+    def test_all_electromagnetic_solvers_accept_shared_esirkepov(self):
         dynamic_config = {"Nx": 8, "Ny": 8, "Nz": 8}
-        with self.assertRaises(ValueError):
+        for solver in ("electrodynamic_yee", "dark_matter_yee", "static_metric"):
+            pusher = "hybrid_boris_geodesic" if solver == "static_metric" else "boris"
             _validate_tiled_yee_configuration(
-                self._static_config(solver="electrodynamic_yee", particle_pusher="boris"),
-                dynamic_config,
+                self._static_config(solver=solver, particle_pusher=pusher), dynamic_config,
             )
+
+    def test_removed_configuration_name_points_to_shared_scheme(self):
+        with self.assertRaisesRegex(ValueError, "has been removed; use 'esirkepov'"):
+            _encode_current_calculation("GR_esirkepov")
 
     def test_current_filtering_is_rejected(self):
         """Filtering destroys the exact continuity the scheme exists to give."""
 
-        with self.assertRaises(ValueError):
-            _validate_current_filter_contract(self._static_config(filter_j="digital"))
-        with self.assertRaises(ValueError):
-            _validate_current_filter_contract(self._static_config(filter_j="bilinear"))
+        for solver in ("electrodynamic_yee", "dark_matter_yee", "static_metric"):
+            for filter_name in ("digital", "bilinear"):
+                with self.subTest(solver=solver, filter=filter_name):
+                    with self.assertRaisesRegex(ValueError, "use filter_j='none'"):
+                        _validate_current_filter_contract(
+                            self._static_config(solver=solver, filter_j=filter_name)
+                        )
 
     def test_unfiltered_configuration_is_accepted(self):
         _validate_current_filter_contract(self._static_config())

@@ -1108,7 +1108,7 @@ class TestGRDirectDeposition(StaticMetricTestCase):
 class TestStaticMetricTimeLoop(StaticMetricTestCase):
     def test_particle_boundaries_and_prior_overflow_for_both_schemes(self):
         for scheme, bc, checked in itertools.product(
-                ('GR_direct', 'GR_esirkepov'), (1, 2), (False, True)):
+                ('GR_direct', 'esirkepov'), (1, 2), (False, True)):
             with self.subTest(scheme=scheme, boundary=bc, checked=checked):
                 s, d = kernel_parameters(
                     Nx=8, Ny=1, Nz=1, x_wind=8., tile_shape=(8, 1, 1), dt=.2,
@@ -1139,7 +1139,7 @@ class TestStaticMetricTimeLoop(StaticMetricTestCase):
                     self.assertLess(float(new.u[..., 0].reshape(-1)[0]), 0.)
 
     def test_static_metric_time_loop_migrates_only_required_particle_states(self):
-        for scheme, checked in itertools.product(("GR_direct", "GR_esirkepov"), (False, True)):
+        for scheme, checked in itertools.product(("GR_direct", "esirkepov"), (False, True)):
             with self.subTest(scheme=scheme, checked=checked):
                 static_parameters, dynamic_parameters = kernel_parameters(
                     guard_cells=3,
@@ -1204,7 +1204,7 @@ class TestStaticMetricTimeLoop(StaticMetricTestCase):
 
     def test_static_metric_time_loop_reports_particle_refresh_overflow(self):
         for scheme, midpoint_only in itertools.product(
-                ("GR_direct", "GR_esirkepov"), (False, True)):
+                ("GR_direct", "esirkepov"), (False, True)):
             with self.subTest(scheme=scheme, midpoint_only=midpoint_only):
                 static_parameters, dynamic_parameters = kernel_parameters(
                     guard_cells=3,

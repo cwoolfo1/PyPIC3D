@@ -19,8 +19,8 @@ The electrodynamic timestep keeps both particles and fields tiled. Its order is:
 
    - Direct deposition advances position by ``dt/2``, deposits at the
      centered position, then completes the second ``dt/2``.
-   - Esirkepov deposition uses the old and predicted new positions, advances by
-     ``dt``.
+   - Esirkepov advances position once by ``dt``, then deposits from the old and
+     new endpoints before wrapping particles or refreshing tile ownership.
 
 3. Update ``B`` by a half timestep from the old ``E``.
 4. Update ``E`` by a full timestep from the half-step ``B`` and deposited
@@ -192,7 +192,7 @@ phi, the metric, and the overflow flag keep their own conventions.
 increments by the metric volume. The constitutive ``compute_covariant_E`` and
 ``compute_covariant_H`` average densities to each target location and divide
 by the target ``sqrt_gamma`` to recover physical components. Time centering,
-current deposition (``GR_esirkepov`` and ``GR_direct`` both return
+current deposition (``esirkepov`` and ``GR_direct`` both return
 ``sqrt(gamma) J^i``), any ``current_transform``, and the boundary refresh all
 operate on densities. The particle push receives the density sum of evolved
 and external fields and divides each component by its grid-node
@@ -216,7 +216,7 @@ The ``static_metric`` solver uses ``hybrid_boris_geodesic``. Every particle
 metric sample uses the shared ``interpolate_metric`` function: the velocity
 update, position midpoint, direct GR current deposition, and particle-birth
 momentum conversion all use the same reconstruction. Leapfrog initialization
-also uses it through the shared pusher. ``GR_esirkepov`` deposits from particle
+also uses it through the shared pusher. ``esirkepov`` deposits from particle
 endpoints and does not need a separate particle-metric sample.
 
 The sampler reconstructs lapse, shift, and the covariant spatial metric from

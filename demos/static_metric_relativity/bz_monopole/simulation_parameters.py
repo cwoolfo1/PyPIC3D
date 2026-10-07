@@ -120,7 +120,7 @@ def build_runtime(parameters=SimulationParameters()):
     static = build_static_parameters(dict(
         **config, name="bz_monopole", solver="static_metric",
         metric="kerr_schild_spherical", metric_mass=1., metric_spin=p.spin,
-        particle_pusher="hybrid_boris_geodesic", current_deposition="GR_esirkepov",
+        particle_pusher="hybrid_boris_geodesic", current_deposition="esirkepov",
         current_filter="none", shape_factor=1, guard_cells=p.guard_cells,
         tile_shape=(p.nr//p.devices, p.ntheta, 1), boundary_conditions=p.boundary_conditions,
         # Two-GPU timing favors larger active batches;

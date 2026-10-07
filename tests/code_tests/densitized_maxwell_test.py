@@ -10,7 +10,7 @@ from PyPIC3D.boundary_conditions.staggered import refresh_fields
 from PyPIC3D.boundary_conditions.supergaussian import apply_tiled_supergaussian_absorber
 from PyPIC3D.diagnostics.output_adapters import build_field_output_map, fields_for_output
 from PyPIC3D.diagnostics.static_metric import divergence
-from PyPIC3D.deposition.GR_Esirkepov import GR_Esirkepov_current
+from PyPIC3D.deposition.Esirkepov import Esirkepov_current
 from PyPIC3D.deposition.rho import compute_rho
 from PyPIC3D.particles.particle_class import SpeciesConfig, TiledParticles
 from PyPIC3D.pusher.hybrid_boris_geodesic import hybrid_boris_geodesic_push
@@ -163,7 +163,7 @@ class TestDensitizedMaxwell(unittest.TestCase):
 
     def test_esirkepov_source_preserves_gauss_in_curved_metric(self):
         s, d, m = coupled_setup((8, 6, 1), (8, 6, 1), (0, 0, 0))
-        s = s._replace(current_deposition='GR_esirkepov', current_filter='none')
+        s = s._replace(current_deposition='esirkepov', current_filter='none')
         d = d._replace(dt=.02)
         x = jnp.array([.43, .47, .5]).reshape(1, 1, 1, 1, 1, 3)
         old = TiledParticles(x, jnp.zeros_like(x), jnp.ones(x.shape[:-1], dtype=bool))
@@ -172,7 +172,7 @@ class TestDensitizedMaxwell(unittest.TestCase):
                                 jnp.array([[True, True, False]]))
         scalar = jnp.zeros_like(m.center.sqrt_gamma)
         zero = (scalar,)*3
-        current = GR_Esirkepov_current(old, new, species, zero, m, s, d)
+        current = Esirkepov_current(old, new, species, zero, s, d)
         updated = update_D(zero, zero, current, m, s, d, d.dt)
         rho_old = compute_rho(old, species, scalar, s, d)
         rho_new = compute_rho(new, species, scalar, s, d)

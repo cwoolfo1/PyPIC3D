@@ -129,12 +129,13 @@ Numerical Choices
 - ``shape_factor`` is ``1`` or ``2`` for particle shapes and electromagnetic
   field gathering. It does not select the particle-metric reconstruction.
 - ``current_calculation`` is ``j_from_rhov`` or ``esirkepov`` for the Yee
-  solvers, or ``GR_direct_deposition`` or ``GR_esirkepov`` for
-  ``static_metric``. ``GR_esirkepov`` is charge conserving and preserves
+  solvers, or ``GR_direct_deposition`` or ``esirkepov`` for
+  ``static_metric``. ``esirkepov`` is charge conserving and preserves
   Gauss's law to round-off; see :doc:`chargeconservation`.
 - ``filter_j`` is ``none``, ``digital``, or ``bilinear`` for direct current.
   The selected filter is applied to deposited current and to an evolved electric
-  copy used for particle interpolation. Esirkepov requires
+  copy used for particle interpolation, including the initial backward
+  half-kick. External fields and the magnetic gather are unfiltered. Esirkepov requires
   ``filter_j = "none"``.
 - ``alpha`` is the digital filter coefficient and belongs in a
   recognized simulation or dynamic parameter section.

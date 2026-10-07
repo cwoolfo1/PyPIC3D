@@ -69,7 +69,7 @@ def make_runtime(chart, nr=64, ntheta=128):
              y_wind=np.pi-.8 if spherical else 8.,z_wind=2*np.pi if spherical else 8.,dt=PERIOD/4096)
     cfg.update(dx=cfg['x_wind']/nx,dy=cfg['y_wind']/ny,dz=cfg['z_wind'])
     s=build_static_parameters(dict(**cfg,solver='static_metric',metric='flat_spherical' if spherical else 'flat_cartesian',
-        metric_mass=0.,metric_spin=0.,particle_pusher='hybrid_boris_geodesic',current_deposition='GR_esirkepov',
+        metric_mass=0.,metric_spin=0.,particle_pusher='hybrid_boris_geodesic',current_deposition='esirkepov',
         current_filter='none',shape_factor=1,guard_cells=3,tile_shape=(nx,ny,1),
         boundary_conditions=(3,3,0) if spherical else (3,3,3),
         particle_boundary_conditions=(2,2,0) if spherical else (2,2,2)))

@@ -1,7 +1,7 @@
 from jax.experimental import checkify
 
 from PyPIC3D.deposition.GR_direct_deposition import GR_direct_deposition
-from PyPIC3D.deposition.GR_Esirkepov import GR_Esirkepov_current
+from PyPIC3D.deposition.Esirkepov import Esirkepov_current
 from PyPIC3D.diagnostics.static_metric import step_diagnostics
 from PyPIC3D.particles.particle_tile_communication import refresh_tiled_particle_tiles
 from PyPIC3D.pusher.hybrid_boris_geodesic import hybrid_boris_geodesic_push
@@ -71,13 +71,13 @@ def time_loop_static_metric(
         particles, centered_particles = hybrid_boris_geodesic_push(*push_args)
     # advance full-step particles and keep the intermediate particles (x_n_plushalf, v_n_plushalf) for the centered current deposition
 
-    if static_parameters.current_deposition == "GR_esirkepov":
+    if static_parameters.current_deposition == "esirkepov":
         # Endpoint deposition must precede wrapping and full-step migration.
         # Midpoint particles are only needed by direct deposition.
         centered_overflow = False
-        J_n_plushalf = GR_Esirkepov_current(
+        J_n_plushalf = Esirkepov_current(
             particles_n, particles, species_config, J_n_minushalf,
-            metric, static_parameters, dynamic_parameters,
+            static_parameters, dynamic_parameters,
         )
     else:
         centered_particles, centered_overflow = refresh_tiled_particle_tiles(

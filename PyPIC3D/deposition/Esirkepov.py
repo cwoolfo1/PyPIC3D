@@ -48,47 +48,51 @@ def collapse_redundant_axis(points, current_weights, old_weights, axis_active, e
 
 @partial(jax.jit, static_argnames="static_parameters")
 def Esirkepov_current(
-    particles: TiledParticles,
+    particles_old: TiledParticles,
+    particles_new: TiledParticles,
     species_config: SpeciesConfig,
     J,
     static_parameters,
     dynamic_parameters,
+    *,
+    coordinate_velocity=None,
 ):
-    """
-    Deposit Esirkepov current into tile-local current buffers.
+    """Deposit charge-conserving coordinate current from explicit endpoints.
 
-    ``particles.x`` is the old particle position after the velocity push. The
-    future position used in Esirkepov's charge-conserving difference is
-    predicted locally as ``x + u*dt``. Particle retile ownership is applied by
-    the caller after deposition.
-    """
+    Both states must have matching slots, activity, and tile ownership, before
+    wrapping, particle boundary handling, or retiling. The new state's active
+    mask is used. Species position masks suppress displacement and current in
+    frozen directions.
 
+    The result is Cartesian current for ordinary Yee and densitized current
+    ``sqrt(gamma) J^i`` for static-metric Maxwell; no metric conversion is needed.
+    Particle momentum is never read. On unresolved grid axes, current uses the
+    optional coordinate velocity (an array shaped like ``particles_new.x``), or
+    the masked endpoint displacement divided by dt when omitted. Flat pushers
+    supply their coordinate velocity to avoid subtraction error; GR pushers
+    use their actual displacement, since their stored momentum is covariant.
+
+    No current-only filter is applied: it would break discrete continuity with
+    the raw deposited charge.
+    """
+    update_axes = species_config.update_x.reshape(
+        (1, 1, 1, species_config.update_x.shape[0], 1, 3)
+    )
+    endpoints = jnp.where(update_axes, particles_new.x, particles_old.x)
+    if coordinate_velocity is None:
+        coordinate_velocity = (endpoints - particles_old.x) / dynamic_parameters.dt
+    coordinate_velocity = jnp.where(update_axes, coordinate_velocity, 0.0)
     return _deposit_esirkepov_tiles(
-        particles.x, particles.u, particles.active, species_config, J,
-        static_parameters, dynamic_parameters, trajectory=_flat_trajectory,
+        particles_old.x, endpoints, coordinate_velocity, particles_new.active,
+        species_config, J, static_parameters, dynamic_parameters,
     )
-
-
-def _flat_trajectory(old_position, velocity, update_axes, dt):
-    """Predict flat-space endpoints; retain velocity for unresolved axes."""
-    new_position = tuple(
-        old + jnp.where(update, speed * dt, 0.0)
-        for old, speed, update in zip(old_position, velocity, update_axes)
-    )
-    return new_position, velocity
 
 
 def _deposit_esirkepov_tiles(
-    old_positions, endpoint_data, active, species, current_template,
-    static, dynamic, *, trajectory,
+    old_positions, endpoints, coordinate_velocity, active, species,
+    current_template, static, dynamic,
 ):
-    """Map a trajectory adapter and the metric-free kernel over owned tiles.
-
-    The adapter receives flattened old positions, endpoint data, species axis
-    masks, and dt. It returns endpoints and unresolved-axis velocities. Tile
-    setup, species broadcasting, additive folding, and halo refresh are shared
-    by the flat and GR entry points.
-    """
+    """Map the metric-free endpoint kernel over owned tiles and fold halos."""
     guard = int(static.guard_cells)
     tile_shape = tuple(int(width) for width in static.tile_shape)
     tile_counts = current_template[0].shape[:3]
@@ -98,15 +102,15 @@ def _deposit_esirkepov_tiles(
     grids = dynamic.grids.tiled_center_grid
     weighted_charge = species.charge * species.weight
 
-    def deposit_one_tile(old_tile, endpoint_tile, active_tile, tx, ty, tz):
+    def deposit_one_tile(old_tile, endpoint_tile, velocity_tile, active_tile, tx, ty, tz):
         old_position = tuple(old_tile[..., axis].reshape(-1) for axis in range(3))
-        endpoint = tuple(endpoint_tile[..., axis].reshape(-1) for axis in range(3))
+        new_position = tuple(endpoint_tile[..., axis].reshape(-1) for axis in range(3))
+        velocity = tuple(velocity_tile[..., axis].reshape(-1) for axis in range(3))
         charge = jnp.broadcast_to(weighted_charge[:, None], active_tile.shape).reshape(-1)
         update_axes = tuple(
             jnp.broadcast_to(species.update_x[:, axis, None], active_tile.shape).reshape(-1)
             for axis in range(3)
         )
-        new_position, velocity = trajectory(old_position, endpoint, update_axes, dynamic.dt)
         return esirkepov_tile_currents(
             new_position, old_position, velocity, charge,
             active_tile.reshape(-1).astype(old_position[0].dtype), update_axes,
@@ -117,8 +121,8 @@ def _deposit_esirkepov_tiles(
     tile_indices = jnp.meshgrid(*(jnp.arange(count) for count in tile_counts), indexing="ij")
     deposit_tiles = deposit_one_tile
     for _ in range(3):
-        deposit_tiles = jax.vmap(deposit_tiles, in_axes=(0, 0, 0, 0, 0, 0), out_axes=0)
-    current = deposit_tiles(old_positions, endpoint_data, active, *tile_indices)
+        deposit_tiles = jax.vmap(deposit_tiles, in_axes=(0, 0, 0, 0, 0, 0, 0), out_axes=0)
+    current = deposit_tiles(old_positions, endpoints, coordinate_velocity, active, *tile_indices)
     current = fold_tiled_vector_ghost_cells(
         current, static, num_guard_cells=guard, bc_type=BC_TYPE_PARTICLE,
     )
@@ -156,9 +160,8 @@ def esirkepov_tile_currents(
         d_t( sqrt(gamma) rho ) + d_i( sqrt(gamma) J^i ) = 0
 
     is the flat Esirkepov identity verbatim, with the conformal current
-    ``sqrt(gamma) J^i`` in the role of the Cartesian current.  Callers that work
-    in a curved chart deposit with this function and divide the result by
-    ``sqrt(gamma)`` at the matching Yee location afterwards.
+    ``sqrt(gamma) J^i`` in the role of the Cartesian current. Densitized Maxwell
+    consumes this result directly, without division by ``sqrt(gamma)``.
 
     ``out_of_plane_velocity`` is only read on axes that are inactive (a
     quasi-dimensional run), where the component takes no part in the continuity

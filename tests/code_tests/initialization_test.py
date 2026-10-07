@@ -1,4 +1,6 @@
 import unittest
+import contextlib
+import io
 import tempfile
 import os
 from unittest.mock import patch
@@ -358,6 +360,65 @@ class TestInitializationFunctions(unittest.TestCase):
             self.assertTrue(jnp.allclose(D_previous[1][interior], 3.0))
             self.assertTrue(jnp.allclose(B_previous[2][interior], 7.0))
 
+
+    def test_filtered_leapfrog_seed_matches_force_and_zero_dark_coupling(self):
+        # Use Ey on center-grid nodes: the independent gather is the node value.
+        n, dt, alpha, charge, mass, c = 8, .01, .4, 2., 4., 3.
+        x = -0.5 + np.arange(n) / n
+        evolved = .6 * np.cos(2 * np.pi * np.arange(n) / n)
+        external = .3 * np.sin(4 * np.pi * np.arange(n) / n) + .1
+        with tempfile.TemporaryDirectory() as directory, contextlib.redirect_stdout(io.StringIO()):
+            def save(name, data):
+                path = os.path.join(directory, name + ".npy")
+                np.save(path, data)
+                return path
+
+            x_path = save("x", x)
+            evolved_path = save("evolved", evolved.reshape(n, 1, 1))
+            external_path = save("external", external.reshape(n, 1, 1))
+            for pusher in ("boris", "higuera_cary"):
+                for filter_name in ("none", "digital", "bilinear"):
+                    if filter_name == "bilinear":
+                        filtered = (np.roll(evolved, 1) + 2 * evolved + np.roll(evolved, -1)) / 4
+                    elif filter_name == "digital":
+                        filtered = alpha * evolved + (1 - alpha) / 6 * (
+                            np.roll(evolved, 1) + np.roll(evolved, -1) + 4 * evolved
+                        )
+                    else:
+                        filtered = evolved
+                    momentum = -(charge / mass) * (filtered + external) * dt / 2
+                    expected = momentum if pusher == "boris" else momentum / np.sqrt(1 + (momentum / c)**2)
+                    states = []
+                    for solver in ("electrodynamic_yee", "dark_matter_yee"):
+                        with self.subTest(pusher=pusher, filter=filter_name, solver=solver):
+                            config = {
+                                "simulation_parameters": dict(
+                                    name="filtered leapfrog seed", output_dir=directory,
+                                    solver=solver, Nx=n, Ny=1, Nz=1,
+                                    x_wind=1., y_wind=1., z_wind=1., dt=dt, Nt=1,
+                                    particle_tile_nx=4, particle_tile_ny=1, particle_tile_nz=1,
+                                    shape_factor=1, particle_pusher=pusher, relativistic=False,
+                                    current_calculation="j_from_rhov", filter_j=filter_name,
+                                    alpha=alpha, C=c, eps=1., mu=1/c**2, sin_chi=0., dark_mu=0.,
+                                ),
+                                "particle1": dict(
+                                    name="p", N_particles=n, charge=charge, mass=mass, temperature=0.,
+                                    initial_x=x_path, initial_y=0., initial_z=0.,
+                                    initial_vx=0., initial_vy=0., initial_vz=0.,
+                                ),
+                                "field1": dict(name="evolved Ey", type=1, path=evolved_path, evolve=True),
+                                "field2": dict(name="external Ey", type=1, path=external_path, evolve=False),
+                            }
+                            _, particles, *_ = initialize_simulation(config)
+                            positions = np.asarray(particles.x)[np.asarray(particles.active)]
+                            velocities = np.asarray(particles.u)[np.asarray(particles.active)]
+                            order = np.argsort(positions[:, 0])
+                            np.testing.assert_allclose(positions[order, 0], x, atol=1e-15)
+                            np.testing.assert_array_equal(positions[:, 1:], 0.)
+                            np.testing.assert_allclose(velocities[order, 1], expected, rtol=1e-11, atol=1e-14)
+                            np.testing.assert_array_equal(velocities[:, (0, 2)], 0.)
+                            states.append(velocities[order])
+                    np.testing.assert_array_equal(states[0], states[1])
 
     def test_initialize_simulation_offsets_particle_velocity_to_the_half_step(self):
         """

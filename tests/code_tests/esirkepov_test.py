@@ -264,10 +264,12 @@ class TestTiledEsirkepovCurrent(unittest.TestCase):
         static_parameters, dynamic_parameters = kernel_parameters_from_values(parameter_set, dynamic_values)
         J_tiles = Esirkepov_current(
             tiled_particles,
+            update_tiled_particle_positions(tiled_particles, species_config, dynamic_parameters.dt),
             species_config,
             J_template,
             static_parameters,
             dynamic_parameters,
+            coordinate_velocity=tiled_particles.u,
         )
         J_from_tiles = assemble_tiled_vector_field(J_tiles, parameter_set, tile_shape, num_guard_cells=g)
 
@@ -421,10 +423,12 @@ class TestTiledEsirkepovCurrent(unittest.TestCase):
         static_parameters, dynamic_parameters = kernel_parameters_from_values(parameter_set, dynamic_values)
         J_tiles = Esirkepov_current(
             tiled_particles,
+            update_tiled_particle_positions(tiled_particles, species_config, dynamic_parameters.dt),
             species_config,
             J_template,
             static_parameters,
             dynamic_parameters,
+            coordinate_velocity=tiled_particles.u,
         )
         J_from_tiles = assemble_tiled_vector_field(J_tiles, parameter_set, tile_shape, num_guard_cells=g)
         _, J_reference = self._assembled_esirkepov_current(
@@ -475,10 +479,12 @@ class TestTiledEsirkepovCurrent(unittest.TestCase):
 
         masked_current = Esirkepov_current(
             particles,
+            update_tiled_particle_positions(particles, species_config, dynamic_parameters.dt),
             species_config,
             J_template,
             static_parameters,
             dynamic_parameters,
+            coordinate_velocity=particles.u,
         )
 
         slot_mask = species_config.update_x.reshape((1, 1, 1, 2, 1, 3))
@@ -486,10 +492,12 @@ class TestTiledEsirkepovCurrent(unittest.TestCase):
         reference_config = species_config._replace(update_x=jnp.ones_like(species_config.update_x))
         reference_current = Esirkepov_current(
             reference_particles,
+            update_tiled_particle_positions(reference_particles, reference_config, dynamic_parameters.dt),
             reference_config,
             J_template,
             static_parameters,
             dynamic_parameters,
+            coordinate_velocity=reference_particles.u,
         )
 
         for masked_component, reference_component in zip(masked_current, reference_current):
@@ -521,10 +529,12 @@ class TestTiledEsirkepovCurrent(unittest.TestCase):
 
         current = Esirkepov_current(
             particles,
+            update_tiled_particle_positions(particles, species_config, dynamic_parameters.dt),
             species_config,
             J_template,
             static_parameters,
             dynamic_parameters,
+            coordinate_velocity=particles.u,
         )
 
         for component in current:
@@ -542,10 +552,12 @@ class TestTiledEsirkepovCurrent(unittest.TestCase):
         static_parameters, dynamic_parameters = kernel_parameters_from_values(parameter_set, dynamic_values)
         J_tiles = Esirkepov_current(
             tiled_particles,
+            update_tiled_particle_positions(tiled_particles, species_config, dynamic_parameters.dt),
             species_config,
             J_template,
             static_parameters,
             dynamic_parameters,
+            coordinate_velocity=tiled_particles.u,
         )
         J_from_tiles = assemble_tiled_vector_field(
             J_tiles,
@@ -650,17 +662,21 @@ class TestTiledEsirkepovCurrent(unittest.TestCase):
 
         periodic_bc_current = Esirkepov_current(
             particles,
+            update_tiled_particle_positions(particles, species_config, dynamic_periodic.dt),
             species_config,
             J_template,
             static_periodic,
             dynamic_periodic,
+            coordinate_velocity=particles.u,
         )
         absorbing_bc_current = Esirkepov_current(
             particles,
+            update_tiled_particle_positions(particles, species_config, dynamic_absorbing.dt),
             species_config,
             J_template,
             static_absorbing,
             dynamic_absorbing,
+            coordinate_velocity=particles.u,
         )
 
         max_difference = max(
@@ -763,10 +779,12 @@ class TestTiledEsirkepovCurrent(unittest.TestCase):
         _, _, J_template, _, _ = self._initialize_fields(parameter_set, dynamic_values)
         J_tiles = Esirkepov_current(
             tiled_particles,
+            update_tiled_particle_positions(tiled_particles, species_config, dynamic_parameters.dt),
             species_config,
             J_template,
             static_parameters,
             dynamic_parameters,
+            coordinate_velocity=tiled_particles.u,
         )
         new_particles = update_tiled_particle_positions(tiled_particles, species_config, parameter_set["dt"])
         new_particles, overflow = refresh_tiled_particle_tiles(new_particles, static_parameters, dynamic_parameters)
@@ -805,7 +823,15 @@ class TestTiledEsirkepovCurrent(unittest.TestCase):
 
         rho_old = compute_rho(tiled_particles, species_config, rho_tiles, static_parameters, dynamic_parameters)
         _, _, J_template, _, _ = self._initialize_fields(parameter_set, dynamic_values)
-        J_tiles = Esirkepov_current(tiled_particles, species_config, J_template, static_parameters, dynamic_parameters)
+        J_tiles = Esirkepov_current(
+            tiled_particles,
+            update_tiled_particle_positions(tiled_particles, species_config, dynamic_parameters.dt),
+            species_config,
+            J_template,
+            static_parameters,
+            dynamic_parameters,
+            coordinate_velocity=tiled_particles.u,
+        )
         new_particles = update_tiled_particle_positions(tiled_particles, species_config, dt)
         new_particles, overflow = refresh_tiled_particle_tiles(new_particles, static_parameters, dynamic_parameters)
         rho_new = compute_rho(new_particles, species_config, rho_tiles, static_parameters, dynamic_parameters)
@@ -935,7 +961,7 @@ class TestTiledEsirkepovCurrent(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "Esirkepov current filtering is not supported"):
                 initialize_simulation(config)
 
-    def test_tiled_yee_esirkepov_loop_advances_particles_after_deposition(self):
+    def test_tiled_yee_esirkepov_loop_advances_particles_once_before_retiling(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             x_initial = jnp.array([-1.5, -0.5, 0.5, 1.5])
             vx_initial = jnp.array([0.10, -0.05, 0.07, -0.02])
@@ -1087,10 +1113,12 @@ class TestTiledEsirkepovCurrent(unittest.TestCase):
 
             reference_J = Esirkepov_current(
                 initial_particles,
+                update_tiled_particle_positions(initial_particles, species_config, dynamic_parameters.dt),
                 species_config,
                 initial_fields[2],
                 static_parameters,
                 dynamic_parameters,
+                coordinate_velocity=initial_particles.u,
             )
 
             for reference_component, tiled_component in zip(reference_J, fields[2]):

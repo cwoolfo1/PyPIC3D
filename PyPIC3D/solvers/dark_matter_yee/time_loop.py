@@ -7,9 +7,8 @@ from PyPIC3D.particles.particle_tile_communication import (
     update_tiled_particle_positions,
 )
 from PyPIC3D.pusher.particle_push import particle_push
-from PyPIC3D.utilities.field_helpers import add_external_fields
+from PyPIC3D.utilities.field_helpers import yee_push_fields
 from PyPIC3D.solvers.yee.first_order_yee import update_B, update_E
-from PyPIC3D.solvers.yee.time_loop import _filter_electric_field_for_particles
 from PyPIC3D.solvers.dark_matter_yee.dark_photon_fields import (
     update_dark_A,
     update_dark_E,
@@ -29,8 +28,7 @@ def dark_photon_push_fields(E, B, dark_fields, external_fields, static_parameter
     mixing = static_parameters.sin_chi
     E = tuple(e - mixing * dark_e for e, dark_e in zip(E, dark_E))
     B = tuple(b - mixing * dark_b for b, dark_b in zip(B, dark_B))
-    E = _filter_electric_field_for_particles(E, static_parameters, dynamic_parameters)
-    return add_external_fields(E, B, external_fields)
+    return yee_push_fields(E, B, external_fields, static_parameters, dynamic_parameters)
 
 
 def time_loop_dark_photon(particles, species_config, fields, static_parameters, dynamic_parameters):
@@ -46,8 +44,12 @@ def time_loop_dark_photon(particles, species_config, fields, static_parameters, 
 
 
     if static_parameters.current_deposition == "esirkepov":
-        J = Esirkepov_current(particles, species_config, J, static_parameters, dynamic_parameters)
+        particles_old = particles
         particles = update_tiled_particle_positions(particles, species_config, dt)
+        J = Esirkepov_current(
+            particles_old, particles, species_config, J,
+            static_parameters, dynamic_parameters, coordinate_velocity=particles.u,
+        )
     else:
         particles = update_tiled_particle_positions(particles, species_config, dt / 2)
         particles, new_overflow = refresh_tiled_particle_tiles(particles, static_parameters, dynamic_parameters)

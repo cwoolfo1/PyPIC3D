@@ -20,7 +20,8 @@ from PyPIC3D.deposition.J_from_rhov import J_from_rhov
 from PyPIC3D.deposition.rho import compute_rho
 from PyPIC3D.deposition.shapes import get_first_order_weights, get_second_order_weights
 from PyPIC3D.diagnostics.output_adapters import assemble_tiled_scalar_field, assemble_tiled_vector_field
-from PyPIC3D.solvers.yee.time_loop import _filter_electric_field_for_particles, time_loop_electrodynamic
+from PyPIC3D.solvers.yee.time_loop import time_loop_electrodynamic
+from PyPIC3D.utilities.field_helpers import filter_electric_field_for_particles, yee_push_fields
 from PyPIC3D.initialization import initialize_fields
 from PyPIC3D.particles.particle_tile_communication import refresh_tiled_particle_tiles, update_tiled_particle_positions
 from PyPIC3D.pusher.boris import interpolate_field_to_particles
@@ -593,25 +594,27 @@ class TestSingleParticleStencils(unittest.TestCase):
         external_E = tuple(0.2 * component for component in E)
         external_B = tuple(-0.4 * component for component in B)
 
-        coupling_none_06 = _filter_electric_field_for_particles(
+        coupling_none_06 = filter_electric_field_for_particles(
             E,
             static_none_06,
             dynamic_none_06,
         )
-        coupling_none_10 = _filter_electric_field_for_particles(
+        coupling_none_10 = filter_electric_field_for_particles(
             E,
             static_none_10,
             dynamic_none_10,
         )
-        coupling_digital = _filter_electric_field_for_particles(
+        coupling_digital = filter_electric_field_for_particles(
             E,
             static_digital,
             dynamic_digital,
         )
-        push_E, push_B = add_external_fields(
-            coupling_digital,
+        push_E, push_B = yee_push_fields(
+            E,
             B,
             (external_E, external_B),
+            static_digital,
+            dynamic_digital,
         )
 
         _assert_vector_close(self, coupling_none_06, E)
@@ -773,7 +776,7 @@ class TestSingleParticleStencils(unittest.TestCase):
                 dt=0.1,
             )
             E = _periodic_test_electric_field(static_parameters, dynamic_parameters)
-            coupling_E = _filter_electric_field_for_particles(
+            coupling_E = filter_electric_field_for_particles(
                 E,
                 static_parameters,
                 dynamic_parameters,
@@ -840,10 +843,12 @@ class TestSingleParticleStencils(unittest.TestCase):
                     particles, species_config = _one_particle(static_parameters, dynamic_parameters, x, u)
                     J = Esirkepov_current(
                         particles,
+                        update_tiled_particle_positions(particles, species_config, dynamic_parameters.dt),
                         species_config,
                         empty_tiled_vector(static_parameters, dynamic_parameters),
                         static_parameters,
                         dynamic_parameters,
+                        coordinate_velocity=particles.u,
                     )
                     expected = _manual_esirkepov_current_tiles_1d(
                         particles,

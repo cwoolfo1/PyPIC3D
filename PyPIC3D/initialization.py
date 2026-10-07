@@ -10,7 +10,7 @@ from PyPIC3D.particles.particle_initialization import load_particles_from_toml
 from PyPIC3D.pusher.particle_push import seed_leapfrog_velocity
 from PyPIC3D.particles.particle_tile_communication import shard_tiled_particles
 from PyPIC3D.diagnostics.diagnostic_quantities import compute_energy, compute_dark_energy
-from PyPIC3D.utilities.field_helpers import add_external_fields
+from PyPIC3D.utilities.field_helpers import add_external_fields, yee_push_fields
 from PyPIC3D.utilities.plasma_quantities import build_plasma_parameters_dict
 from PyPIC3D.utilities.simulation_helpers import (
     convert_to_jax_compatible,
@@ -140,22 +140,20 @@ def _tile_shape_from_static_config(static_config):
 
 
 def _encode_current_calculation(current_calculation):
-    if current_calculation not in ("j_from_rhov", "esirkepov", "GR_direct_deposition", "GR_esirkepov"):
+    if current_calculation not in ("j_from_rhov", "esirkepov", "GR_direct_deposition"):
         raise ValueError(
             "Unsupported current_calculation. Use 'j_from_rhov', 'esirkepov', "
-            "'GR_direct_deposition', or 'GR_esirkepov'."
+            "or 'GR_direct_deposition'."
         )
     if current_calculation == "esirkepov":
         return "esirkepov"
     if current_calculation == "GR_direct_deposition":
         return "GR_direct"
-    if current_calculation == "GR_esirkepov":
-        return "GR_esirkepov"
     return "direct"
 
 
 def _validate_current_filter_contract(static_config):
-    charge_conserving = static_config["current_calculation"] in ("esirkepov", "GR_esirkepov")
+    charge_conserving = static_config["current_calculation"] == "esirkepov"
     if charge_conserving and static_config["filter_j"] != "none":
         raise ValueError(
             "Esirkepov current filtering is not supported; use filter_j='none'. "
@@ -170,10 +168,10 @@ def _validate_tiled_yee_configuration(static_config, dynamic_config):
     """
 
     if static_config["solver"] == "static_metric":
-        if static_config["current_calculation"] not in ("GR_direct_deposition", "GR_esirkepov"):
+        if static_config["current_calculation"] not in ("GR_direct_deposition", "esirkepov"):
             raise ValueError(
                 "static_metric requires current_calculation='GR_direct_deposition' "
-                "or current_calculation='GR_esirkepov'"
+                "or current_calculation='esirkepov'"
             )
         if static_config["particle_pusher"] != "hybrid_boris_geodesic":
             raise ValueError("static_metric requires particle_pusher='hybrid_boris_geodesic'")
@@ -775,9 +773,12 @@ def initialize_simulation(toml_file):
             print(f"Initial Dark Field Energy: {dark_energy:.2e} J")
         print(f"Total Initial Energy: {e_energy + b_energy + kinetic_energy + dark_energy:.2e} J\n")
 
-    seed_E, seed_B = add_external_fields(E, B, external_fields)
     if dark_matter:
         seed_E, seed_B = dark_photon_push_fields(E, B, dark_fields, external_fields, static_parameters, dynamic_parameters, dark_pml)
+    elif not static_metric and not electrostatic:
+        seed_E, seed_B = yee_push_fields(E, B, external_fields, static_parameters, dynamic_parameters)
+    else:
+        seed_E, seed_B = add_external_fields(E, B, external_fields)
     particles = seed_leapfrog_velocity(
         particles,
         species_config,
@@ -817,8 +818,6 @@ def initialize_simulation(toml_file):
         print("Using Esirkepov current calculation method")
     elif static_config["current_deposition"] == "GR_direct":
         print(f"Using GR direct current calculation method with filter: {static_config['filter_j']}")
-    elif static_config["current_deposition"] == "GR_esirkepov":
-        print("Using GR Esirkepov charge-conserving current calculation method")
     elif static_config["current_calculation"] == "j_from_rhov":
         print(f"Using J from rhov current calculation method with filter: {static_config['filter_j']}")
 

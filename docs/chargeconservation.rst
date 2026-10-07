@@ -35,10 +35,23 @@ uses the same digital filter when ``filter_j = "digital"``.
 Esirkepov
 ---------
 
-The Esirkepov path predicts the new position ``x + u*dt`` from the old
-particle position, builds aligned old/new particle-shape stencils, and deposits
-the charge-conserving current difference before particle ownership is
-refreshed.
+All electromagnetic solvers call the same ``Esirkepov_current`` method with
+explicit old and new particle states. It builds aligned particle-shape stencils
+and deposits the charge-conserving current before wrapping, boundary handling,
+or changes to particle ownership. Both states must retain matching slots,
+activity, and tile ownership.
+
+The Python interface is::
+
+   Esirkepov_current(particles_old, particles_new, species_config, J,
+                     static_parameters, dynamic_parameters,
+                     *, coordinate_velocity=None)
+
+The optional keyword-only ``coordinate_velocity`` has the same shape as particle
+positions and is used only for current along unresolved grid axes. If omitted,
+that velocity is derived from endpoint displacement divided by ``dt``. Frozen
+species axes deposit no current. Ordinary and dark-matter Yee advance positions
+once and supply their coordinate velocity explicitly to avoid subtraction error.
 
 It supports shape factors 1 and 2 and reduced 1D/2D axes. Current filtering is
 disabled for Esirkepov because the discrete continuity equation is satisfied
@@ -59,7 +72,7 @@ Fixed-metric schemes
 The ``static_metric`` solver stores and evolves the native Yee densities
 ``sqrt(gamma) D^i`` and ``sqrt(gamma) B^i``, including their previous time
 levels. Its stored current and current time averages are ``sqrt(gamma) J^i``.
-``GR_Esirkepov_current`` and ``GR_direct_deposition`` both return that
+``Esirkepov_current`` and ``GR_direct_deposition`` both return that
 density directly, and optional ``current_transform`` callbacks receive and
 return it.
 
@@ -69,7 +82,7 @@ derives the inverse from that tensor, and forms ``alpha v^i - beta^i``.
 It supports current filtering. It does not satisfy the discrete continuity
 equation, so Gauss's law violation accumulates over a run.
 
-``GR_esirkepov`` is charge conserving. It works because the conformal charge
+``esirkepov`` is charge conserving. It works because the conformal charge
 density carries no metric,
 
 .. math::
@@ -83,16 +96,14 @@ so the conformal continuity equation
    \partial_t(\sqrt{\gamma}\rho) + \partial_i(\sqrt{\gamma}J^i) = 0
 
 is the flat Esirkepov identity verbatim, and the same density decomposition
-applies unchanged. The two schemes therefore share one metric-free kernel,
-``esirkepov_tile_currents``.
+applies unchanged. Flat and GR solvers use the same endpoint-based method and
+metric-free ``esirkepov_tile_currents`` kernel.
 
-Two things differ from the flat path. The new position must be supplied
-explicitly rather than predicted as ``x + u*dt``, because ``particles.u`` stores
-covariant ``u_i`` and that shortcut does not hold in a curved chart; the time
-loop keeps the pre-push positions for this. And the out-of-plane component on a
-reduced axis uses the displacement ``(x^{n+1} - x^n)/dt``, which is the
-coordinate velocity the position update actually produced -- so the kernel needs
-no metric interpolation at particle positions at all.
+The GR loop retains pre-push positions and supplies the actual post-push
+positions. Its ``particles.u`` stores covariant ``u_i``, which the depositor
+never reads. GR omits ``coordinate_velocity`` so reduced-axis current uses
+``(x^{n+1} - x^n)/dt``. The depositor needs no metric interpolation and returns
+the density directly for Maxwell evolution.
 
 Because the backward-difference divergence of the backward-difference curl in
 ``update_D`` vanishes identically, satisfying discrete continuity
@@ -107,11 +118,11 @@ to round-off with no divergence cleaning. Configure it with:
 .. code-block:: toml
 
    solver = "static_metric"
-   current_calculation = "GR_esirkepov"
+   current_calculation = "esirkepov"
    particle_pusher = "hybrid_boris_geodesic"
    filter_j = "none"
 
-Current filtering is rejected for ``GR_esirkepov`` for the same reason as the
+Current filtering is rejected for ``esirkepov`` for the same reason as the
 flat scheme. ``GR_direct_deposition`` remains the default for
 ``static_metric``.
 
