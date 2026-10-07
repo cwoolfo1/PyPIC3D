@@ -1,41 +1,43 @@
-"""Hermite reconstruction of the supplied grid metric at particle positions."""
+"""Single-device numerical tests."""
 
-import unittest
-from functools import partial
-import jax
-import jax.numpy as jnp
-import numpy as np
-from jax.experimental import checkify
-from PyPIC3D.particles.particle_class import SpeciesConfig, TiledParticles
-from PyPIC3D.pusher.hybrid_boris_geodesic import coordinate_velocity, hybrid_boris_geodesic_push
-from PyPIC3D.pusher.particle_push import seed_leapfrog_velocity
-from PyPIC3D.deposition.GR_direct_deposition import GR_direct_deposition
-from PyPIC3D.relativity import (
+from tests.support.particle_metric_fixtures_shared import (
+    CheckedSamplingFixtures,
+    GR_direct_deposition,
+    HermiteFixtures,
+    ParticleMetricConsumersFixtures,
+    ParticleMetricFixtures,
+    SpeciesConfig,
+    TiledParticles,
+    build_static_parameters,
+    checkify,
+    consumer_runtime,
+    densitize_vector,
+    hybrid_boris_geodesic_push,
     initialize_flat_cartesian_metric,
     initialize_flat_cylindrical_metric,
     initialize_flat_spherical_metric,
     initialize_kerr_schild_cartesian_metric,
     initialize_kerr_schild_spherical_metric,
-)
-from PyPIC3D.relativity.field_state import densitize_vector
-from PyPIC3D.relativity.interpolate_metric import (
     interpolate_hermite,
     interpolate_metric,
-    particle_metric_valid,
-    positive_definite_3x3,
-)
-from PyPIC3D.utilities.parameters import build_static_parameters, static_parameters_for_output
-from tests.kernel_fixtures import kernel_parameters
-from tests.support.particle_metric_fixtures import (
+    jax,
+    jnp,
+    kernel_parameters,
     make_runtime,
     manufactured,
+    np,
+    partial,
+    particle_metric_valid,
+    positive_definite_3x3,
     sample_metric,
     sampled_rotation_checks,
-    consumer_runtime,
+    seed_leapfrog_velocity,
+    static_parameters_for_output,
+    unittest,
 )
 
 
-class TestHermite(unittest.TestCase):
+class TestHermite(HermiteFixtures, unittest.TestCase):
     def test_tensor_quadratic_reproduction(self):
         grid = tuple(jnp.arange(-3, 14, dtype=float) * h for h in (0.1, 0.13, 0.17))
 
@@ -65,6 +67,7 @@ class TestHermite(unittest.TestCase):
                 atol=1e-12,
             )
 
+
     def test_nodal_values_and_shared_slopes(self):
         x = jnp.arange(-3, 13, dtype=float) * 0.125
         grid = (x, jnp.arange(7, dtype=float), jnp.arange(7, dtype=float))
@@ -82,6 +85,7 @@ class TestHermite(unittest.TestCase):
                 abs(float(derivative(x[i] - 1e-10) - derivative(x[i] + 1e-10))), 1e-8
             )
 
+
     def test_point_outside_stencil_is_nan(self):
         grid, m = manufactured()
         q = jnp.array([[-1.0, 0.3, 3.0]])
@@ -89,7 +93,8 @@ class TestHermite(unittest.TestCase):
         self.assertTrue(np.isnan(np.asarray(a.gamma)).all())
 
 
-class TestParticleMetric(unittest.TestCase):
+
+class TestParticleMetric(ParticleMetricFixtures, unittest.TestCase):
     def test_shared_reconstruction_for_every_supported_chart(self):
         providers = (
             ("flat_cartesian", initialize_flat_cartesian_metric),
@@ -134,6 +139,7 @@ class TestParticleMetric(unittest.TestCase):
                 np.testing.assert_allclose(changed.shift, original.shift+.1, atol=1e-12)
                 np.testing.assert_allclose(changed.gamma_inv, original.gamma_inv/2., atol=1e-12)
 
+
     def test_inverse_and_derivatives(self):
         grid, m = manufactured()
         q = jnp.array([[0.247, 0.381, 3.0], [0.415, 0.274, 3.0]])
@@ -166,6 +172,7 @@ class TestParticleMetric(unittest.TestCase):
         np.testing.assert_array_equal(dh[:, 2], 0.0)
         self.assertTrue(np.asarray(particle_metric_valid(a, q, "numerical")).all())
 
+
     def test_adjacent_radial_tiles_agree(self):
         g1, m1 = manufactured()
         g2, m2 = manufactured(0.5)
@@ -174,6 +181,7 @@ class TestParticleMetric(unittest.TestCase):
         b = interpolate_metric(m2, q, g2, "numerical", (True, True, False), (3, 3, 3))
         for v, w in zip(jax.tree.leaves(a), jax.tree.leaves(b)):
             np.testing.assert_allclose(v, w, rtol=1e-12, atol=1e-12)
+
 
     def test_unresolved_axes_use_fixed_nodes_and_zero_derivatives(self):
         grid, metric = manufactured()
@@ -187,6 +195,7 @@ class TestParticleMetric(unittest.TestCase):
         np.testing.assert_array_equal(a.grad_lapse[..., 1:], 0.)
         np.testing.assert_array_equal(a.grad_shift[..., 1:], 0.)
         np.testing.assert_array_equal(a.grad_gamma_inv[..., 1:, :, :], 0.)
+
 
     def test_stored_inverse_and_determinant_do_not_enter_particle_geometry(self):
         s, d, m, D, B = make_runtime("spherical", 16, 32)
@@ -227,10 +236,12 @@ class TestParticleMetric(unittest.TestCase):
             np.asarray(particle_metric_valid(sample_metric(axes, m, s, d), axes, s.metric)).any()
         )
 
+
     def test_sampled_rotation_invariants(self):
         for row in sampled_rotation_checks(32):
             for key in ("inverse_defect", "norm_error", "parallel_error", "reversal_error"):
                 self.assertLess(row[key], 1e-12, (key, row))
+
 
     def test_signed_orientation_and_invalid_metrics(self):
         grid, m = manufactured()
@@ -247,6 +258,7 @@ class TestParticleMetric(unittest.TestCase):
             bad = m._replace(gamma=jnp.broadcast_to(tensor, m.gamma.shape))
             a = interpolate_metric(bad, q, grid, "numerical", (True, True, False), (3, 3, 3))
             self.assertFalse(bool(particle_metric_valid(a, q, "numerical")[0]))
+
 
     def test_positive_definite_matches_eigenvalue_signs(self):
         rng = np.random.default_rng(519)
@@ -265,15 +277,8 @@ class TestParticleMetric(unittest.TestCase):
         self.assertFalse(bool(positive_definite_3x3(jnp.ones((3, 3)))))
 
 
-class TestParticleMetricConsumers(unittest.TestCase):
-    def tearDown(self):
-        jax.clear_caches()
 
-    def assert_same_tree(self, actual, expected):
-        self.assertEqual(jax.tree.structure(actual), jax.tree.structure(expected))
-        for a, b in zip(jax.tree.leaves(actual), jax.tree.leaves(expected)):
-            np.testing.assert_allclose(a, b, rtol=2e-14, atol=2e-14)
-
+class TestParticleMetricConsumers(ParticleMetricConsumersFixtures, unittest.TestCase):
     def test_pusher_and_direct_deposition_use_supplied_primitives(self):
         first_order_push = None
         for order in (1, 2):
@@ -319,32 +324,9 @@ class TestParticleMetricConsumers(unittest.TestCase):
                                      if a.dtype != jnp.bool_)
                     self.assertGreater(difference, 1e-6)
 
-    def test_midpoint_sampling_agrees_across_tile_seam(self):
-        results = []
-        for tile_shape in ((8, 8, 1), (4, 8, 1)):
-            s, d, m, D, B, p, species = consumer_runtime(tile_shape=tile_shape)
-            D, B = densitize_vector(D, m.D), densitize_vector(B, m.B)
-            err, (new, mid) = jax.jit(checkify.checkify(
-                lambda p: hybrid_boris_geodesic_push(p, species, D, B, m, s, d)))(p)
-            err.throw()
-            self.assertGreater(float(mid.x.reshape(-1, 3)[0, 0]), 1.5)
-            for tx in range(p.x.shape[0]):
-                grid = tuple(a[tx, 0, 0] for a in d.grids.tiled_center_grid)
-                tile = jax.tree.map(lambda a: a[tx, 0, 0], m.center)
-                get = lambda q: interpolate_metric(tile, q, grid, s.metric,
-                    (True, True, False), (3, 3, 3), derivatives=False)
-                x, u = p.x[tx], new.u[tx]
-                expected_mid = x + .5*d.dt*coordinate_velocity(u, get(x))
-                expected_new = x + d.dt*coordinate_velocity(u, get(expected_mid))
-                np.testing.assert_allclose(mid.x[tx], expected_mid, atol=1e-14)
-                np.testing.assert_allclose(new.x[tx], expected_new, atol=1e-14)
-                stale = x + d.dt*coordinate_velocity(u, get(x))
-                self.assertGreater(float(jnp.max(jnp.abs(expected_new-stale))), 1e-9)
-            results.append(tuple(a.reshape(-1, 3) for a in (new.x, new.u, mid.x)))
-        self.assert_same_tree(results[0], results[1])
 
 
-class TestCheckedSampling(unittest.TestCase):
+class TestCheckedSampling(CheckedSamplingFixtures, unittest.TestCase):
     def test_checked_sampler_reports_stencil_and_tensor_errors(self):
         grid, m = manufactured()
         get = jax.jit(checkify.checkify(
@@ -361,6 +343,7 @@ class TestCheckedSampling(unittest.TestCase):
             errors, _ = get(pos, metric)
             with self.assertRaisesRegex(Exception, "particle metric.*tile=.*flattened species/slot"):
                 errors.throw()
+
 
     def test_checked_pusher_and_seed_preserve_inactive_slots(self):
         s, d, m, D, B = make_runtime("spherical", 16, 32)
@@ -388,6 +371,7 @@ class TestCheckedSampling(unittest.TestCase):
         )(p._replace(u=p.u.at[..., 0, 0].set(10.0)))
         self.assertIsNotNone(errors.get())
 
+
     def test_guard_cell_default_minimum_and_metadata(self):
         s, _ = kernel_parameters(solver="static_metric", particle_pusher="hybrid_boris_geodesic")
         config = s._asdict()
@@ -404,6 +388,7 @@ class TestCheckedSampling(unittest.TestCase):
         config.update(solver="electrodynamic_yee", particle_pusher="boris")
         config.pop("guard_cells")
         self.assertEqual(build_static_parameters(config).guard_cells, 2)
+
 
 
 if __name__ == "__main__":

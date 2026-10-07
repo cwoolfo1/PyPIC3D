@@ -1,118 +1,60 @@
-import unittest
-from unittest.mock import patch
-import importlib
-import itertools
+"""Single-device numerical tests."""
 
-from PyPIC3D.relativity.field_state import densitize_fields, densitize_vector, physical_vector
-
-import jax
-import jax.numpy as jnp
-
-from PyPIC3D.boundary_conditions.ghost_cells import BC_TYPE_PARTICLE
-from PyPIC3D.deposition.GR_direct_deposition import GR_direct_deposition
-from PyPIC3D.deposition.J_from_rhov import J_from_rhov
-from PyPIC3D.solvers.GR_yee.time_loop import time_loop_static_metric
-from PyPIC3D.initialization import (
+from tests.support.static_metric_fixtures import (
+    BC_TYPE_PARTICLE,
+    ConstitutiveFieldsFixtures,
+    D_FIELD_LOCATIONS,
+    GRDirectDepositionFixtures,
+    GR_direct_deposition,
+    HybridPusherFixtures,
+    J_from_rhov,
+    Metric,
+    ParticleMetric,
+    SpeciesConfig,
+    StaticMetricDispatchFixtures,
+    StaticMetricInitializationFixtures,
+    StaticMetricTimeLoopFixtures,
+    TiledParticles,
+    _constant_tiled_vector,
     _encode_current_calculation,
+    _metric_locations_with_grids,
+    _replace_lapse_shift,
+    _single_particle_state,
     _validate_tiled_yee_configuration,
-    validate_field_solver,
-)
-from PyPIC3D.particles.particle_class import SpeciesConfig, TiledParticles
-from PyPIC3D.particles.particle_tile_communication import shard_tiled_particles
-import PyPIC3D.pusher.hybrid_boris_geodesic as hybrid_pusher
-from PyPIC3D.pusher.hybrid_boris_geodesic import (
+    active_interior,
+    compute_covariant_E,
+    compute_covariant_H,
     coordinate_velocity,
+    densitize_fields,
+    densitize_vector,
+    empty_tiled_vector,
     geodesic_acceleration,
     hybrid_boris_geodesic_push,
-    magnetic_boris_rotation,
-)
-from PyPIC3D.relativity.core import (
-    B_FIELD_LOCATIONS,
-    D_FIELD_LOCATIONS,
-    Metric,
-    location_grid,
-)
-from PyPIC3D.relativity.interpolate_metric import ParticleMetric, interpolate_metric
-from PyPIC3D.relativity.metrics.flat import (
+    hybrid_pusher,
     initialize_flat_cartesian_metric,
     initialize_flat_cylindrical_metric,
     initialize_flat_spherical_metric,
-)
-from PyPIC3D.relativity.metrics.kerr_schild import (
     initialize_kerr_schild_cartesian_metric,
     initialize_kerr_schild_spherical_metric,
-)
-from PyPIC3D.solvers.GR_yee.static_metric import (
-    compute_covariant_E,
-    compute_covariant_H,
+    interpolate_metric,
+    itertools,
+    jax,
+    jnp,
+    kernel_parameters,
+    location_grid,
+    magnetic_boris_rotation,
+    physical_vector,
+    shard_tiled_particles,
+    tiled_bilinear_filter_vector,
+    tiled_digital_filter_vector,
+    time_loop_static_metric,
+    unittest,
     update_D,
+    validate_field_solver,
 )
-from PyPIC3D.utilities.filters import tiled_bilinear_filter_vector, tiled_digital_filter_vector
-from tests.kernel_fixtures import active_interior, empty_tiled_vector, kernel_parameters
 
 
-def _single_particle_state(static_parameters, dynamic_parameters, u):
-    x = jnp.zeros((1, 1, 1, 1, 1, 3))
-    u = jnp.asarray(u, dtype=float).reshape((1, 1, 1, 1, 1, 3))
-    active = jnp.ones((1, 1, 1, 1, 1), dtype=bool)
-    particles = TiledParticles(x=x, u=u, active=active)
-    species = SpeciesConfig(
-        charge=jnp.asarray([1.0]),
-        mass=jnp.asarray([1.0]),
-        weight=jnp.asarray([1.0]),
-        update_x=jnp.asarray([[True, True, True]]),
-    )
-    return particles, species
-
-
-def _constant_tiled_vector(static_parameters, dynamic_parameters, values):
-    vector = empty_tiled_vector(static_parameters, dynamic_parameters)
-    return tuple(vector[i].at[:, :, :, :, :, :].set(values[i]) for i in range(3))
-
-
-def _replace_lapse_shift(metric, lapse, shift):
-    def replace_one(metric_at_location):
-        shift_array = jnp.zeros_like(metric_at_location.shift)
-        for i, value in enumerate(shift):
-            shift_array = shift_array.at[..., i].set(value)
-        return metric_at_location._replace(
-            lapse=jnp.full_like(metric_at_location.lapse, lapse),
-            shift=shift_array,
-        )
-
-    return metric._replace(
-        D=tuple(replace_one(metric_at_location) for metric_at_location in metric.D),
-        B=tuple(replace_one(metric_at_location) for metric_at_location in metric.B),
-        center=replace_one(metric.center),
-        vertex=replace_one(metric.vertex),
-    )
-
-
-def _metric_locations_with_grids(metric, dynamic_parameters):
-    center_grid = dynamic_parameters.grids.tiled_center_grid
-    vertex_grid = dynamic_parameters.grids.tiled_vertex_grid
-    metric_locations = (
-        tuple(zip(metric.D, D_FIELD_LOCATIONS))
-        + tuple(zip(metric.B, B_FIELD_LOCATIONS))
-        + ((metric.center, ("C", "C", "C")),)
-        + ((metric.vertex, ("V", "V", "V")),)
-    )
-
-    return tuple(
-        (
-            metric_at_location,
-            location_grid(center_grid, vertex_grid, location),
-        )
-        for metric_at_location, location in metric_locations
-    )
-
-
-class StaticMetricTestCase(unittest.TestCase):
-    def assertAllClose(self, actual, expected, **kwargs):
-        self.assertTrue(bool(jnp.allclose(jnp.asarray(actual), jnp.asarray(expected), **kwargs)))
-
-
-class TestStaticMetricInitialization(StaticMetricTestCase):
+class TestStaticMetricInitialization(StaticMetricInitializationFixtures, unittest.TestCase):
     def test_flat_cartesian_metric_matches_center_grid_shape(self):
         static_parameters, dynamic_parameters = kernel_parameters(Nx=4, Ny=3, Nz=2, guard_cells=3)
 
@@ -125,6 +67,7 @@ class TestStaticMetricInitialization(StaticMetricTestCase):
         self.assertTrue(jnp.allclose(metric.center.lapse, 1.0))
         self.assertTrue(jnp.allclose(metric.center.gamma_inv[..., 0, 0], 1.0))
         self.assertTrue(jnp.allclose(metric.center.sqrt_gamma, 1.0))
+
 
     def test_kerr_schild_metric_initializers_build_finite_metrics(self):
         static_parameters, dynamic_parameters = kernel_parameters(
@@ -163,6 +106,7 @@ class TestStaticMetricInitialization(StaticMetricTestCase):
             self.assertTrue(jnp.all(metric.center.lapse < 1.0))
             self.assertTrue(jnp.allclose(metric.center.gamma @ metric.center.gamma_inv, jnp.eye(3), atol=1e-12))
 
+
     def test_flat_cylindrical_particle_metric_derivative_matches_analytic(self):
         static_parameters, dynamic_parameters = kernel_parameters(
             guard_cells=3,
@@ -196,6 +140,7 @@ class TestStaticMetricInitialization(StaticMetricTestCase):
         self.assertTrue(jnp.allclose(sampled.grad_gamma_inv[:, 0, 1, 1], -2.0 / r**3, rtol=2e-2))
         self.assertTrue(jnp.allclose(sampled.grad_gamma_inv[:, 0, 0, 0], 0.0, atol=1e-12))
 
+
     def test_flat_cylindrical_metric_stores_signed_sqrt_gamma_at_all_yee_locations(self):
         static_parameters, dynamic_parameters = kernel_parameters(
             guard_cells=3,
@@ -223,6 +168,7 @@ class TestStaticMetricInitialization(StaticMetricTestCase):
             self.assertTrue(jnp.allclose(metric_at_location.sqrt_gamma, expected))
             self.assertTrue(jnp.any(metric_at_location.sqrt_gamma < 0.0))
             self.assertTrue(jnp.any(metric_at_location.sqrt_gamma > 0.0))
+
 
     def test_spherical_metrics_store_signed_sqrt_gamma_at_all_yee_locations(self):
         ntheta = 8
@@ -280,7 +226,8 @@ class TestStaticMetricInitialization(StaticMetricTestCase):
             self.assertTrue(jnp.any(metric_at_location.sqrt_gamma > 0.0))
 
 
-class TestConstitutiveFields(StaticMetricTestCase):
+
+class TestConstitutiveFields(ConstitutiveFieldsFixtures, unittest.TestCase):
     def test_static_metric_constitutive_fields_include_lapse_and_shift_terms(self):
         static_parameters, dynamic_parameters = kernel_parameters(
             guard_cells=3,
@@ -317,7 +264,8 @@ class TestConstitutiveFields(StaticMetricTestCase):
             self.assertTrue(jnp.allclose(H[i][active], expected_H[i]))
 
 
-class TestHybridPusher(StaticMetricTestCase):
+
+class TestHybridPusher(HybridPusherFixtures, unittest.TestCase):
     def test_magnetic_boris_rotation_raises_covariant_momentum_in_cross_product(self):
         gamma = jnp.asarray(
             (
@@ -354,6 +302,7 @@ class TestHybridPusher(StaticMetricTestCase):
 
         self.assertAllClose(u_plus, expected, rtol=0.0, atol=1.0e-12)
 
+
     def test_coordinate_velocity_uses_lapse_scaled_contravariant_velocity_minus_shift(self):
         gamma = jnp.asarray(
             (
@@ -378,6 +327,7 @@ class TestHybridPusher(StaticMetricTestCase):
         expected = metric.lapse * (gamma_inv @ u_cov) / Gamma - metric.shift
         self.assertAllClose(dx_dt, expected, rtol=0.0, atol=1.0e-12)
 
+
     def test_geodesic_acceleration_returns_zero_for_flat_constant_metric(self):
         metric = ParticleMetric(
             lapse=jnp.asarray(1.0),
@@ -395,6 +345,7 @@ class TestHybridPusher(StaticMetricTestCase):
 
         self.assertEqual(du_dt.shape, u_cov.shape)
         self.assertAllClose(du_dt, jnp.zeros(3), rtol=0.0, atol=1.0e-12)
+
 
     def test_hybrid_boris_geodesic_push_advances_flat_neutral_particle_with_u_over_gamma(self):
         static_parameters, dynamic_parameters = kernel_parameters(
@@ -427,6 +378,7 @@ class TestHybridPusher(StaticMetricTestCase):
         self.assertTrue(jnp.allclose(pushed.x[0, 0, 0, 0, 0], expected_x))
         self.assertTrue(jnp.allclose(centered.x[0, 0, 0, 0, 0], 0.5 * expected_x))
         self.assertTrue(jnp.allclose(pushed.u[0, 0, 0, 0, 0], jnp.asarray((0.3, 0.4, 0.0))))
+
 
     def test_hybrid_boris_geodesic_push_uses_current_position_for_both_electric_half_steps(self):
         static_parameters, dynamic_parameters = kernel_parameters(
@@ -507,6 +459,7 @@ class TestHybridPusher(StaticMetricTestCase):
             atol=1.0e-6,
         )
 
+
     def test_hybrid_boris_geodesic_push_accepts_multiple_species_in_one_tile(self):
         static_parameters, dynamic_parameters = kernel_parameters(
             guard_cells=3,
@@ -556,6 +509,7 @@ class TestHybridPusher(StaticMetricTestCase):
         self.assertEqual(pushed.x.shape, x.shape)
         self.assertEqual(centered.x.shape, x.shape)
         self.assertTrue(jnp.all(jnp.isfinite(pushed.x)))
+
 
     def test_hybrid_boris_geodesic_push_masks_position_and_velocity_by_species_direction(self):
         static_parameters, dynamic_parameters = kernel_parameters(
@@ -607,7 +561,8 @@ class TestHybridPusher(StaticMetricTestCase):
         self.assertTrue(jnp.all(jnp.abs(centered.x[update_mask]) > 0.0))
 
 
-class TestGRDirectDeposition(StaticMetricTestCase):
+
+class TestGRDirectDeposition(GRDirectDepositionFixtures, unittest.TestCase):
     def test_GR_direct_deposition_uses_lapse_scaled_contravariant_three_velocity(self):
         static_parameters, dynamic_parameters = kernel_parameters(
             guard_cells=3,
@@ -645,6 +600,7 @@ class TestGRDirectDeposition(StaticMetricTestCase):
         self.assertTrue(jnp.allclose(J[1][interior], 0.0))
         self.assertTrue(jnp.allclose(J[2][interior], 0.0))
 
+
     def test_GR_direct_deposition_uses_distributed_filters(self):
         static_parameters, dynamic_parameters = kernel_parameters(
             guard_cells=3,
@@ -655,7 +611,7 @@ class TestGRDirectDeposition(StaticMetricTestCase):
             y_wind=1.0,
             z_wind=1.0,
             dt=0.1,
-            tile_shape=(4, 1, 1),
+            tile_shape=(8, 1, 1),
             shape_factor=1,
             current_filter="none",
             solver="static_metric",
@@ -664,9 +620,9 @@ class TestGRDirectDeposition(StaticMetricTestCase):
         )
         metric = initialize_flat_cartesian_metric(static_parameters, dynamic_parameters)
 
-        x = jnp.zeros((2, 1, 1, 1, 1, 3)).at[0, 0, 0, 0, 0, 0].set(-2.0)
+        x = jnp.zeros((1, 1, 1, 1, 1, 3)).at[0, 0, 0, 0, 0, 0].set(-2.0)
         u = jnp.zeros_like(x).at[0, 0, 0, 0, 0, 0].set(0.5)
-        active = jnp.zeros((2, 1, 1, 1, 1), dtype=bool).at[0, 0, 0, 0, 0].set(True)
+        active = jnp.zeros((1, 1, 1, 1, 1), dtype=bool).at[0, 0, 0, 0, 0].set(True)
         particles = TiledParticles(x=x, u=u, active=active)
         species = SpeciesConfig(
             charge=jnp.asarray([1.0]),
@@ -719,6 +675,7 @@ class TestGRDirectDeposition(StaticMetricTestCase):
             for actual_component, expected_component in zip(filtered_J, expected_J):
                 self.assertTrue(jnp.allclose(actual_component, expected_component))
 
+
     def test_GR_direct_deposition_returns_fpic_shifted_source_current(self):
         static_parameters, dynamic_parameters = kernel_parameters(
             guard_cells=3,
@@ -753,6 +710,7 @@ class TestGRDirectDeposition(StaticMetricTestCase):
         self.assertTrue(jnp.allclose(J[0][interior], expected[0]))
         self.assertTrue(jnp.allclose(J[1][interior], expected[1]))
         self.assertTrue(jnp.allclose(J[2][interior], expected[2]))
+
 
     def test_GR_direct_deposition_masks_complete_shifted_current_by_direction(self):
         static_parameters, dynamic_parameters = kernel_parameters(
@@ -804,20 +762,21 @@ class TestGRDirectDeposition(StaticMetricTestCase):
         for component in disabled_current:
             self.assertTrue(jnp.allclose(component, 0.0))
 
+
     def test_GR_direct_deposition_is_adjoint_to_staggered_field_gather(self):
         positions = jnp.asarray(
             (
                 ((0.1, 0.2, 0.3), (3.9, 1.7, 2.2)),
                 ((4.1, 2.8, 1.4), (7.9, 3.8, 3.7)),
             )
-        ).reshape((2, 1, 1, 1, 2, 3))
+        ).reshape((1, 1, 1, 1, 4, 3))
         u_cov = jnp.asarray(
             (
                 ((0.31, -0.17, 0.09), (-0.22, 0.28, -0.13)),
                 ((0.19, 0.11, -0.24), (-0.27, -0.16, 0.21)),
             )
-        ).reshape((2, 1, 1, 1, 2, 3))
-        active = jnp.ones((2, 1, 1, 1, 2), dtype=bool)
+        ).reshape((1, 1, 1, 1, 4, 3))
+        active = jnp.ones((1, 1, 1, 1, 4), dtype=bool)
         species = SpeciesConfig(
             charge=jnp.asarray([-0.7]),
             mass=jnp.asarray([1.0]),
@@ -838,7 +797,7 @@ class TestGRDirectDeposition(StaticMetricTestCase):
                 y_min=0.0,
                 z_min=0.0,
                 dt=0.1,
-                tile_shape=(4, 4, 4),
+                tile_shape=(8, 4, 4),
                 shape_factor=shape_factor,
                 current_filter="none",
                 solver="static_metric",
@@ -891,7 +850,7 @@ class TestGRDirectDeposition(StaticMetricTestCase):
             grid_work *= dynamic_parameters.dx * dynamic_parameters.dy * dynamic_parameters.dz
 
             gathered_D = []
-            for tx in range(2):
+            for tx in range(1):
                 gathered_D.append(
                     hybrid_pusher.gather_vector(
                         tuple(D[i][tx, 0, 0] for i in range(3)),
@@ -919,6 +878,7 @@ class TestGRDirectDeposition(StaticMetricTestCase):
             scale = jnp.maximum(jnp.abs(grid_work), jnp.abs(particle_work))
             relative_residual = jnp.abs(grid_work - particle_work) / scale
             self.assertLess(relative_residual, 1.0e-12)
+
 
     def test_flat_GR_direct_deposition_matches_standard_stencil_on_reduced_axes(self):
         positions = jnp.asarray(
@@ -983,6 +943,7 @@ class TestGRDirectDeposition(StaticMetricTestCase):
                     rtol=0.0,
                     atol=1.0e-12,
                 )
+
 
     def test_GR_direct_deposition_returns_conformal_spherical_current(self):
         static_parameters, dynamic_parameters = kernel_parameters(
@@ -1055,6 +1016,7 @@ class TestGRDirectDeposition(StaticMetricTestCase):
         self.assertTrue(jnp.allclose(outer_flux, expected_flux, rtol=1.0e-5, atol=1.0e-6))
         self.assertGreater(inner_current, outer_current)
 
+
     def test_update_D_consumes_densitized_current_without_metric_rescaling(self):
         static_parameters, dynamic_parameters = kernel_parameters(
             guard_cells=3,
@@ -1105,7 +1067,8 @@ class TestGRDirectDeposition(StaticMetricTestCase):
         ))
 
 
-class TestStaticMetricTimeLoop(StaticMetricTestCase):
+
+class TestStaticMetricTimeLoop(StaticMetricTimeLoopFixtures, unittest.TestCase):
     def test_particle_boundaries_and_prior_overflow_for_both_schemes(self):
         for scheme, bc, checked in itertools.product(
                 ('GR_direct', 'esirkepov'), (1, 2), (False, True)):
@@ -1138,124 +1101,6 @@ class TestStaticMetricTimeLoop(StaticMetricTestCase):
                     self.assertLess(float(new.x[..., 0].reshape(-1)[0]), 4.)
                     self.assertLess(float(new.u[..., 0].reshape(-1)[0]), 0.)
 
-    def test_static_metric_time_loop_migrates_only_required_particle_states(self):
-        for scheme, checked in itertools.product(("GR_direct", "esirkepov"), (False, True)):
-            with self.subTest(scheme=scheme, checked=checked):
-                static_parameters, dynamic_parameters = kernel_parameters(
-                    guard_cells=3,
-                    Nx=8,
-                    Ny=1,
-                    Nz=1,
-                    x_wind=8.0,
-                    y_wind=1.0,
-                    z_wind=1.0,
-                    dt=0.2,
-                    tile_shape=(4, 1, 1),
-                    solver="static_metric",
-                    current_deposition=scheme,
-                    particle_pusher="hybrid_boris_geodesic",
-                )
-                metric = initialize_flat_cartesian_metric(static_parameters, dynamic_parameters)
-                x = jnp.zeros((2, 1, 1, 1, 2, 3))
-                u = jnp.zeros_like(x)
-                active = jnp.zeros((2, 1, 1, 1, 2), dtype=bool)
-                x = x.at[0, 0, 0, 0, 0].set(jnp.asarray((-0.02, 0.0, 0.0)))
-                u = u.at[0, 0, 0, 0, 0].set(jnp.asarray((1.0, 0.0, 0.0)))
-                active = active.at[0, 0, 0, 0, 0].set(True)
-                particles = shard_tiled_particles(
-                    TiledParticles(x=x, u=u, active=active),
-                    static_parameters,
-                )
-                species = SpeciesConfig(
-                    charge=jnp.asarray([1.0]),
-                    mass=jnp.asarray([1.0]),
-                    weight=jnp.asarray([1.0]),
-                    update_x=jnp.asarray([[True, True, True]]),
-                )
-                D = empty_tiled_vector(static_parameters, dynamic_parameters)
-                B = empty_tiled_vector(static_parameters, dynamic_parameters)
-                J = empty_tiled_vector(static_parameters, dynamic_parameters)
-                rho = jnp.zeros_like(J[0])
-                phi = jnp.zeros_like(J[0])
-                fields = densitize_fields((D, B, J, rho, phi, (D, B), metric, (D, B), jnp.asarray(False)))
-
-                module = importlib.import_module('PyPIC3D.solvers.GR_yee.time_loop')
-                with patch.object(module, 'refresh_tiled_particle_tiles',
-                                  wraps=module.refresh_tiled_particle_tiles) as refresh:
-                    if checked:
-                        errors, (particles, fields) = jax.jit(
-                            lambda p, f: time_loop_static_metric(
-                                p, species, f, static_parameters, dynamic_parameters, return_errors=True
-                            )
-                        )(particles, fields)
-                        errors.throw()
-                    else:
-                        particles, fields = jax.jit(lambda p, f: time_loop_static_metric(
-                            p, species, f, static_parameters, dynamic_parameters
-                        ))(particles, fields)
-
-                    self.assertEqual(refresh.call_count, 2 if scheme == 'GR_direct' else 1)
-
-                self.assertEqual(int(jnp.sum(particles.active[0, 0, 0])), 0)
-                self.assertEqual(int(jnp.sum(particles.active[1, 0, 0])), 1)
-                self.assertGreater(particles.x[1, 0, 0, 0, 0, 0], 0.0)
-                self.assertTrue(jnp.any(jnp.abs(fields[2][0][1, 0, 0]) > 0.0))
-                self.assertFalse(bool(fields[-1]))
-
-    def test_static_metric_time_loop_reports_particle_refresh_overflow(self):
-        for scheme, midpoint_only in itertools.product(
-                ("GR_direct", "esirkepov"), (False, True)):
-            with self.subTest(scheme=scheme, midpoint_only=midpoint_only):
-                static_parameters, dynamic_parameters = kernel_parameters(
-                    guard_cells=3,
-                    Nx=8,
-                    Ny=1,
-                    Nz=1,
-                    x_wind=8.0,
-                    y_wind=1.0,
-                    z_wind=1.0,
-                    dt=0.2,
-                    tile_shape=(4, 1, 1),
-                    solver="static_metric",
-                    current_deposition=scheme,
-                    particle_pusher="hybrid_boris_geodesic",
-                )
-                metric = initialize_flat_cartesian_metric(static_parameters, dynamic_parameters)
-                x = jnp.zeros((2, 1, 1, 1, 1, 3))
-                u = jnp.zeros_like(x)
-                active = jnp.ones((2, 1, 1, 1, 1), dtype=bool)
-                x = x.at[0, 0, 0, 0, 0].set(jnp.asarray((-0.02, 0.0, 0.0)))
-                x = x.at[1, 0, 0, 0, 0].set(jnp.asarray((1.0, 0.0, 0.0)))
-                u = u.at[0, 0, 0, 0, 0].set(jnp.asarray((1.0, 0.0, 0.0)))
-                if midpoint_only:
-                    # Both midpoints occupy the upper tile, but the endpoints
-                    # swap tiles and fit. Only direct deposition needs those
-                    # overflowing midpoint slots.
-                    x = x.at[1, 0, 0, 0, 0, 0].set(.1)
-                    u = u.at[1, 0, 0, 0, 0, 0].set(-1.)
-                particles = shard_tiled_particles(
-                    TiledParticles(x=x, u=u, active=active),
-                    static_parameters,
-                )
-                species = SpeciesConfig(
-                    charge=jnp.asarray([0.0]),
-                    mass=jnp.asarray([1.0]),
-                    weight=jnp.asarray([1.0]),
-                    update_x=jnp.asarray([[True, True, True]]),
-                )
-                D = empty_tiled_vector(static_parameters, dynamic_parameters)
-                B = empty_tiled_vector(static_parameters, dynamic_parameters)
-                J = empty_tiled_vector(static_parameters, dynamic_parameters)
-                rho = jnp.zeros_like(J[0])
-                phi = jnp.zeros_like(J[0])
-                fields = densitize_fields((D, B, J, rho, phi, (D, B), metric, (D, B), jnp.asarray(False)))
-
-                particles, fields = jax.jit(lambda p, f: time_loop_static_metric(
-                    p, species, f, static_parameters, dynamic_parameters
-                ))(particles, fields)
-
-                self.assertEqual(bool(fields[-1]), not midpoint_only or scheme == 'GR_direct')
-                self.assertEqual(int(jnp.sum(particles.active)), 2 if midpoint_only else 1)
 
     def test_static_metric_time_loop_keeps_metric_state_tail(self):
         static_parameters, dynamic_parameters = kernel_parameters(
@@ -1296,6 +1141,7 @@ class TestStaticMetricTimeLoop(StaticMetricTestCase):
         self.assertFalse(bool(jax.device_get(fields[-1])))
         self.assertTrue(jnp.all(jnp.isfinite(particles.x)))
         self.assertTrue(jnp.all(jnp.isfinite(particles.u)))
+
 
     def test_static_metric_time_loop_accepts_empty_particle_storage(self):
         static_parameters, dynamic_parameters = kernel_parameters(
@@ -1350,7 +1196,8 @@ class TestStaticMetricTimeLoop(StaticMetricTestCase):
                 self.assertTrue(jnp.all(jnp.isfinite(component)))
 
 
-class TestStaticMetricDispatch(StaticMetricTestCase):
+
+class TestStaticMetricDispatch(StaticMetricDispatchFixtures, unittest.TestCase):
     def test_static_metric_dispatch_contract_accepts_hybrid_gr_direct_path(self):
         static_parameters, dynamic_parameters = kernel_parameters(
             guard_cells=3,
@@ -1379,5 +1226,6 @@ class TestStaticMetricDispatch(StaticMetricTestCase):
         _validate_tiled_yee_configuration(static_config, dynamic_config)
 
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     unittest.main()

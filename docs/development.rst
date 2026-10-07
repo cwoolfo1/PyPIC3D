@@ -13,26 +13,38 @@ Local Setup
 Run Tests
 ---------
 
-Run the focused implementation tests:
+Run the complete suite, including numerical and convergence tests:
 
 .. code-block:: bash
 
-   python -m unittest tests/code_tests/*.py
+   JAX_PLATFORMS=cpu JAX_ENABLE_X64=1 JAX_NUM_CPU_DEVICES=1 \
+     python -m unittest discover -s tests/code_tests -t . -p '*test*.py'
+   JAX_PLATFORMS=cpu JAX_ENABLE_X64=1 JAX_NUM_CPU_DEVICES=1 \
+     python -m unittest discover -s tests/physics_tests -t . -p '*test*.py'
+   JAX_PLATFORMS=cpu JAX_ENABLE_X64=1 JAX_NUM_CPU_DEVICES=8 \
+     python -m unittest discover -s tests/distributed_tests -t . -p '*test*.py'
 
-Run numerical and convergence tests separately:
+Run these commands sequentially in separate interpreters so JAX initializes with
+the appropriate device count. The discovery pattern includes both filename
+conventions. Individual tests default to one CPU device and float64; explicit
+environment overrides still work:
 
 .. code-block:: bash
 
-   python -m unittest tests/physics_tests/*.py
+   JAX_PLATFORMS=cuda python -m unittest tests.code_tests.yee_test
+   JAX_NUM_CPU_DEVICES=8 python -m unittest discover -s tests/distributed_tests -t . -p '*test*.py'
 
-Distributed tile tests need one JAX device per tile. ``tests/__init__.py``
-configures this before any test runs: 64-bit floats, the CPU platform, and 16
-CPU devices. Setting ``JAX_PLATFORMS`` or ``JAX_NUM_CPU_DEVICES`` yourself
-overrides the defaults, for example to run a single-tile test on a GPU:
+For coverage, install ``coverage``, run ``python -m coverage erase``, then prefix
+each discovery command with ``python -m coverage run --append --context <group>``
+in place of ``python``. Use contexts ``code``, ``physics``, and ``distributed``;
+then run ``python -m coverage report`` or ``python -m coverage xml``.
 
-.. code-block:: bash
-
-   JAX_PLATFORMS=cuda python -m unittest tests/code_tests/yee_test.py
+Time fresh-process runs on the same machine with
+``JAX_ENABLE_COMPILATION_CACHE=false``. Use unittest's elapsed time, CI step
+durations, or GNU ``/usr/bin/time -v`` for wall time and peak resident memory.
+Do not compare a cold run with a warmed compilation cache or concurrent workloads.
+The ten-minute target never takes precedence over physics cases, refinement
+levels, or numerical tolerances.
 
 Build Docs
 ----------

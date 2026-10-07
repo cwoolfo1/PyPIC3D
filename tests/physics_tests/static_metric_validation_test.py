@@ -24,6 +24,7 @@ against.
 """
 
 import itertools
+from functools import lru_cache, partial
 import math
 import unittest
 
@@ -185,6 +186,7 @@ def reference_rhs(metric_at_position, q_over_m=0.0, D=(0.0, 0.0, 0.0), B=(0.0, 0
     return rhs
 
 
+@partial(jax.jit, static_argnames=("rhs", "n_steps"))
 def rk4_integrate(rhs, state, dt, n_steps):
     def step(current, _):
         k1 = rhs(current)
@@ -197,10 +199,31 @@ def rk4_integrate(rhs, state, dt, n_steps):
     return result
 
 
-def reference_trajectory(metric_at_position, x0, u0, T, q_over_m=0.0, D=(0, 0, 0), B=(0, 0, 0), n=40000):
-    rhs = jax.jit(reference_rhs(metric_at_position, q_over_m, D, B))
+@lru_cache(maxsize=32)
+def _reference_rhs_cached(metric_at_position, q_over_m, D, B):
+    return jax.jit(reference_rhs(metric_at_position, q_over_m, D, B))
+
+
+@lru_cache(maxsize=64)
+def _reference_trajectory_cached(metric_at_position, x0, u0, T, q_over_m, D, B, n):
+    rhs = _reference_rhs_cached(metric_at_position, q_over_m, D, B)
     state = jnp.concatenate((jnp.asarray(x0, dtype=float), jnp.asarray(u0, dtype=float)))
     return rk4_integrate(rhs, state, T / n, n)
+
+
+def reference_trajectory(metric_at_position, x0, u0, T, q_over_m=0.0, D=(0, 0, 0), B=(0, 0, 0), n=40000):
+    # Only the independent analytic reference is cached. Every production
+    # trajectory and every convergence/refinement assertion still executes.
+    return _reference_trajectory_cached(
+        metric_at_position, tuple(map(float, x0)), tuple(map(float, u0)),
+        float(T), float(q_over_m), tuple(map(float, D)), tuple(map(float, B)), int(n))
+
+
+def tearDownModule():
+    _reference_trajectory_cached.cache_clear()
+    _reference_rhs_cached.cache_clear()
+    _pusher_fixture.cache_clear()
+    _vacuum_fixture.cache_clear()
 
 
 def hamiltonian(metric_at_position, state):
@@ -301,6 +324,31 @@ def constant_vector(static_parameters, dynamic_parameters, values):
     return tuple(empty[i].at[...].set(values[i]) for i in range(3))
 
 
+@lru_cache(maxsize=1)
+def _pusher_fixture(metric_at_position, N, wind, mins, metric_name, charge,
+                    D_values, B_values, shape_factor):
+    # Geometry and prescribed fields do not depend on dt. Keep only the most
+    # recent grid: the largest convergence fixtures are intentionally large.
+    static, dynamic = parameters(
+        (N, N, N), wind, mins, 1.0, metric_name=metric_name, shape_factor=shape_factor)
+    metric = build_center_metric(dynamic, metric_at_position)
+    D = densitize_vector(constant_vector(static, dynamic, D_values), metric.D)
+    B = densitize_vector(constant_vector(static, dynamic, B_values), metric.B)
+    return static, dynamic, metric, D, B, one_species(charge)
+
+
+@partial(jax.jit, static_argnames="static_parameters")
+def _advance_pusher(particles, species, D, B, metric, static_parameters, dynamic_parameters, n_steps):
+    # Arrays are runtime arguments, not constants embedded into a new scan for
+    # every refinement. A dynamic loop count reuses the same executable for
+    # the temporal study without changing the number of integration steps.
+    def step(_index, current):
+        advanced, _ = hybrid_boris_geodesic_push(
+            current, species, D, B, metric, static_parameters, dynamic_parameters)
+        return advanced
+    return jax.lax.fori_loop(0, n_steps, step, particles)
+
+
 def run_production_pusher(
     metric_at_position,
     x0,
@@ -324,13 +372,10 @@ def run_production_pusher(
     pushed back by ``dt/2`` before the run and the final ``u`` is pushed forward
     by ``dt/2``, using the same operator, before it is compared.
     """
-    static_parameters, dynamic_parameters = parameters(
-        (N, N, N), wind, mins, dt, metric_name=metric_name, shape_factor=shape_factor
-    )
-    metric = build_center_metric(dynamic_parameters, metric_at_position)
-    D = densitize_vector(constant_vector(static_parameters, dynamic_parameters, D_values), metric.D)
-    B = densitize_vector(constant_vector(static_parameters, dynamic_parameters, B_values), metric.B)
-    species = one_species(charge)
+    static_parameters, dynamic_parameters, metric, D, B, species = _pusher_fixture(
+        metric_at_position, int(N), tuple(map(float, wind)), tuple(map(float, mins)), metric_name, float(charge),
+        tuple(map(float, D_values)), tuple(map(float, B_values)), int(shape_factor))
+    dynamic_parameters = dynamic_parameters._replace(dt=jnp.asarray(dt))
 
     def half_step(x, u, half_dt):
         stepped, _ = hybrid_boris_geodesic_push(
@@ -353,15 +398,9 @@ def run_production_pusher(
     else:
         u_start = jnp.asarray(u0, dtype=float)
 
-    def body(particles, _):
-        advanced, _centered = hybrid_boris_geodesic_push(
-            particles, species, D, B, metric, static_parameters, dynamic_parameters
-        )
-        return advanced, None
-
-    particles, _ = jax.lax.scan(
-        body, one_particle(x0, u_start), None, length=int(round(T / dt))
-    )
+    particles = _advance_pusher(
+        one_particle(x0, u_start), species, D, B, metric,
+        static_parameters, dynamic_parameters, int(round(T / dt)))
     x_final = particles.x[0, 0, 0, 0, 0]
     u_final = particles.u[0, 0, 0, 0, 0]
     return x_final, half_step(x_final, u_final, 0.5 * dt)
@@ -1212,26 +1251,34 @@ def consistent_initial_field_state(static_parameters, dynamic_parameters, metric
     )
 
 
-def evolve_vacuum(metric_at_position, metric_name, N, wind, mins, dt, T, D_field, B_field):
+@lru_cache(maxsize=1)
+def _vacuum_fixture(metric_at_position, metric_name, N, wind, mins):
     static_parameters, dynamic_parameters = parameters(
-        (N, N, N), wind, mins, dt, metric_name=metric_name
+        (N, N, N), wind, mins, 1.0, metric_name=metric_name
     )
     metric = build_full_metric(dynamic_parameters, metric_at_position)
+    return static_parameters, dynamic_parameters, metric
+
+
+@partial(jax.jit, static_argnames="static_parameters")
+def _advance_time_loop(particles, species, fields, static_parameters, dynamic_parameters, steps):
+    def step(_index, carry):
+        current_particles, current_fields = carry
+        return time_loop_static_metric(
+            current_particles, species, current_fields, static_parameters, dynamic_parameters)
+    return jax.lax.fori_loop(0, steps, step, (particles, fields))
+
+
+def evolve_vacuum(metric_at_position, metric_name, N, wind, mins, dt, T, D_field, B_field):
+    static_parameters, dynamic_parameters, metric = _vacuum_fixture(
+        metric_at_position, metric_name, int(N), tuple(map(float, wind)), tuple(map(float, mins)))
+    dynamic_parameters = dynamic_parameters._replace(dt=jnp.asarray(dt))
     fields = consistent_initial_field_state(
         static_parameters, dynamic_parameters, metric, D_field, B_field, dt
     )
     particles, species = empty_particle_state()
-
-    def body(carry, _):
-        current_particles, current_fields = carry
-        current_particles, current_fields = time_loop_static_metric(
-            current_particles, species, current_fields, static_parameters, dynamic_parameters
-        )
-        return (current_particles, current_fields), None
-
-    (particles, fields), _ = jax.lax.scan(
-        body, (particles, fields), None, length=int(round(T / dt))
-    )
+    particles, fields = _advance_time_loop(
+        particles, species, fields, static_parameters, dynamic_parameters, int(round(T / dt)))
     return static_parameters, dynamic_parameters, physical_fields(fields)
 
 
@@ -1300,15 +1347,9 @@ class TestTimeLoopConvergence(unittest.TestCase):
             )
             particles, species = empty_particle_state()
 
-            def body(carry, _):
-                current_particles, current_fields = carry
-                current_particles, current_fields = time_loop_static_metric(
-                    current_particles, species, current_fields, static_parameters, dynamic_parameters
-                )
-                return (current_particles, current_fields), None
-
             steps = int(round(T / dt))
-            (particles, fields), _ = jax.lax.scan(body, (particles, fields), None, length=steps)
+            particles, fields = _advance_time_loop(
+                particles, species, fields, static_parameters, dynamic_parameters, steps)
             positions = location_positions(D_FIELD_LOCATIONS[2], dynamic_parameters)
             exact = jnp.sin(positions[..., 0] - steps * dt)
             errors.append(interior_rms(physical_fields(fields)[0][2] - exact, guard))

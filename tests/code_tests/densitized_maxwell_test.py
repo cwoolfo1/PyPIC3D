@@ -21,7 +21,7 @@ from PyPIC3D.relativity.field_state import (
 )
 from PyPIC3D.solvers.GR_yee.static_metric import compute_covariant_E, compute_covariant_H, update_D, update_B
 from PyPIC3D.solvers.GR_yee.time_loop import time_loop_static_metric
-from tests.code_tests.pec_projector_test import coupled_setup
+from tests.support.pec_projector_fixtures import coupled_setup
 
 
 def random_vectors(metric):
@@ -90,8 +90,8 @@ class TestDensitizedMaxwell(unittest.TestCase):
             self.assert_vectors_close(compute(density_D, density_B, m), expected)
 
     def test_updates_match_physical_equations_and_boundaries(self):
-        # Non-orthogonal conducting edges and an internal tile seam.
-        s, d, m = coupled_setup((16, 8, 1), (8, 8, 1), (1, 1, 0))
+        # Non-orthogonal conducting edges on the complete physical domain.
+        s, d, m = coupled_setup((16, 8, 1), (16, 8, 1), (1, 1, 0))
         D, B, J = random_vectors(m)
         dt = .007
         for magnetic, locations, samples, initial, auxiliary in (
@@ -109,7 +109,7 @@ class TestDensitizedMaxwell(unittest.TestCase):
             self.assert_vectors_close(physical_vector(actual, samples), physical_vector(expected, samples), 2e-12)
 
     def test_vacuum_curls_preserve_density_divergences(self):
-        s, d, m = coupled_setup((16, 8, 1), (8, 8, 1), (0, 0, 0))
+        s, d, m = coupled_setup((16, 8, 1), (16, 8, 1), (0, 0, 0))
         D, B, _ = random_vectors(m)
         D = refresh_fields(densitize_vector(D, m.D), s, D_FIELD_LOCATIONS, 'D', m)
         B = refresh_fields(densitize_vector(B, m.B), s, B_FIELD_LOCATIONS, 'B', m)
@@ -125,7 +125,7 @@ class TestDensitizedMaxwell(unittest.TestCase):
             np.testing.assert_allclose(error[interior], 0., rtol=0, atol=1e-11)
 
     def test_horizon_and_absorber_keep_physical_boundary_policy(self):
-        s, d, m = coupled_setup((16, 8, 1), (8, 8, 1), (3, 1, 0))
+        s, d, m = coupled_setup((16, 8, 1), (16, 8, 1), (3, 1, 0))
         s = s._replace(horizon_field_cells=2, supergaussian_active=True,
                        supergaussian_layers=((0, 1, 3, 4., 10.),))
         D, B, _ = random_vectors(m)
@@ -225,7 +225,7 @@ class TestNativeBoundaries(unittest.TestCase):
 
     def test_constant_extrapolation_copies_the_physical_field(self):
         """BC_CONSTANT x ghosts hold sqrt_gamma(ghost) times the copied owner's physical value."""
-        s, d, coupled = coupled_setup((16, 8, 1), (8, 8, 1), (3, 0, 0))
+        s, d, coupled = coupled_setup((16, 8, 1), (16, 8, 1), (3, 0, 0))
         g, n = s.guard_cells, s.tile_shape[0]
         # sqrt_gamma varies along x in both metrics; the second also flips sign along y.
         for name, m in (('coupled', coupled), ('signed', build_yee_metric(d, signed_volume_metric))):
@@ -239,14 +239,14 @@ class TestNativeBoundaries(unittest.TestCase):
                         owned = owned_nodes(density[component].shape, location, s)
                         np.testing.assert_array_equal(jnp.where(owned, refreshed[component], 0.),
                                                       jnp.where(owned, density[component], 0.))
-                        # first owned plane of tile 0 into the low ghosts, last of tile 1 into the high ghosts
-                        for tile, ghosts, source in ((0, slice(0, g), g), (1, slice(g+n, None), g+n-1)):
+                        # Copy the first and last owned planes into the global ghosts.
+                        for tile, ghosts, source in ((0, slice(0, g), g), (0, slice(g+n, None), g+n-1)):
                             ghost = physical[component][(tile, 0, 0, ghosts)+transverse]
                             owner = original[component][(tile, 0, 0, slice(source, source+1))+transverse]
                             np.testing.assert_allclose(ghost, jnp.broadcast_to(owner, ghost.shape), rtol=1e-13, atol=0)
 
     def test_horizon_freeze_holds_the_reference_plane_physical_value(self):
-        s, d, m = coupled_setup((16, 8, 1), (8, 8, 1), (3, 0, 0))
+        s, d, m = coupled_setup((16, 8, 1), (16, 8, 1), (3, 0, 0))
         s = s._replace(horizon_field_cells=2)
         g = s.guard_cells
         reference = g+2
@@ -267,12 +267,12 @@ class TestNativeBoundaries(unittest.TestCase):
         Both rows of a wall vanish exactly when the tangential covariant D does.
         The D^y rows beside the x/y edge are the coupled edge solve.
         """
-        s, d, m = coupled_setup((16, 8, 1), (8, 8, 1), (1, 1, 0))
+        s, d, m = coupled_setup((16, 8, 1), (16, 8, 1), (1, 1, 0))
         g = s.guard_cells
         density = densitize_vector(random_vectors(m)[0], m.D)
         refreshed = refresh_fields(density, s, D_FIELD_LOCATIONS, 'D', m)
-        # (tile, wall node): x walls bound the two x tiles, y walls bound both.
-        walls = {0: ((0, g), (1, g+8)), 1: ((0, g), (0, g+8), (1, g), (1, g+8))}
+        # (tile, wall node): the single tile owns both ends of each axis.
+        walls = {0: ((0, g), (0, g+16)), 1: ((0, g), (0, g+8))}
         for component, location in enumerate(D_FIELD_LOCATIONS):
             sample = m.D[component]
             physical = [value/sample.sqrt_gamma for value in reconstruct_vector(refreshed, D_FIELD_LOCATIONS, location)]
@@ -283,7 +283,7 @@ class TestNativeBoundaries(unittest.TestCase):
                 row = physical[component]*inverse[..., axis, axis] - inverse[..., component, axis]*physical[axis]
                 other = 1-axis
                 # D^z nodes on the other wall are edge nodes with a two-normal row
-                span = slice(g, g+8) if location[other] == 'V' else slice(g+1, g+8)
+                span = slice(g, g+s.tile_shape[other]) if location[other] == 'V' else slice(g+1, g+s.tile_shape[other])
                 for tile, wall in walls[axis]:
                     index = [tile, 0, 0, None, None, g]
                     index[3+axis], index[3+other] = wall, span

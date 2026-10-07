@@ -33,7 +33,7 @@ from tests.kernel_fixtures import build_tiled_particles, empty_tiled_scalar, emp
 def _runtime_parameters(
     *,
     shape_factor=1,
-    tile_shape=(4, 1, 1),
+    tile_shape=None,
     guard_cells=2,
     current_deposition="direct",
     current_filter="none",
@@ -735,9 +735,9 @@ class TestSingleParticleStencils(unittest.TestCase):
                     "upper_periodic_seam": (3.99, 3.91, 3.83),
                 },
             },
-            "two_tile_reduced": {
+            "one_tile_reduced": {
                 "grid_shape": (8, 1, 1),
-                "tile_shape": (4, 1, 1),
+                "tile_shape": (8, 1, 1),
                 "wind": (8.0, 1.0, 1.0),
                 "positions": {
                     "lower_tile_interface": (-0.01, 0.0, 0.0),
@@ -750,9 +750,9 @@ class TestSingleParticleStencils(unittest.TestCase):
             ("one_tile_3d", 1, "none"),
             ("one_tile_3d", 2, "digital"),
             ("one_tile_3d", 1, "bilinear"),
-            ("two_tile_reduced", 2, "none"),
-            ("two_tile_reduced", 1, "digital"),
-            ("two_tile_reduced", 2, "bilinear"),
+            ("one_tile_reduced", 2, "none"),
+            ("one_tile_reduced", 1, "digital"),
+            ("one_tile_reduced", 2, "bilinear"),
         )
 
         for configuration, shape_factor, current_filter in parameter_cases:

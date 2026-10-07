@@ -1,44 +1,40 @@
-import unittest
-import contextlib
-import io
-import tempfile
-import os
-from unittest.mock import patch
+"""Single-device numerical tests."""
 
-import numpy as np
-import toml
-from PyPIC3D.relativity.field_state import physical_fields
-
-import jax
-import jax.numpy as jnp
-from PyPIC3D.initialization import (
-    _available_cpu_threads,
-    _encode_field_bc,
-    _encode_particle_bc,
-    _resolve_particle_batch_size,
-    default_parameters,
-    initialize_simulation,
-    setup_write_dir,
-    validate_field_solver,
-)
-from PyPIC3D.solvers.electrostatic.time_loop import time_loop_electrostatic
-from PyPIC3D.solvers.GR_yee.time_loop import time_loop_static_metric
-from PyPIC3D.solvers.yee.time_loop import time_loop_electrodynamic
-from PyPIC3D.boundary_conditions.grid_and_stencil import (
+from tests.support.initialization_fixtures import (
     BC_ABSORBING,
     BC_CONDUCTING,
     BC_CONSTANT,
     BC_PERIODIC,
+    InitializationFunctionsFixtures,
+    TiledParticles,
+    _available_cpu_threads,
+    _encode_field_bc,
+    _encode_particle_bc,
+    _resolve_particle_batch_size,
+    build_static_parameters,
+    contextlib,
+    default_parameters,
+    initialize_simulation,
+    io,
+    jax,
+    jnp,
+    kernel_parameters,
+    np,
+    os,
+    patch,
+    physical_fields,
+    setup_write_dir,
+    tempfile,
+    time_loop_electrostatic,
+    time_loop_static_metric,
+    toml,
+    unittest,
+    update_parameters_from_toml,
+    validate_field_solver,
 )
-from PyPIC3D.particles.particle_class import TiledParticles
-from PyPIC3D.utilities.grids import build_yee_grid
-from PyPIC3D.utilities.parameters import build_static_parameters
-from PyPIC3D.utilities.toml_helpers import update_parameters_from_toml
-from tests.kernel_fixtures import kernel_parameters
 
 
-class TestInitializationFunctions(unittest.TestCase):
-
+class TestInitializationFunctions(InitializationFunctionsFixtures, unittest.TestCase):
     def test_legacy_gpu_setting_is_accepted_without_changing_runtime_parameters(self):
         template, _ = kernel_parameters()
         for section in ("simulation_parameters", "static_parameters"):
@@ -58,6 +54,7 @@ class TestInitializationFunctions(unittest.TestCase):
             self.assertEqual(results[0], results[1])
             self.assertEqual(results[0], results[2])
 
+
     def test_static_metric_rejects_conducting_axes_no_wider_than_the_halo(self):
         from PyPIC3D.initialization import _validate_static_metric_conducting_widths
         from tests.kernel_fixtures import kernel_parameters
@@ -76,15 +73,12 @@ class TestInitializationFunctions(unittest.TestCase):
         _validate_static_metric_conducting_widths(static("static_metric", (BC_PERIODIC,) * 3), (8, 8, 1))
         _validate_static_metric_conducting_widths(
             static("electrodynamic_yee", (BC_CONDUCTING, BC_PERIODIC, BC_PERIODIC)), (2, 8, 1))
-    def setUp(self):
-        self.plotting_parameters, self.simulation_parameters, self.dynamic_values = default_parameters()
-        self.simulation_parameters['output_dir'] = 'test_output'
-        # check the  default parameters are set correctly
+
 
     def test_setup_write_dir(self):
         # Should not raise
         setup_write_dir(self.simulation_parameters, self.plotting_parameters)
-        # check that the output directory is created
+
 
     def test_default_parameters(self):
         plotting, sim, dynamic = default_parameters()
@@ -101,17 +95,7 @@ class TestInitializationFunctions(unittest.TestCase):
         self.assertIsNone(sim["particle_batch_size"])
         self.assertFalse(plotting["plotchargedensity"])
         self.assertIn('eps', dynamic)
-        # check that the default parameters contain expected keys
 
-    @staticmethod
-    def _particles_with_active(active):
-        active = jnp.asarray(active, dtype=bool)
-        state_shape = active.shape + (3,)
-        return TiledParticles(
-            x=jnp.zeros(state_shape),
-            u=jnp.zeros(state_shape),
-            active=active,
-        )
 
     def test_automatic_particle_batch_size_uses_all_active_particles_on_one_tile(self):
         active = np.zeros((1, 1, 1, 2, 8), dtype=bool)
@@ -123,6 +107,7 @@ class TestInitializationFunctions(unittest.TestCase):
 
         self.assertEqual(batch_size, 8)
         self.assertIn("one tile", reason)
+
 
     def test_automatic_particle_batch_size_uses_cpu_threads_per_local_device(self):
         active = np.zeros((2, 2, 1, 1, 1000), dtype=bool)
@@ -147,10 +132,12 @@ class TestInitializationFunctions(unittest.TestCase):
         self.assertEqual(wider, 512)
         self.assertEqual(narrower, 256)
 
+
     def test_available_cpu_threads_falls_back_to_os_cpu_count(self):
         with patch("PyPIC3D.initialization.os.sched_getaffinity", side_effect=OSError):
             with patch("PyPIC3D.initialization.os.cpu_count", return_value=12):
                 self.assertEqual(_available_cpu_threads(), 12)
+
 
     def test_automatic_particle_batch_size_uses_accelerator_fallback(self):
         active = np.zeros((2, 1, 1, 1, 2048), dtype=bool)
@@ -161,6 +148,7 @@ class TestInitializationFunctions(unittest.TestCase):
 
         self.assertEqual(batch_size, 1024)
         self.assertIn("gpu", reason)
+
 
     def test_automatic_particle_batch_size_uses_largest_active_tile(self):
         active = np.zeros((2, 1, 1, 1, 32), dtype=bool)
@@ -178,12 +166,14 @@ class TestInitializationFunctions(unittest.TestCase):
 
         self.assertEqual(batch_size, 13)
 
+
     def test_automatic_particle_batch_size_is_one_for_zero_particles(self):
         particles = self._particles_with_active(np.zeros((1, 1, 1, 1, 4), dtype=bool))
 
         batch_size, _ = _resolve_particle_batch_size(particles, None)
 
         self.assertEqual(batch_size, 1)
+
 
     def test_explicit_particle_batch_size_must_be_a_positive_integer(self):
         particles = self._particles_with_active(np.ones((1, 1, 1, 2, 7), dtype=bool))
@@ -198,8 +188,10 @@ class TestInitializationFunctions(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "positive integer"):
                     build_static_parameters(dict(kernel_parameters()[0]._asdict(), particle_batch_size=invalid_batch_size))
 
+
     def test_encode_field_bc_accepts_constant_boundary(self):
         self.assertEqual(_encode_field_bc("constant"), BC_CONSTANT)
+
 
     def test_field_and_particle_boundaries_use_one_code_map(self):
         self.assertEqual(BC_PERIODIC, 0)
@@ -214,113 +206,6 @@ class TestInitializationFunctions(unittest.TestCase):
         self.assertEqual(_encode_particle_bc("reflecting"), BC_CONDUCTING)
         self.assertEqual(_encode_particle_bc("absorbing"), BC_ABSORBING)
 
-    def test_initialize_simulation_returns_tiled_runtime_for_ordinary_electrodynamic_config(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            zeros_path = os.path.join(tmpdir, "zeros.npy")
-            x_path = os.path.join(tmpdir, "x.npy")
-            np.save(x_path, np.array([-0.375, -0.125, 0.125, 0.375]))
-            np.save(zeros_path, np.zeros(4))
-            config = {
-                "simulation_parameters": {
-                    "name": "ordinary tiled runtime test",
-                    "output_dir": tmpdir,
-                    "Nx": 4,
-                    "Ny": 1,
-                    "Nz": 1,
-                    "x_wind": 1.0,
-                    "y_wind": 1.0,
-                    "z_wind": 1.0,
-                    "Nt": 1,
-                    "dt": 1.0e-10,
-                    "particle_tile_nx": 2,
-                    "particle_tile_ny": 1,
-                    "particle_tile_nz": 1,
-                    "filter_j": "none",
-                },
-                "plotting": {
-                    "dump_fields": True,
-                    "plotchargedensity": True,
-                },
-                "particle1": {
-                    "name": "electrons",
-                    "N_particles": 4,
-                    "charge": -1.0,
-                    "mass": 1.0,
-                    "temperature": 1.0,
-                    "initial_x": x_path,
-                    "initial_y": zeros_path,
-                    "initial_z": zeros_path,
-                    "initial_vx": zeros_path,
-                    "initial_vy": zeros_path,
-                    "initial_vz": zeros_path,
-                },
-            }
-
-            config_path = os.path.join(tmpdir, "global_particle_bc.toml")
-            with open(config_path, "w") as f:
-                toml.dump(config, f)
-
-            with patch("PyPIC3D.initialization.write_openpmd_initial_fields") as write_initial_fields:
-                (
-                    loop,
-                    particles,
-                    fields,
-                    parameter_set,
-                    dynamic_parameters,
-                    plotting_parameters,
-                    *_rest,
-                ) = initialize_simulation(toml.load(config_path))
-
-            self.assertIs(loop, time_loop_electrodynamic)
-            self.assertIsInstance(particles, TiledParticles)
-            self.assertEqual(particles.x.sharding.mesh, parameter_set.field_mesh)
-            self.assertEqual(particles.active.sharding.mesh, parameter_set.field_mesh)
-            self.assertEqual(len(particles.x.addressable_shards), 2)
-            self.assertEqual(parameter_set.solver, "electrodynamic_yee")
-            self.assertEqual(tuple(parameter_set.tile_shape), (2, 1, 1))
-            self.assertEqual(parameter_set.particle_batch_size, 2)
-            self.assertNotIn("particle_species_names", parameter_set)
-            self.assertNotIn("particle_species_metadata", parameter_set)
-            self.assertEqual(plotting_parameters["particle_species_names"], ("electrons",))
-            self.assertEqual(plotting_parameters["particle_species_metadata"][0]["name"], "electrons")
-            self.assertEqual(tuple(plotting_parameters["field_map"]), ("E", "B", "J", "rho"))
-            self.assertEqual(tuple(write_initial_fields.call_args.args[0]), ("E", "B", "J", "rho"))
-            self.assertTrue(jnp.any(plotting_parameters["field_map"]["rho"] != 0.0))
-            self.assertIn("tiled_center_grid", dynamic_parameters.grids._asdict())
-            self.assertIn("tiled_vertex_grid", dynamic_parameters.grids._asdict())
-            expected_center_grid, expected_vertex_grid = build_yee_grid(dynamic_parameters)
-            for axis, expected_axis in zip(dynamic_parameters.grids.center, expected_center_grid):
-                self.assertTrue(jnp.allclose(axis, expected_axis))
-            for axis, expected_axis in zip(dynamic_parameters.grids.vertex, expected_vertex_grid):
-                self.assertTrue(jnp.allclose(axis, expected_axis))
-
-            g = int(parameter_set.guard_cells)
-            for axis_index, (tiled_axis, expected_axis, tile_width) in enumerate(
-                zip(dynamic_parameters.grids.tiled_center_grid, expected_center_grid, parameter_set.tile_shape)
-            ):
-                for tile_index in range(int(dynamic_parameters.grids.tiled_center_grid[axis_index].shape[axis_index])):
-                    tile_slice = [0, 0, 0, slice(g, -g)]
-                    tile_slice[axis_index] = tile_index
-                    start = 1 + tile_index * int(tile_width)
-                    stop = start + int(tile_width)
-                    self.assertTrue(jnp.allclose(tiled_axis[tuple(tile_slice)], expected_axis[start:stop]))
-            for axis_index, (tiled_axis, expected_axis, tile_width) in enumerate(
-                zip(dynamic_parameters.grids.tiled_vertex_grid, expected_vertex_grid, parameter_set.tile_shape)
-            ):
-                for tile_index in range(int(dynamic_parameters.grids.tiled_vertex_grid[axis_index].shape[axis_index])):
-                    tile_slice = [0, 0, 0, slice(g, -g)]
-                    tile_slice[axis_index] = tile_index
-                    start = 1 + tile_index * int(tile_width)
-                    stop = start + int(tile_width)
-                    self.assertTrue(jnp.allclose(tiled_axis[tuple(tile_slice)], expected_axis[start:stop]))
-            E, B, J, rho, phi, external_fields, pml_state, overflow = fields
-            self.assertEqual(E[0].ndim, 6)
-            self.assertEqual(B[0].ndim, 6)
-            self.assertEqual(J[0].ndim, 6)
-            self.assertIsNone(pml_state)
-            self.assertFalse(bool(overflow))
-            # dump a dummy config file to tmp directory and confirm it can be read
-            # in correctly
 
     def test_initialize_static_metric_loads_previous_fields_from_npy(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -416,7 +301,7 @@ class TestInitializationFunctions(unittest.TestCase):
                                     name="filtered leapfrog seed", output_dir=directory,
                                     solver=solver, Nx=n, Ny=1, Nz=1,
                                     x_wind=1., y_wind=1., z_wind=1., dt=dt, Nt=1,
-                                    particle_tile_nx=4, particle_tile_ny=1, particle_tile_nz=1,
+                                    particle_tile_nx=n, particle_tile_ny=1, particle_tile_nz=1,
                                     shape_factor=1, particle_pusher=pusher, relativistic=False,
                                     current_calculation="j_from_rhov", filter_j=filter_name,
                                     alpha=alpha, C=c, eps=1., mu=1/c**2, sin_chi=0., dark_mu=0.,
@@ -439,6 +324,7 @@ class TestInitializationFunctions(unittest.TestCase):
                             np.testing.assert_array_equal(velocities[:, (0, 2)], 0.)
                             states.append(velocities[order])
                     np.testing.assert_array_equal(states[0], states[1])
+
 
     def test_initialize_simulation_offsets_particle_velocity_to_the_half_step(self):
         """
@@ -509,6 +395,7 @@ class TestInitializationFunctions(unittest.TestCase):
             np.testing.assert_allclose(u[:, 1], 0.0, atol=1.0e-15)
             np.testing.assert_allclose(u[:, 2], 0.0, atol=1.0e-15)
 
+
     def test_initialize_simulation_computes_courant_dt_before_runtime_parameters_exist(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             zeros_path = os.path.join(tmpdir, "zeros.npy")
@@ -564,6 +451,7 @@ class TestInitializationFunctions(unittest.TestCase):
             )
             for velocity_component in plotting_parameters["field_map"]["fluid_velocity"]:
                 self.assertTrue(jnp.allclose(velocity_component, 0.0))
+
 
     def test_initialize_simulation_builds_grid_from_explicit_bounds(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -627,6 +515,7 @@ class TestInitializationFunctions(unittest.TestCase):
             self.assertAlmostEqual(float(dynamic_parameters.grids.center[2][1]), 2.0)
             self.assertAlmostEqual(float(dynamic_parameters.grids.center[2][-1]), 3.0)
 
+
     def test_initialize_simulation_rejects_one_sided_grid_bounds(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             config = {
@@ -645,6 +534,7 @@ class TestInitializationFunctions(unittest.TestCase):
 
             with self.assertRaisesRegex(ValueError, "Both x_min and x_max"):
                 initialize_simulation(config)
+
 
     def test_initialize_simulation_encodes_global_particle_boundary_conditions(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -694,7 +584,7 @@ class TestInitializationFunctions(unittest.TestCase):
                 (BC_CONDUCTING, BC_ABSORBING, BC_PERIODIC),
             )
             self.assertIsInstance(particles, TiledParticles)
-            # check that the global particle boundary conditions are encoded correctly in the parameter_set dictionary
+
 
     def test_initialize_simulation_uses_collocated_grid_for_electrostatic(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -736,7 +626,7 @@ class TestInitializationFunctions(unittest.TestCase):
             self.assertEqual(fields[0][0].ndim, 6)
             for vertex_axis, center_axis in zip(dynamic_parameters.grids.vertex, dynamic_parameters.grids.center):
                 self.assertTrue(jnp.allclose(vertex_axis, center_axis))
-        # test the initialize_simulation function with an electrostatic solver and check that it uses a collocated grid
+
 
     def test_initialize_simulation_rejects_unknown_solver(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -758,11 +648,12 @@ class TestInitializationFunctions(unittest.TestCase):
 
             with self.assertRaisesRegex(ValueError, "Unsupported solver"):
                 initialize_simulation(config)
-        # test that initialize_simulation raises an error for an unknown solver
+
 
     def test_validate_field_solver_rejects_spectral(self):
         with self.assertRaisesRegex(ValueError, "Unsupported solver"):
             validate_field_solver("spectral")
+
 
     def test_validate_field_solver_accepts_only_public_runtime_modes(self):
         validate_field_solver("electrodynamic_yee")
@@ -773,5 +664,7 @@ class TestInitializationFunctions(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Unsupported solver"):
             validate_field_solver("tiled_yee")
 
-if __name__ == '__main__':
+
+
+if __name__ == "__main__":
     unittest.main()

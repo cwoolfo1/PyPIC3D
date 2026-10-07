@@ -1,10 +1,13 @@
-import unittest
-from types import SimpleNamespace
+"""Single-device numerical tests."""
 
-import jax
-import jax.numpy as jnp
-
-from PyPIC3D.solvers.yee.first_order_yee import (
+from tests.support.yee_fixtures import (
+    YeeTiledFixtures,
+    _field_dot,
+    assemble_tiled_vector_field,
+    ghost_cells,
+    jnp,
+    tile_vector_field,
+    unittest,
     update_B,
     update_E,
     yee_curl_b_to_e,
@@ -12,220 +15,24 @@ from PyPIC3D.solvers.yee.first_order_yee import (
     yee_derivatives_b_to_e,
     yee_derivatives_e_to_b,
 )
-from PyPIC3D.diagnostics.output_adapters import assemble_tiled_vector_field
-from PyPIC3D.boundary_conditions import ghost_cells
-from PyPIC3D.utilities.grids import build_tiled_yee_grids, build_yee_grid
-from PyPIC3D.boundary_conditions.grid_and_stencil import BC_CONDUCTING, BC_CONSTANT, BC_PERIODIC
-from tests.kernel_fixtures import kernel_parameters_from_values, tile_vector_field
 
 
-def _update_ghost_cells(field, bc_x, bc_y, bc_z):
-    field = jax.lax.cond(
-        bc_x == BC_PERIODIC,
-        lambda f: f.at[0, :, :].set(f[-2, :, :]).at[-1, :, :].set(f[1, :, :]),
-        lambda f: f.at[0, :, :].set(0.0).at[-1, :, :].set(0.0),
-        operand=field,
-    )
-    field = jax.lax.cond(
-        bc_y == BC_PERIODIC,
-        lambda f: f.at[:, 0, :].set(f[:, -2, :]).at[:, -1, :].set(f[:, 1, :]),
-        lambda f: f.at[:, 0, :].set(0.0).at[:, -1, :].set(0.0),
-        operand=field,
-    )
-    field = jax.lax.cond(
-        bc_z == BC_PERIODIC,
-        lambda f: f.at[:, :, 0].set(f[:, :, -2]).at[:, :, -1].set(f[:, :, 1]),
-        lambda f: f.at[:, :, 0].set(0.0).at[:, :, -1].set(0.0),
-        operand=field,
-    )
-    return field
-
-
-def _field_dot(a, b):
-    return sum(jnp.vdot(x, y) for x, y in zip(a, b))
-
-
-class TestYeeTiled(unittest.TestCase):
-    def _build_parameter_values(self):
-        parameter_set = {
-            "Nx": 8,
-            "Ny": 6,
-            "Nz": 4,
-            "dx": 0.5,
-            "dy": 0.5,
-            "dz": 0.5,
-            "dt": 0.05,
-            "x_wind": 4.0,
-            "y_wind": 3.0,
-            "z_wind": 2.0,
-            "shape_factor": 1,
-            "boundary_conditions": {"x": 0, "y": 0, "z": 0},
-        }
-        center_grid, vertex_grid = build_yee_grid(SimpleNamespace(**parameter_set))
-        parameter_set["grids"] = {"center": center_grid, "vertex": vertex_grid}
-        return parameter_set
-
-    def _conducting_parameters(self):
-        parameter_set = self._build_parameter_values()
-        parameter_set["boundary_conditions"] = {"x": BC_CONDUCTING, "y": BC_CONDUCTING, "z": BC_CONDUCTING}
-        return parameter_set
-
-    def _constant_x_parameters(self):
-        parameter_set = self._build_parameter_values()
-        parameter_set["boundary_conditions"] = {"x": BC_CONSTANT, "y": BC_PERIODIC, "z": BC_PERIODIC}
-        return parameter_set
-
-    def _assert_x_ghosts_are_constant(self, vector_field, g):
-        for component in vector_field:
-            self.assertTrue(jnp.allclose(component[:, :, :, :g, :, :], component[:, :, :, g:g + 1, :, :]))
-            self.assertTrue(jnp.allclose(component[:, :, :, -g:, :, :], component[:, :, :, -g - 1:-g, :, :]))
-
-    def _with_tile_metadata(self, parameter_set, tile_shape, g=2):
-        parameter_set["tile_shape"] = tuple(int(width) for width in tile_shape)
-        parameter_set["guard_cells"] = int(g)
-        parameter_set["field_mesh"] = ghost_cells.make_field_mesh((
-            int(parameter_set["Nx"]) // int(tile_shape[0]),
-            int(parameter_set["Ny"]) // int(tile_shape[1]),
-            int(parameter_set["Nz"]) // int(tile_shape[2]),
-        ))
-        static_parameters, dynamic_parameters = kernel_parameters_from_values(parameter_set)
-        tiled_center_grid, tiled_vertex_grid = build_tiled_yee_grids(static_parameters, dynamic_parameters)
-        parameter_set["grids"]["tiled_vertex_grid"] = tiled_vertex_grid
-        parameter_set["grids"]["tiled_center_grid"] = tiled_center_grid
-        return parameter_set
-
-    def _fill_ghosts(self, field, parameter_set):
-        bc_x = parameter_set["boundary_conditions"]["x"]
-        bc_y = parameter_set["boundary_conditions"]["y"]
-        bc_z = parameter_set["boundary_conditions"]["z"]
-        return _update_ghost_cells(field, bc_x, bc_y, bc_z)
-
-    def _deterministic_vector_field(self, parameter_set, scale):
-        Nx, Ny, Nz = parameter_set["Nx"], parameter_set["Ny"], parameter_set["Nz"]
-        ii, jj, kk = jnp.meshgrid(
-            jnp.arange(Nx, dtype=float),
-            jnp.arange(Ny, dtype=float),
-            jnp.arange(Nz, dtype=float),
-            indexing="ij",
-        )
-
-        shape = (Nx + 2, Ny + 2, Nz + 2)
-        Fx = jnp.zeros(shape).at[1:-1, 1:-1, 1:-1].set(scale * (0.2 + 0.03 * ii - 0.02 * jj + 0.04 * kk))
-        Fy = jnp.zeros(shape).at[1:-1, 1:-1, 1:-1].set(scale * (-0.1 + 0.05 * ii + 0.01 * jj - 0.03 * kk))
-        Fz = jnp.zeros(shape).at[1:-1, 1:-1, 1:-1].set(scale * (0.3 - 0.04 * ii + 0.02 * jj + 0.01 * kk))
-
-        return tuple(self._fill_ghosts(component, parameter_set) for component in (Fx, Fy, Fz))
-
-    def _random_tiled_vector_field(self, parameter_set, tile_shape, seed):
-        template = tile_vector_field(
-            self._deterministic_vector_field(parameter_set, scale=1.0),
-            parameter_set,
-            tile_shape,
-        )
-        keys = jax.random.split(jax.random.key(seed), 3)
-        return tuple(
-            jax.random.normal(key, component.shape, dtype=jnp.float64)
-            for key, component in zip(keys, template)
-        )
-
-    def _copy_parameters_for_tile_shape(self, parameter_set, tile_shape, g=2):
-        reference_parameters = dict(parameter_set)
-        reference_parameters["boundary_conditions"] = dict(parameter_set["boundary_conditions"])
-        reference_parameters["grids"] = dict(parameter_set["grids"])
-        reference_parameters["tile_shape"] = tuple(int(width) for width in tile_shape)
-        reference_parameters["guard_cells"] = int(g)
-        reference_parameters["field_mesh"] = ghost_cells.make_field_mesh((
-            int(reference_parameters["Nx"]) // int(tile_shape[0]),
-            int(reference_parameters["Ny"]) // int(tile_shape[1]),
-            int(reference_parameters["Nz"]) // int(tile_shape[2]),
-        ))
-        return reference_parameters
-
-    def _split_parameters(self, parameter_set, dynamic_values):
-        return kernel_parameters_from_values(parameter_set, dynamic_values)
-
-    def _reference_update_E(self, E, B, J, parameter_set, dynamic_values):
-        tile_shape = (parameter_set["Nx"], parameter_set["Ny"], parameter_set["Nz"])
-        reference_parameters = self._copy_parameters_for_tile_shape(parameter_set, tile_shape, int(parameter_set["guard_cells"]))
-        static_parameters, dynamic_parameters = self._split_parameters(reference_parameters, dynamic_values)
-        E_reference, pml_state = update_E(
-            tile_vector_field(E, reference_parameters, tile_shape, num_guard_cells=int(reference_parameters["guard_cells"])),
-            tile_vector_field(B, reference_parameters, tile_shape, num_guard_cells=int(reference_parameters["guard_cells"])),
-            tile_vector_field(J, reference_parameters, tile_shape, num_guard_cells=int(reference_parameters["guard_cells"])),
-            static_parameters,
-            dynamic_parameters,
-        )
-        return assemble_tiled_vector_field(
-            E_reference,
-            reference_parameters,
-            tile_shape,
-            num_guard_cells=int(reference_parameters["guard_cells"]),
-        ), pml_state
-
-    def _reference_update_B(self, E, B, parameter_set, dynamic_values):
-        tile_shape = (parameter_set["Nx"], parameter_set["Ny"], parameter_set["Nz"])
-        reference_parameters = self._copy_parameters_for_tile_shape(parameter_set, tile_shape, int(parameter_set["guard_cells"]))
-        static_parameters, dynamic_parameters = self._split_parameters(reference_parameters, dynamic_values)
-        B_reference, pml_state = update_B(
-            tile_vector_field(E, reference_parameters, tile_shape, num_guard_cells=int(reference_parameters["guard_cells"])),
-            tile_vector_field(B, reference_parameters, tile_shape, num_guard_cells=int(reference_parameters["guard_cells"])),
-            static_parameters,
-            dynamic_parameters,
-        )
-        return assemble_tiled_vector_field(
-            B_reference,
-            reference_parameters,
-            tile_shape,
-            num_guard_cells=int(reference_parameters["guard_cells"]),
-        ), pml_state
-
-    def _reference_yee_step(self, E, B, J, parameter_set, dynamic_values):
-        E_reference, pml_state = self._reference_update_E(E, B, J, parameter_set, dynamic_values)
-        B_reference, pml_state = self._reference_update_B(E_reference, B, parameter_set, dynamic_values)
-        return E_reference, B_reference, pml_state
-
-    def test_tile_vector_field_assembles_to_original_ghost_celled_field(self):
-        parameter_set = self._build_parameter_values()
-        tile_shape = (2, 3, 2)
-        E = self._deterministic_vector_field(parameter_set, scale=1.0)
-
-        E_tiles = tile_vector_field(E, parameter_set, tile_shape)
-        E_assembled = assemble_tiled_vector_field(E_tiles, parameter_set, tile_shape)
-
-        for original, assembled in zip(E, E_assembled):
-            self.assertTrue(jnp.allclose(assembled, original, rtol=1.0e-12, atol=1.0e-12))
-
-    def test_tile_grid_axes_include_configured_guard_cells(self):
-        parameter_set = self._build_parameter_values()
-        tile_shape = (2, 3, 2)
-        g = 2
-        center_grid, vertex_grid = build_yee_grid(SimpleNamespace(**parameter_set))
-        parameter_set["grids"] = {"center": center_grid, "vertex": vertex_grid}
-        static_parameters = SimpleNamespace(tile_shape=tile_shape, guard_cells=g)
-        dynamic_parameters = SimpleNamespace(
-            dx=parameter_set["dx"],
-            dy=parameter_set["dy"],
-            dz=parameter_set["dz"],
-            grids=SimpleNamespace(center=center_grid, vertex=vertex_grid),
-        )
-        tiled_center_grid, tiled_vertex_grid = build_tiled_yee_grids(static_parameters, dynamic_parameters)
-
-        self.assertEqual(tiled_center_grid[0].shape, (4, 2, 2, tile_shape[0] + 2 * g))
-        self.assertEqual(tiled_center_grid[1].shape, (4, 2, 2, tile_shape[1] + 2 * g))
-        self.assertEqual(tiled_center_grid[2].shape, (4, 2, 2, tile_shape[2] + 2 * g))
-
-        for tx in range(4):
-            for ty in range(2):
-                for tz in range(2):
-                    center_x = parameter_set["grids"]["center"][0][0] + (
-                        jnp.arange(tile_shape[0] + 2 * g) + tx * tile_shape[0] - (g - 1)
-                    ) * parameter_set["dx"]
-                    vertex_y = parameter_set["grids"]["vertex"][1][0] + (
-                        jnp.arange(tile_shape[1] + 2 * g) + ty * tile_shape[1] - (g - 1)
-                    ) * parameter_set["dy"]
-
-                    self.assertTrue(jnp.allclose(tiled_center_grid[0][tx, ty, tz], center_x))
-                    self.assertTrue(jnp.allclose(tiled_vertex_grid[1][tx, ty, tz], vertex_y))
+class TestYeeTiled(YeeTiledFixtures, unittest.TestCase):
+    def test_eager_and_compiled_public_updates_agree(self):
+        from tests.support.compiled_yee import eager
+        parameters = self._build_parameter_values()
+        shape = (8, 6, 4)
+        parameters = self._with_tile_metadata(parameters, shape)
+        static, dynamic = self._split_parameters(parameters, {"C": 1., "eps": 1.})
+        E = tile_vector_field(self._deterministic_vector_field(parameters, 1.), parameters, shape)
+        B = tuple(component * .2 for component in E)
+        J = tuple(component * .05 for component in E)
+        eager_E, _ = eager.update_E(E, B, J, static, dynamic)
+        compiled_E, _ = update_E(E, B, J, static, dynamic)
+        eager_B, _ = eager.update_B(E, B, static, dynamic)
+        compiled_B, _ = update_B(E, B, static, dynamic)
+        for actual, expected in zip(compiled_E + compiled_B, eager_E + eager_B):
+            self.assertTrue(jnp.allclose(actual, expected, rtol=1.e-12, atol=1.e-12))
 
     def test_scalar_yee_derivatives_satisfy_adjoint_identity(self):
         forward_to_backward = (5, 2, 1, 4, 3, 0)
@@ -236,7 +43,7 @@ class TestYeeTiled(unittest.TestCase):
             ("periodic", self._build_parameter_values),
             ("conducting", self._conducting_parameters),
         ):
-            for tile_shape in ((8, 6, 4), (2, 3, 2)):
+            for tile_shape in ((8, 6, 4),):
                 with self.subTest(boundary=boundary_name, tile_shape=tile_shape):
                     parameter_set = self._with_tile_metadata(parameter_builder(), tile_shape)
                     static_parameters, dynamic_parameters = self._split_parameters(parameter_set, {})
@@ -266,12 +73,13 @@ class TestYeeTiled(unittest.TestCase):
                         )
                         self.assertTrue(jnp.allclose(lhs, rhs, rtol=1.0e-12, atol=1.0e-12))
 
+
     def test_periodic_and_conducting_curls_satisfy_discrete_integration_by_parts(self):
         for boundary_name, parameter_set in (
             ("periodic", self._build_parameter_values()),
             ("conducting", self._conducting_parameters()),
         ):
-            for tile_shape in ((8, 6, 4), (2, 3, 2)):
+            for tile_shape in ((8, 6, 4),):
                 with self.subTest(boundary=boundary_name, tile_shape=tile_shape):
                     tiled_parameters = self._with_tile_metadata(parameter_set, tile_shape)
                     static_parameters, dynamic_parameters = self._split_parameters(tiled_parameters, {})
@@ -296,9 +104,10 @@ class TestYeeTiled(unittest.TestCase):
 
                     self.assertTrue(jnp.allclose(lhs, rhs, rtol=1.0e-12, atol=1.0e-12))
 
+
     def test_conducting_update_clamps_only_tangential_e_components(self):
         parameter_set = self._conducting_parameters()
-        tile_shape = (2, 3, 2)
+        tile_shape = (8, 6, 4)
         parameter_set = self._with_tile_metadata(parameter_set, tile_shape)
         static_parameters, dynamic_parameters = self._split_parameters(parameter_set, {"alpha": 1.0})
         E = tuple(jnp.ones((10, 8, 6), dtype=jnp.float64) * value for value in (2.0, 3.0, 5.0))
@@ -327,33 +136,10 @@ class TestYeeTiled(unittest.TestCase):
         self.assertEqual(float(Ey[0, 0, 0, g + 1, g, g + 1]), 3.0)
         self.assertEqual(float(Ez[0, 0, 0, g + 1, g + 1, g]), 5.0)
 
-    def test_update_E_matches_single_tile_yee_update(self):
-        parameter_set = self._build_parameter_values()
-        dynamic_values = {"C": 1.0, "eps": 1.0, "mu": 1.0, "alpha": 1.0}
-        tile_shape = (2, 3, 2)
-        parameter_set = self._with_tile_metadata(parameter_set, tile_shape)
-        E = self._deterministic_vector_field(parameter_set, scale=1.0)
-        B = self._deterministic_vector_field(parameter_set, scale=0.2)
-        J = self._deterministic_vector_field(parameter_set, scale=0.05)
-        static_parameters, dynamic_parameters = self._split_parameters(parameter_set, dynamic_values)
-
-        E_reference, _ = self._reference_update_E(E, B, J, parameter_set, dynamic_values)
-        E_tiled, pml_state = update_E(
-            tile_vector_field(E, parameter_set, tile_shape),
-            tile_vector_field(B, parameter_set, tile_shape),
-            tile_vector_field(J, parameter_set, tile_shape),
-            static_parameters,
-            dynamic_parameters,
-        )
-        self.assertIsNone(pml_state)
-        E_from_tiles = assemble_tiled_vector_field(E_tiled, parameter_set, tile_shape)
-
-        for reference, tiled in zip(E_reference, E_from_tiles):
-            self.assertTrue(jnp.allclose(tiled, reference, rtol=1.0e-12, atol=1.0e-12))
 
     def test_field_updates_do_not_use_coupling_filter_alpha(self):
         parameter_set = self._build_parameter_values()
-        tile_shape = (2, 3, 2)
+        tile_shape = (8, 6, 4)
         parameter_set = self._with_tile_metadata(parameter_set, tile_shape)
         E = tile_vector_field(self._deterministic_vector_field(parameter_set, scale=1.0), parameter_set, tile_shape)
         B = tile_vector_field(self._deterministic_vector_field(parameter_set, scale=0.2), parameter_set, tile_shape)
@@ -376,10 +162,11 @@ class TestYeeTiled(unittest.TestCase):
         for field_06, field_10 in zip(E_06 + B_06, E_10 + B_10):
             self.assertTrue(jnp.array_equal(field_06, field_10))
 
+
     def test_update_E_is_the_public_tiled_update(self):
         parameter_set = self._build_parameter_values()
         dynamic_values = {"C": 1.0, "eps": 1.0, "mu": 1.0, "alpha": 1.0}
-        tile_shape = (2, 3, 2)
+        tile_shape = (8, 6, 4)
         parameter_set = self._with_tile_metadata(parameter_set, tile_shape)
         E = self._deterministic_vector_field(parameter_set, scale=1.0)
         B = self._deterministic_vector_field(parameter_set, scale=0.2)
@@ -395,56 +182,11 @@ class TestYeeTiled(unittest.TestCase):
         self.assertEqual(E_public[0].ndim, 6)
         self.assertEqual(E_public[0].shape[:3], E_tiles[0].shape[:3])
 
-    def test_update_E_matches_single_tile_yee_update_with_conducting_boundaries(self):
-        parameter_set = self._conducting_parameters()
-        dynamic_values = {"C": 1.0, "eps": 1.0, "mu": 1.0, "alpha": 1.0}
-        tile_shape = (2, 3, 2)
-        parameter_set = self._with_tile_metadata(parameter_set, tile_shape)
-        E = self._deterministic_vector_field(parameter_set, scale=1.0)
-        B = self._deterministic_vector_field(parameter_set, scale=0.2)
-        J = self._deterministic_vector_field(parameter_set, scale=0.05)
-        static_parameters, dynamic_parameters = self._split_parameters(parameter_set, dynamic_values)
-
-        E_reference, _ = self._reference_update_E(E, B, J, parameter_set, dynamic_values)
-        E_tiled, pml_state = update_E(
-            tile_vector_field(E, parameter_set, tile_shape),
-            tile_vector_field(B, parameter_set, tile_shape),
-            tile_vector_field(J, parameter_set, tile_shape),
-            static_parameters,
-            dynamic_parameters,
-        )
-        self.assertIsNone(pml_state)
-        E_from_tiles = assemble_tiled_vector_field(E_tiled, parameter_set, tile_shape)
-
-        for reference, tiled in zip(E_reference, E_from_tiles):
-            self.assertTrue(jnp.allclose(tiled, reference, rtol=1.0e-12, atol=1.0e-12))
-
-    def test_update_B_matches_single_tile_yee_update(self):
-        parameter_set = self._build_parameter_values()
-        dynamic_values = {"C": 1.0, "eps": 1.0, "mu": 1.0, "alpha": 1.0}
-        tile_shape = (2, 3, 2)
-        parameter_set = self._with_tile_metadata(parameter_set, tile_shape)
-        E = self._deterministic_vector_field(parameter_set, scale=1.0)
-        B = self._deterministic_vector_field(parameter_set, scale=0.2)
-        static_parameters, dynamic_parameters = self._split_parameters(parameter_set, dynamic_values)
-
-        B_reference, _ = self._reference_update_B(E, B, parameter_set, dynamic_values)
-        B_tiled, pml_state = update_B(
-            tile_vector_field(E, parameter_set, tile_shape),
-            tile_vector_field(B, parameter_set, tile_shape),
-            static_parameters,
-            dynamic_parameters,
-        )
-        self.assertIsNone(pml_state)
-        B_from_tiles = assemble_tiled_vector_field(B_tiled, parameter_set, tile_shape)
-
-        for reference, tiled in zip(B_reference, B_from_tiles):
-            self.assertTrue(jnp.allclose(tiled, reference, rtol=1.0e-12, atol=1.0e-12))
 
     def test_update_B_is_the_public_tiled_update(self):
         parameter_set = self._build_parameter_values()
         dynamic_values = {"C": 1.0, "eps": 1.0, "mu": 1.0, "alpha": 1.0}
-        tile_shape = (2, 3, 2)
+        tile_shape = (8, 6, 4)
         parameter_set = self._with_tile_metadata(parameter_set, tile_shape)
         E = self._deterministic_vector_field(parameter_set, scale=1.0)
         B = self._deterministic_vector_field(parameter_set, scale=0.2)
@@ -458,32 +200,11 @@ class TestYeeTiled(unittest.TestCase):
         self.assertEqual(B_public[0].ndim, 6)
         self.assertEqual(B_public[0].shape[:3], B_tiles[0].shape[:3])
 
-    def test_update_B_matches_single_tile_yee_update_with_conducting_boundaries(self):
-        parameter_set = self._conducting_parameters()
-        dynamic_values = {"C": 1.0, "eps": 1.0, "mu": 1.0, "alpha": 1.0}
-        tile_shape = (2, 3, 2)
-        parameter_set = self._with_tile_metadata(parameter_set, tile_shape)
-        E = self._deterministic_vector_field(parameter_set, scale=1.0)
-        B = self._deterministic_vector_field(parameter_set, scale=0.2)
-        static_parameters, dynamic_parameters = self._split_parameters(parameter_set, dynamic_values)
-
-        B_reference, _ = self._reference_update_B(E, B, parameter_set, dynamic_values)
-        B_tiled, pml_state = update_B(
-            tile_vector_field(E, parameter_set, tile_shape),
-            tile_vector_field(B, parameter_set, tile_shape),
-            static_parameters,
-            dynamic_parameters,
-        )
-        self.assertIsNone(pml_state)
-        B_from_tiles = assemble_tiled_vector_field(B_tiled, parameter_set, tile_shape)
-
-        for reference, tiled in zip(B_reference, B_from_tiles):
-            self.assertTrue(jnp.allclose(tiled, reference, rtol=1.0e-12, atol=1.0e-12))
 
     def test_update_E_uses_constant_boundary_without_conducting_tangential_zeroing(self):
         parameter_set = self._constant_x_parameters()
         dynamic_values = {"C": 1.0, "eps": 1.0, "mu": 1.0, "alpha": 1.0}
-        tile_shape = (2, 3, 2)
+        tile_shape = (8, 6, 4)
         parameter_set = self._with_tile_metadata(parameter_set, tile_shape)
         E = tuple(jnp.ones((10, 8, 6), dtype=float) * value for value in (2.0, 3.0, 5.0))
         B = tuple(jnp.zeros((10, 8, 6), dtype=float) for _ in range(3))
@@ -503,10 +224,11 @@ class TestYeeTiled(unittest.TestCase):
         self.assertTrue(jnp.allclose(E_tiled[1][:, :, :, int(static_parameters.guard_cells), :, :], 3.0))
         self.assertTrue(jnp.allclose(E_tiled[2][:, :, :, int(static_parameters.guard_cells), :, :], 5.0))
 
+
     def test_update_B_uses_constant_boundary(self):
         parameter_set = self._constant_x_parameters()
         dynamic_values = {"C": 1.0, "eps": 1.0, "mu": 1.0, "alpha": 1.0}
-        tile_shape = (2, 3, 2)
+        tile_shape = (8, 6, 4)
         parameter_set = self._with_tile_metadata(parameter_set, tile_shape)
         E = tuple(jnp.zeros((10, 8, 6), dtype=float) for _ in range(3))
         B = tuple(jnp.ones((10, 8, 6), dtype=float) * value for value in (7.0, 11.0, 13.0))
@@ -522,64 +244,11 @@ class TestYeeTiled(unittest.TestCase):
         self.assertIsNone(pml_state)
         self._assert_x_ghosts_are_constant(B_tiled, int(static_parameters.guard_cells))
 
-    def test_tiled_electrodynamic_step_matches_single_tile_yee_sequence(self):
-        parameter_set = self._build_parameter_values()
-        dynamic_values = {"C": 1.0, "eps": 1.0, "mu": 1.0, "alpha": 1.0}
-        tile_shape = (2, 3, 2)
-        parameter_set = self._with_tile_metadata(parameter_set, tile_shape)
-        E = self._deterministic_vector_field(parameter_set, scale=1.0)
-        B = self._deterministic_vector_field(parameter_set, scale=0.2)
-        J = self._deterministic_vector_field(parameter_set, scale=0.05)
-
-        E_reference, B_reference, _ = self._reference_yee_step(E, B, J, parameter_set, dynamic_values)
-
-        E_tiles = tile_vector_field(E, parameter_set, tile_shape)
-        B_tiles = tile_vector_field(B, parameter_set, tile_shape)
-        J_tiles = tile_vector_field(J, parameter_set, tile_shape)
-        static_parameters, dynamic_parameters = self._split_parameters(parameter_set, dynamic_values)
-        E_tiles, pml_state = update_E(E_tiles, B_tiles, J_tiles, static_parameters, dynamic_parameters)
-        B_tiles, pml_state = update_B(E_tiles, B_tiles, static_parameters, dynamic_parameters, pml_state)
-        self.assertIsNone(pml_state)
-
-        E_from_tiles = assemble_tiled_vector_field(E_tiles, parameter_set, tile_shape)
-        B_from_tiles = assemble_tiled_vector_field(B_tiles, parameter_set, tile_shape)
-
-        for reference, tiled in zip(E_reference, E_from_tiles):
-            self.assertTrue(jnp.allclose(tiled, reference, rtol=1.0e-12, atol=1.0e-12))
-        for reference, tiled in zip(B_reference, B_from_tiles):
-            self.assertTrue(jnp.allclose(tiled, reference, rtol=1.0e-12, atol=1.0e-12))
-
-    def test_tiled_electrodynamic_step_matches_single_tile_yee_sequence_with_conducting_boundaries(self):
-        parameter_set = self._conducting_parameters()
-        dynamic_values = {"C": 1.0, "eps": 1.0, "mu": 1.0, "alpha": 1.0}
-        tile_shape = (2, 3, 2)
-        parameter_set = self._with_tile_metadata(parameter_set, tile_shape)
-        E = self._deterministic_vector_field(parameter_set, scale=1.0)
-        B = self._deterministic_vector_field(parameter_set, scale=0.2)
-        J = self._deterministic_vector_field(parameter_set, scale=0.05)
-
-        E_reference, B_reference, _ = self._reference_yee_step(E, B, J, parameter_set, dynamic_values)
-
-        E_tiles = tile_vector_field(E, parameter_set, tile_shape)
-        B_tiles = tile_vector_field(B, parameter_set, tile_shape)
-        J_tiles = tile_vector_field(J, parameter_set, tile_shape)
-        static_parameters, dynamic_parameters = self._split_parameters(parameter_set, dynamic_values)
-        E_tiles, pml_state = update_E(E_tiles, B_tiles, J_tiles, static_parameters, dynamic_parameters)
-        B_tiles, pml_state = update_B(E_tiles, B_tiles, static_parameters, dynamic_parameters, pml_state)
-        self.assertIsNone(pml_state)
-
-        E_from_tiles = assemble_tiled_vector_field(E_tiles, parameter_set, tile_shape)
-        B_from_tiles = assemble_tiled_vector_field(B_tiles, parameter_set, tile_shape)
-
-        for reference, tiled in zip(E_reference, E_from_tiles):
-            self.assertTrue(jnp.allclose(tiled, reference, rtol=1.0e-12, atol=1.0e-12))
-        for reference, tiled in zip(B_reference, B_from_tiles):
-            self.assertTrue(jnp.allclose(tiled, reference, rtol=1.0e-12, atol=1.0e-12))
 
     def test_tiled_evolve_updates_fields_without_pushing_particles(self):
         parameter_set = self._build_parameter_values()
         dynamic_values = {"C": 1.0, "eps": 1.0, "mu": 1.0, "alpha": 1.0}
-        tile_shape = (2, 3, 2)
+        tile_shape = (8, 6, 4)
         parameter_set = self._with_tile_metadata(parameter_set, tile_shape)
         E = self._deterministic_vector_field(parameter_set, scale=1.0)
         B = self._deterministic_vector_field(parameter_set, scale=0.2)
@@ -603,6 +272,7 @@ class TestYeeTiled(unittest.TestCase):
             self.assertTrue(jnp.allclose(tiled, reference, rtol=1.0e-12, atol=1.0e-12))
         for original, after in zip(tile_vector_field(J, parameter_set, tile_shape), J_tiles):
             self.assertTrue(jnp.allclose(after, original, rtol=1.0e-12, atol=1.0e-12))
+
 
 
 if __name__ == "__main__":

@@ -11,7 +11,7 @@ from PyPIC3D.solvers.dark_matter_yee.dark_photon_fields import (
 )
 from PyPIC3D.solvers.dark_matter_yee.pml import initialize_dark_pml, advance_dark_pml
 from tests.kernel_fixtures import kernel_parameters
-from tests.code_tests.test_dark_photon import evolve, interior, wave
+from tests.support.dark_photon_fixtures import evolve, interior, wave
 
 
 def cavity(s, d, longitudinal, time=0., discrete=False):
