@@ -1,10 +1,13 @@
-"""Generate a fresh Harris-loaded dark-field run, with inputs at physical t=0."""
+"""Generate physical t=0 dark Harris inputs beside this script."""
 
-import argparse
 from pathlib import Path
+import sys
 
 import numpy as np
 import toml
+
+if __package__ in (None, ""):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from demos.standard_yee.reconnection_2d.initial_data import build_particle_arrays
 
@@ -47,11 +50,7 @@ def dark_vector_potential(x, z, config):
 
 
 def generate_initial_data(config):
-    """Write physical t=0 arrays to the paths in a native solver config.
-
-    Paths follow the runtime's working-directory convention. The CLI below
-    resolves them into a fresh run directory before calling this function.
-    """
+    """Write physical t=0 arrays beside dark_harris.toml, replacing old inputs."""
     simulation, loading = config["simulation_parameters"], config["initial_data"]
     electrons, positrons = config["particle1"], config["particle2"]
     skin_depth, b0, half_width, drift, vth = harris_scales(config)
@@ -76,53 +75,23 @@ def generate_initial_data(config):
         seed=loading["seed"], lx=lx, lz=lz, thermal_speed=vth,
         half_width=half_width, drift_speed=drift,
     )
-    for name, block in (("electron", electrons), ("positron", positrons)):
+    destination = Path(__file__).resolve().parent
+    for name in ("electron", "positron"):
         velocity = np.column_stack([arrays[f"{name}_v{axis}"] for axis in "xyz"])
         if np.any(np.sum(velocity**2, axis=1) >= simulation["C"]**2):
             raise ValueError("The Gaussian Harris loading produced a superluminal particle")
         for component in ("x", "y", "z", "vx", "vy", "vz"):
-            path = Path(block[f"initial_{component}"])
-            path.parent.mkdir(parents=True, exist_ok=True)
-            np.save(path, arrays[f"{name}_{component}"])
-    path = Path(config["dark_field1"]["path"])
-    path.parent.mkdir(parents=True, exist_ok=True)
-    np.save(path, ay)
+            np.save(destination / f"{name}_{component}.npy", arrays[f"{name}_{component}"])
+    np.save(destination / "dark_Ay.npy", ay)
     print(f"{count:,} particles/species; d_e={skin_depth:.9g} m; B0={b0:.9g} T")
     print(f"drift/c={drift/simulation['C']:.6g}; dark_mu*d_e={simulation['dark_mu']*skin_depth:.6g}")
     return {"dark_Ay": ay, **arrays}
 
 
-def main(argv=None):
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--config", type=Path, default=Path(__file__).with_name("dark_harris.toml"))
-    parser.add_argument("--output-dir", type=Path, required=True, help="New run directory (must not exist)")
-    parser.add_argument("--smoke", action="store_true", help="48x1x48 grid, 2,200 particles/species, 12 steps; runtime check only")
-    args = parser.parse_args(argv)
-    config = toml.load(args.config)
-    if args.smoke:
-        simulation, loading = config["simulation_parameters"], config["initial_data"]
-        simulation.update(Nx=48, Nz=48, particle_tile_nx=48, particle_tile_nz=48, Nt=12)
-        config["plotting"]["plotting_interval"] = 2
-        weight_scale = loading["n_sheet"] / 400
-        loading.update(n_sheet=400, n_background=1800)
-        for key in ("particle1", "particle2"):
-            config[key]["N_particles"] = 2200
-            config[key]["weight"] *= weight_scale
-    destination = args.output_dir.resolve()
-    destination.mkdir(parents=True, exist_ok=False)
-    config["simulation_parameters"]["output_dir"] = str(destination)
-    for key, block in config.items():
-        if key.startswith("particle"):
-            for field in list(block):
-                if field.startswith("initial_"):
-                    block[field] = str(destination / "initial_data" / Path(block[field]).name)
-        elif key.startswith("dark_field"):
-            block["path"] = str(destination / "initial_data" / Path(block["path"]).name)
+def main():
+    config = toml.load(Path(__file__).resolve().with_name("dark_harris.toml"))
     generate_initial_data(config)
-    path = destination / "run.toml"
-    with path.open("w") as handle:
-        toml.dump(config, handle)
-    print(f"Generated {path}\nRun: PyPIC3D --config {path}")
+    print("Initial conditions generated. Run from this directory: PyPIC3D --config dark_harris.toml")
 
 
 if __name__ == "__main__":

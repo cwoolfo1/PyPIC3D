@@ -2,6 +2,7 @@
 
 import argparse
 from pathlib import Path
+import sys
 
 import matplotlib
 matplotlib.use("Agg")
@@ -10,6 +11,9 @@ import matplotlib.pyplot as plt
 import numpy as np
 import openpmd_api as io
 import toml
+
+if __package__ in (None, ""):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from demos.dark_matter.dark_reconnection_2d.initial_data import harris_scales
 from demos.standard_yee.reconnection_2d.analyze_data import resolve_series_path
@@ -133,7 +137,7 @@ def analyze(config, fields_path, output_dir, *, fps=10, dpi=120, movie=True):
     times, fluxes = np.asarray(times), np.asarray(fluxes)
     flux_change = (fluxes-fluxes[0])/(scales["dark_B"]*skin_depth)
     np.savez(output_dir/"flux_history.npz", time=times, dark_flux=fluxes, normalized_flux_change=flux_change)
-    energy = np.loadtxt(Path(simulation["output_dir"])/"data/total_energy.txt", delimiter=",", ndmin=2)
+    energy = np.loadtxt(Path(simulation.get("output_dir", "."))/"data/total_energy.txt", delimiter=",", ndmin=2)
     if not np.all(np.isfinite(energy)):
         raise ValueError("Nonfinite data in total_energy.txt")
     figure, axes = plt.subplots(1, 2, figsize=(10, 4), constrained_layout=True)
@@ -149,7 +153,8 @@ def analyze(config, fields_path, output_dir, *, fps=10, dpi=120, movie=True):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--config", type=Path, required=True, help="Generated run.toml")
+    parser.add_argument("--config", type=Path, default=Path(__file__).resolve().with_name("dark_harris.toml"),
+                        help="Default: dark_harris.toml beside this script")
     parser.add_argument("--fields", type=Path, help="Override the run's data/fields.pmd")
     parser.add_argument("--output-dir", type=Path, help="Default: run directory / analysis")
     parser.add_argument("--fps", type=int, default=10)
@@ -157,7 +162,7 @@ def main(argv=None):
     parser.add_argument("--no-movie", action="store_true", help="Write figures and flux history only")
     args = parser.parse_args(argv)
     config = toml.load(args.config)
-    run_dir = Path(config["simulation_parameters"]["output_dir"])
+    run_dir = Path(config["simulation_parameters"].get("output_dir", "."))
     analyze(config, args.fields or run_dir/"data/fields.pmd", args.output_dir or run_dir/"analysis",
             fps=args.fps, dpi=args.dpi, movie=not args.no_movie)
 

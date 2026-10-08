@@ -1,4 +1,7 @@
-# Generate a fresh run from the repository root; see README.md in this directory.
+# Run from this directory:
+#   python initial_data.py
+#   PyPIC3D --config dark_harris.toml
+# Initial arrays are saved here; simulation outputs use the default data/ directory.
 # All dimensional quantities are SI. B0 denotes the field felt by particles.
 [simulation_parameters]
 name = "Dark-field electron-positron Harris reconnection"
@@ -34,7 +37,6 @@ particle_x_bc = "periodic"
 particle_y_bc = "periodic"
 particle_z_bc = "reflecting"
 verbose = false
-output_dir = "runs/dark_harris"
 
 [plotting]
 plotting_interval = 140
@@ -59,7 +61,7 @@ n_background = 450000
 [dark_field1]
 name = "Dark Harris Ay with X-point seed"
 type = 4
-path = "initial_data/dark_Ay.npy"
+path = "dark_Ay.npy"
 
 [particle1]
 name = "electrons"
@@ -68,12 +70,12 @@ charge = -1.602e-19
 mass = 9.1093837e-31
 vth = 14989622.9
 weight = 11258.808326179767
-initial_x = "initial_data/electron_x.npy"
-initial_y = "initial_data/electron_y.npy"
-initial_z = "initial_data/electron_z.npy"
-initial_vx = "initial_data/electron_vx.npy"
-initial_vy = "initial_data/electron_vy.npy"
-initial_vz = "initial_data/electron_vz.npy"
+initial_x = "electron_x.npy"
+initial_y = "electron_y.npy"
+initial_z = "electron_z.npy"
+initial_vx = "electron_vx.npy"
+initial_vy = "electron_vy.npy"
+initial_vz = "electron_vz.npy"
 x_bc = "periodic"
 y_bc = "periodic"
 z_bc = "reflecting"
@@ -85,12 +87,12 @@ charge = 1.602e-19
 mass = 9.1093837e-31
 vth = 14989622.9
 weight = 11258.808326179767
-initial_x = "initial_data/positron_x.npy"
-initial_y = "initial_data/positron_y.npy"
-initial_z = "initial_data/positron_z.npy"
-initial_vx = "initial_data/positron_vx.npy"
-initial_vy = "initial_data/positron_vy.npy"
-initial_vz = "initial_data/positron_vz.npy"
+initial_x = "positron_x.npy"
+initial_y = "positron_y.npy"
+initial_z = "positron_z.npy"
+initial_vx = "positron_vx.npy"
+initial_vy = "positron_vy.npy"
+initial_vz = "positron_vz.npy"
 x_bc = "periodic"
 y_bc = "periodic"
 z_bc = "reflecting"
