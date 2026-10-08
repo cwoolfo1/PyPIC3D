@@ -83,15 +83,20 @@ def generate_initial_data(config):
         for component in ("x", "y", "z", "vx", "vy", "vz"):
             np.save(destination / f"{name}_{component}.npy", arrays[f"{name}_{component}"])
     np.save(destination / "dark_Ay.npy", ay)
-    print(f"{count:,} particles/species; d_e={skin_depth:.9g} m; B0={b0:.9g} T")
-    print(f"drift/c={drift/simulation['C']:.6g}; dark_mu*d_e={simulation['dark_mu']*skin_depth:.6g}")
+
+    print(f"Number of particles/species: {count:,}")
+    print(f"Macroparticle weight: {electrons['weight']:.6g}")
+    print(f"Electron skin depth: {skin_depth:.9g} m")
+    print(f"Initial Harris B0: {b0:.9g} T")
+    print(f"Points per skin depth: {simulation['Nx']*skin_depth/lx:.3g}")
+
+
     return {"dark_Ay": ay, **arrays}
 
 
 def main():
     config = toml.load(Path(__file__).resolve().with_name("dark_harris.toml"))
     generate_initial_data(config)
-    print("Initial conditions generated. Run from this directory: PyPIC3D --config dark_harris.toml")
 
 
 if __name__ == "__main__":
