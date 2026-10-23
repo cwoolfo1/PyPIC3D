@@ -489,6 +489,8 @@ def initialize_simulation(toml_file, *, bssn_state=None, bssn_evolution_paramete
     dynamic_metric = solver == "dynamic_metric"
     gr_metric = static_metric or dynamic_metric
     dark_matter = solver == "dark_matter_yee"
+    if "metric" in config and not dynamic_metric:
+        raise ValueError("[metric] initialization requires solver='dynamic_metric'")
     if dynamic_metric:
         # Common-time D/B and particle u seed one consistent PIC history.
         # Legacy history/current files would otherwise be silently discarded.
@@ -644,17 +646,12 @@ def initialize_simulation(toml_file, *, bssn_state=None, bssn_evolution_paramete
         else None
     )
     if dynamic_metric:
-        from PyPIC3D.relativity.bssn_parameters import build_bssn_parameters
+        from PyPIC3D.relativity.bssn_parameters import load_bssn_parameters_from_toml
         from PyPIC3D.relativity.dynamical_relativity import build_bssn_metric
 
-        bssn_config = dict(config.get("bssn_parameters", {}))
-        gravity_G = bssn_config.pop("gravity_G", 1.0)
-        initial_time = bssn_config.pop("time", 0.0)
-        bssn = build_bssn_parameters(
-            static_parameters, dynamic_parameters, state=bssn_state,
-            evolution_parameters=(bssn_config if bssn_evolution_parameters is None
-                                  else bssn_evolution_parameters),
-            gravity_G=gravity_G, time=initial_time,
+        bssn = load_bssn_parameters_from_toml(
+            config, static_parameters, dynamic_parameters, state=bssn_state,
+            evolution_parameters=bssn_evolution_parameters,
         )
         dynamic_parameters = dynamic_parameters._replace(bssn_parameters=bssn)
         metric = build_bssn_metric(bssn.state, static_parameters, dynamic_parameters)
