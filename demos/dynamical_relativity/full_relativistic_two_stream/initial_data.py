@@ -438,11 +438,6 @@ def export_native_initial_data(output_dir, particles, species, fields, static, d
         metric[name] = float(getattr(bssn.evolution_parameters, name))
     for face in ("xl_bc", "xr_bc", "yl_bc", "yr_bc", "zl_bc", "zr_bc"):
         metric[face] = ("periodic", "sommerfeld")[int(getattr(bssn.evolution_parameters, face))]
-    config["diagnostics"].update(
-        number_density=metadata["number_density"], omega_pe=metadata["omega_pe"],
-        wave_number=metadata["wave_number"],
-        initial_metadata=str(directory / "initial_metadata.json"),
-    )
     with config_path.open("w") as stream:
         toml.dump(config, stream)
     return config_path

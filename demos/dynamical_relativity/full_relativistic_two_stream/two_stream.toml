@@ -80,16 +80,6 @@ yr_bc = "periodic"
 zl_bc = "periodic"
 zr_bc = "periodic"
 
-[diagnostics]
-constraint_interval = 10
-gravity_warning_limit = 1.0e-2
-electromagnetic_warning_limit = 1.0e-8
-number_density = 0.07957747154594767
-omega_pe = 1.0
-wave_number = 1.0
-make_plots = true
-initial_metadata = "initial_metadata.json"
-
 
 
 [particle1]
