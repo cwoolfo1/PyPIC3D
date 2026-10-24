@@ -168,6 +168,10 @@ def initialize_dynamical_relativity(particles, species, fields, static_parameter
     previous_B = update_B(E, B, metric, static_parameters, native_parameters, -1.5 * h, absorber=ba)
     history = (previous_D, previous_B, B, h, absorber)
     fields = (D, staggered_B, current, rho, phi, external, metric, history, overflow)
+    if static_parameters.gr_work_energy_theorem:
+        from PyPIC3D.diagnostics.gr_work_energy_theorem import initialize_tracker
+        tracker = initialize_tracker(particles, species, fields, static_parameters, dynamic_parameters)
+        dynamic_parameters = dynamic_parameters._replace(work_energy_tracker=tracker)
     return particles, fields, dynamic_parameters
 
 

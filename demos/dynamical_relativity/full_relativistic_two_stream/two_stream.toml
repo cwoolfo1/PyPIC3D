@@ -1,6 +1,7 @@
 [simulation_parameters]
 name = "full_relativistic_two_stream"
 solver = "dynamic_metric"
+gr_work_energy_theorem = true
 metric = "numerical"
 
 t_wind = 50.0

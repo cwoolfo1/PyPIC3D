@@ -58,6 +58,22 @@ def time_loop_dynamical_relativity(
         particles, species_config, fields, metric, static_parameters, dynamic_parameters,
     )
 
+    if static_parameters.gr_work_energy_theorem:
+        from PyPIC3D.diagnostics.gr_work_energy_theorem import (
+            sample_energy, start_tracker, advance_tracker,
+        )
+        # The initial callbacks may change geometry before the first push.
+        # Establish E0 and its source sample only after matching that geometry.
+        # Later intervals retain their previous endpoint, including any error
+        # from a discontinuous user callback rather than resetting the budget.
+        def prepared_baseline(_):
+            prepared = dynamic_parameters._replace(bssn_parameters=bssn._replace(state=state))
+            sample = sample_energy(particles, species_config, fields, static_parameters, prepared)
+            return start_tracker(sample, static_parameters.gr_work_energy_reference)
+
+        tracker = jax.lax.cond(dynamic_parameters.work_energy_tracker.steps == 0,
+                               prepared_baseline, lambda _: dynamic_parameters.work_energy_tracker, None)
+
     # First PIC half-step with the initial metric. Retain the incoming
     # history to reconstruct B at the new particle position time.
     before = fields
@@ -132,4 +148,8 @@ def time_loop_dynamical_relativity(
     dynamic_parameters = dynamic_parameters._replace(
         bssn_parameters=bssn._replace(state=final_state, time=time + dt),
     )
+    if static_parameters.gr_work_energy_theorem:
+        sample = sample_energy(particles, species_config, fields, static_parameters, dynamic_parameters)
+        dynamic_parameters = dynamic_parameters._replace(
+            work_energy_tracker=advance_tracker(tracker, sample))
     return particles, fields, dynamic_parameters

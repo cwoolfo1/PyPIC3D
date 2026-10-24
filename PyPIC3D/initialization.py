@@ -403,6 +403,8 @@ def default_parameters():
         "filter_j": "bilinear",
         "supergaussian_active": False,
         "supergaussian_layers": (),
+        "gr_work_energy_theorem": False,
+        "gr_work_energy_reference": None,
     }
 
     dynamic_parameters = {
