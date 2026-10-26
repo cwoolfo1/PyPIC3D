@@ -42,6 +42,7 @@ from PyPIC3D.boundary_conditions.ghost_cells import (
 )
 from PyPIC3D.boundary_conditions.staggered import refresh_fields
 from PyPIC3D.solvers.electrostatic.time_loop import time_loop_electrostatic
+from PyPIC3D.solvers.electrostatic.electrostatic_yee import calculate_electrostatic_fields
 from PyPIC3D.solvers.GR_yee.time_loop import time_loop_static_metric
 from PyPIC3D.solvers.yee.time_loop import time_loop_electrodynamic
 from PyPIC3D.solvers.dark_matter_yee.time_loop import time_loop_dark_photon, dark_photon_push_fields
@@ -53,7 +54,7 @@ from PyPIC3D.boundary_conditions.grid_and_stencil import (
 )
 from PyPIC3D.boundary_conditions.PML import initialize_tiled_pml_state, load_pml_from_toml
 from PyPIC3D.boundary_conditions.supergaussian import load_supergaussian_from_toml
-from PyPIC3D.utilities.parameters import build_dynamic_parameters, build_static_parameters, validate_dark_parameters
+from PyPIC3D.utilities.parameters import build_dynamic_parameters, build_static_parameters, resolve_field_gather, validate_dark_parameters
 from PyPIC3D.relativity.core import B_FIELD_LOCATIONS, D_FIELD_LOCATIONS
 from PyPIC3D.relativity.metrics.flat import (
     initialize_flat_cartesian_metric,
@@ -389,6 +390,7 @@ def default_parameters():
         "cfl": 1.0,
         "ds_per_debye": None,
         "shape_factor": 1,
+        "field_gather": "auto",
         "guard_cells": None,
         "electrostatic_schwarz_tol": 1.0e-6,
         "electrostatic_schwarz_max_iterations": 500,
@@ -572,6 +574,9 @@ def initialize_simulation(toml_file, *, bssn_state=None, bssn_evolution_paramete
         dynamic_config["t_wind"] = t_wind
 
     static_config["current_deposition"] = _encode_current_calculation(static_config["current_calculation"])
+    static_config["field_gather"] = resolve_field_gather(
+        solver, static_config["current_deposition"], static_config["field_gather"],
+    )
     static_config["current_filter"] = static_config["filter_j"]
     static_config["boundary_conditions"] = {
         "x": _encode_field_bc(static_config["x_bc"]),
@@ -607,10 +612,12 @@ def initialize_simulation(toml_file, *, bssn_state=None, bssn_evolution_paramete
     static_config["supergaussian_layers"] = supergaussian_config[-1]
     _apply_supergaussian_field_boundaries(static_config, supergaussian_config)
 
-    if electrostatic:
+    if electrostatic and static_config["field_gather"] == "uniform":
         center_grid, vertex_grid = build_collocated_grid(dynamic_setup)
     else:
         center_grid, vertex_grid = build_yee_grid(dynamic_setup)
+    # Galerkin electrostatics places each E component halfway between phi
+    # samples in its own direction, as does the native Yee electric field.
     # The pusher and direct-current deposition paths use the legacy PyPIC3D
     # convention: "center" is the collocated/base Yee grid, while "vertex" is
     # the staggered grid used for the component offsets.
@@ -775,6 +782,14 @@ def initialize_simulation(toml_file, *, bssn_state=None, bssn_evolution_paramete
         external_E = update_tiled_ghost_cells(external_E, static_parameters, num_guard_cells=guard_cells)
         external_B = update_tiled_ghost_cells(external_B, static_parameters, num_guard_cells=guard_cells)
     external_fields = (external_E, external_B)
+
+    if electrostatic and static_parameters.field_gather == "galerkin":
+        # Seed the leapfrog velocity with the self-consistent field at x(0).
+        # Prescribed external fields remain separate; the Poisson solution
+        # replaces any evolving E supplied in the initial field configuration.
+        E, phi, rho = calculate_electrostatic_fields(
+            static_parameters, dynamic_parameters, particles, species_config, rho, phi,
+        )
 
     dark_fields = load_dark_fields_from_toml(config, static_parameters, dynamic_parameters) if dark_matter else None
     pml_state = None

@@ -109,7 +109,7 @@ Time and Grid Parameters
 Numerical Choices
 -----------------
 
-- ``solver`` is ``electrodynamic_yee``, ``electrostatic``, ``static_metric``, or
+- ``solver`` is ``electrodynamic_yee``, ``electrostatic``, ``static_metric``, ``dynamic_metric``, or
   ``dark_matter_yee``. The dark solver's equations and staggering are described
   in :doc:`solvers`.
 - ``particle_pusher`` is ``boris`` or ``higuera_cary``. The ``relativistic``
@@ -126,8 +126,17 @@ Numerical Choices
   mesh device, capped by the largest active tile population. Other accelerator
   backends use a conservative target of 1024 particles. The resolved value is
   printed before JIT compilation.
-- ``shape_factor`` is ``1`` or ``2`` for particle shapes and electromagnetic
-  field gathering. It does not select the particle-metric reconstruction.
+- ``shape_factor`` is ``1`` or ``2`` for the deposited particle shape. It also
+  sets the base order of field gathering. It does not select the particle-metric
+  reconstruction.
+- ``field_gather`` is ``auto`` (default), ``uniform``, or ``galerkin``.
+  ``auto`` selects Galerkin for electrostatics and for Esirkepov deposition in
+  every electromagnetic solver, including dark fields and both GR solvers.
+  Direct current deposition selects uniform gathering. Explicit Galerkin with
+  direct electromagnetic deposition is rejected; electrostatics is exempt.
+  Use ``uniform`` to reproduce the previous native-grid interpolation and
+  electrostatic startup. This is not WarpX's momentum-conserving nodal gather.
+  The resolved selection is recorded in output configuration.
 - ``current_calculation`` is ``j_from_rhov`` or ``esirkepov`` for the Yee
   solvers, or ``GR_direct_deposition`` or ``esirkepov`` for
   ``static_metric``. ``esirkepov`` is charge conserving and preserves

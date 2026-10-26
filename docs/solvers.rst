@@ -95,6 +95,31 @@ histories.
 Electrostatic Step
 ------------------
 
+The default ``field_gather = "auto"`` selects Galerkin electrostatics. Charge
+and potential retain their collocated nodes and Poisson operator. Electric
+component ``i`` moves half a cell along axis ``i`` and is computed with a
+forward potential difference. Combined with the component-dependent particle
+orders, the gathered force is the derivative of the interpolated potential.
+At least two guard cells are required. Unresolved axes have zero self-field
+derivative.
+
+Potential halos are refreshed before differentiating across the usable halo
+region. Conducting boundaries retain the scalar potential's existing Neumann
+extension; the resulting electric field is not clamped by the electromagnetic
+PEC projector. For a converged, periodic, unfiltered solve, the staggered
+electric energy equals ``sum(rho*phi)*dV/2``. Filtering and physical boundaries
+require their own work and boundary terms; this identity is not universal.
+
+Before initial energy sampling and velocity seeding, Galerkin electrostatics
+solves the initial particle charge and replaces ``evolve = true`` electric
+fields with this self-field. Prescribed ``evolve = false`` fields remain
+separate. External field arrays must be sampled at the selected component
+locations; they are not resampled from legacy collocated data. openPMD records
+the component offsets of the actual grids.
+
+Explicit ``field_gather = "uniform"`` retains the previous collocated electric
+grids, centered potential differences, and startup behavior.
+
 The electrostatic timestep:
 
 1. Pushes particle velocity from fields.

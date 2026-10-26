@@ -48,6 +48,7 @@ class StaticParameters(NamedTuple):
     dark_mu: float = 0.0
     gr_work_energy_theorem: bool = False
     gr_work_energy_reference: object = None
+    field_gather: str = "auto"
 
 
 class DynamicParameters(NamedTuple):
@@ -112,6 +113,18 @@ def validate_dark_parameters(sin_chi, dark_mu):
         raise ValueError("dark_mu must be a finite nonnegative inverse length")
 
 
+def resolve_field_gather(solver, current_deposition, field_gather="auto"):
+    """Select force interpolation without changing the deposited particle shape."""
+    if field_gather not in ("auto", "uniform", "galerkin"):
+        raise ValueError("field_gather must be 'auto', 'uniform', or 'galerkin'")
+    compatible = solver == "electrostatic" or current_deposition == "esirkepov"
+    if field_gather == "auto":
+        return "galerkin" if compatible else "uniform"
+    if field_gather == "galerkin" and not compatible:
+        raise ValueError("Galerkin electromagnetic gathering requires Esirkepov current deposition")
+    return field_gather
+
+
 def build_static_parameters(static_config):
     """
     Collect compile-time PIC choices for the timestep kernels.
@@ -122,6 +135,11 @@ def build_static_parameters(static_config):
     """
 
     static_config = dict(static_config)
+    field_gather = resolve_field_gather(
+        static_config.get("solver", "electrodynamic_yee"),
+        static_config.get("current_deposition", "direct"),
+        static_config.get("field_gather", "auto"),
+    )
     if static_config.get("gr_work_energy_theorem", False) and static_config.get("solver") != "dynamic_metric":
         raise ValueError("GR work-energy theorem requires solver='dynamic_metric'")
     energy_reference = static_config.get("gr_work_energy_reference")
@@ -150,6 +168,8 @@ def build_static_parameters(static_config):
         raise ValueError("Tiled fields require at least one guard cell.")
     if hybrid and guard_cells < 3:
         raise ValueError("Hybrid Hermite particle metrics require guard_cells >= 3")
+    if static_config.get("solver") == "electrostatic" and field_gather == "galerkin" and guard_cells < 2:
+        raise ValueError("Galerkin electrostatics requires guard_cells >= 2")
     tile_shape = _tile_shape(static_config)
     particle_batch_size = static_config.get("particle_batch_size", 1)
     if (isinstance(particle_batch_size, bool) or not isinstance(particle_batch_size, Integral)
@@ -191,6 +211,7 @@ def build_static_parameters(static_config):
         dark_mu=float(static_config.get("dark_mu", 0.0)),
         gr_work_energy_theorem=bool(static_config.get("gr_work_energy_theorem", False)),
         gr_work_energy_reference=None if energy_reference is None else float(energy_reference),
+        field_gather=field_gather,
     )
 
 
@@ -249,6 +270,9 @@ def _output_value(value):
 def static_parameters_for_output(static_parameters):
     skip = {"field_mesh"}
     static_items = static_parameters._asdict()
+    static_items["field_gather"] = resolve_field_gather(
+        static_parameters.solver, static_parameters.current_deposition, static_parameters.field_gather,
+    )
     if static_parameters.solver in ("static_metric", "dynamic_metric"):
         from PyPIC3D.relativity.interpolate_metric import RECONSTRUCTION
         static_items["particle_metric_reconstruction"] = RECONSTRUCTION

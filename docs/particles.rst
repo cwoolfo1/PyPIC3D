@@ -202,3 +202,39 @@ Shape Factors
 
 Use the same shape factor when comparing runs because it changes the particle
 stencil, numerical smoothing, and guard-cell reach.
+
+With ``field_gather = "galerkin"`` and particle order ``p``, electric component
+``i`` uses order ``p-1`` along ``i`` and order ``p`` transversely. Magnetic
+component ``i`` uses order ``p`` along ``i`` and order ``p-1`` transversely.
+Thus linear particles use piecewise-constant interpolation in the reduced-order
+directions. At an exact nearest-point tie, order zero selects the higher index.
+Inactive spatial axes contribute one weight. Charge and current deposition
+retain the original particle order in every active direction.
+
+``field_gather = "uniform"`` uses order ``p`` along every active direction on
+each component's native grid. ``auto`` selects Galerkin for electrostatics or
+Esirkepov deposition and uniform for direct electromagnetic deposition.
+
+The same selection is used for Boris, Higuera-Cary, initial velocity seeding,
+and synchronization. Dark fields retain their synchronized force combinations
+and filtering. GR first undensitizes each component at its grid nodes, gathers
+the physical contravariant fields, then lowers indices with the particle
+metric and applies the existing lapse factors and geodesic split. Metric
+interpolation remains cubic Hermite; metric derivatives and stress deposition
+are unchanged. Both dynamical-GR PIC half-steps and metric rephasing use this
+same gather.
+
+Galerkin gathering changes spatial particle-field coupling. It does not make
+the explicit time integrator exactly energy conserving or imply conserved
+coordinate energy or momentum in a general curved, time-dependent metric.
+
+The October 2026 validation reproduced the existing charged-pusher reference
+in a chart with varying lapse, shift, and non-diagonal spatial metric. With
+Galerkin orders 1 and 2, position errors on grids of width 8, 16, and 32 were
+``1.760e-4``, ``4.997e-5``, and ``1.912e-6`` at time 3 with ``dt=3/16000``.
+The finest-grid timestep-halving difference was ``6.9e-11``. Physical D and B
+were constant in this probe, so these results constrain metric reconstruction
+and trajectory accuracy rather than the spatial convergence of a varying
+electromagnetic gather. Separate tests cover native-node undensitization in
+varying metrics and nonconstant-field selection through dynamical-GR seeding,
+synchronization, metric rephasing, and both PIC half-steps.

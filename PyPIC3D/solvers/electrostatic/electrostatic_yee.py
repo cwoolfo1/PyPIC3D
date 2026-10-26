@@ -3,6 +3,7 @@ from jax import lax
 
 from PyPIC3D.deposition.rho import compute_rho
 from PyPIC3D.utilities.filters import digital_filter
+from PyPIC3D.utilities.parameters import resolve_field_gather
 from PyPIC3D.boundary_conditions import ghost_cells
 from PyPIC3D.boundary_conditions.grid_and_stencil import BC_CONDUCTING, BC_PERIODIC
 
@@ -420,6 +421,47 @@ def _centered_tiled_electrostatic_gradient(phi_tiles, static_parameters, dynamic
     return ghost_cells.update_tiled_ghost_cells((Ex, Ey, Ez), static_parameters, g)
 
 
+def _staggered_tiled_electrostatic_gradient(phi_tiles, static_parameters, dynamic_parameters, g):
+    """Differentiate the extended potential onto the native Yee electric sites."""
+
+    phi_tiles = _apply_tiled_phi_constant_boundaries(phi_tiles, static_parameters, g)
+    Ex = jnp.zeros_like(phi_tiles)
+    Ey = jnp.zeros_like(phi_tiles)
+    Ez = jnp.zeros_like(phi_tiles)
+
+    # Differentiate across the full transverse halos as well as the interior.
+    # This retains the scalar potential's physical boundary extension; a
+    # vector halo refresh or PEC clamp would replace these exterior gradients.
+    if phi_tiles.shape[0] * static_parameters.tile_shape[0] > 1:
+        Ex = Ex.at[..., :-1, :, :].set(
+            -(phi_tiles[..., 1:, :, :] - phi_tiles[..., :-1, :, :]) / dynamic_parameters.dx
+        )
+    if phi_tiles.shape[1] * static_parameters.tile_shape[1] > 1:
+        Ey = Ey.at[..., :, :-1, :].set(
+            -(phi_tiles[..., :, 1:, :] - phi_tiles[..., :, :-1, :]) / dynamic_parameters.dy
+        )
+    if phi_tiles.shape[2] * static_parameters.tile_shape[2] > 1:
+        Ez = Ez.at[..., :, :, :-1].set(
+            -(phi_tiles[..., :, :, 1:] - phi_tiles[..., :, :, :-1]) / dynamic_parameters.dz
+        )
+    # Collapsed axes have no self-field gradient. With g >= 2 the last normal
+    # halo plane, which lacks a forward phi neighbor, is outside gather support.
+    return Ex, Ey, Ez
+
+
+def electrostatic_gradient(phi_tiles, static_parameters, dynamic_parameters, g):
+    """Use the potential derivative associated with the selected force gather."""
+
+    field_gather = resolve_field_gather(
+        static_parameters.solver,
+        static_parameters.current_deposition,
+        static_parameters.field_gather,
+    )
+    if field_gather == "galerkin":
+        return _staggered_tiled_electrostatic_gradient(phi_tiles, static_parameters, dynamic_parameters, g)
+    return _centered_tiled_electrostatic_gradient(phi_tiles, static_parameters, dynamic_parameters, g)
+
+
 def calculate_electrostatic_fields(
     static_parameters,
     dynamic_parameters,
@@ -455,6 +497,6 @@ def calculate_electrostatic_fields(
     phi_tiles = _apply_tiled_phi_constant_boundaries(phi_tiles, static_parameters, g)
     # preserve the established solve -> filter -> halo refresh ordering
 
-    E_tiles = _centered_tiled_electrostatic_gradient(phi_tiles, static_parameters, dynamic_parameters, g)
+    E_tiles = electrostatic_gradient(phi_tiles, static_parameters, dynamic_parameters, g)
 
     return E_tiles, phi_tiles, rho_tiles

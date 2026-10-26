@@ -125,13 +125,20 @@ def _configure_openpmd_mesh(
 
 
 def _set_mesh_position(record, name, component_index, active_dims, dynamic_parameters):
-    """Record native Yee offsets for dark and dynamical GR fields."""
+    """Record component offsets from the actual collocated or Yee grids."""
     locations = DARK_MESH_LOCATIONS.get(name)
-    if getattr(dynamic_parameters, "bssn_parameters", None) is not None:
+    if locations is None:
         locations = {"E": D_FIELD_LOCATIONS, "B": B_FIELD_LOCATIONS, "J": D_FIELD_LOCATIONS}.get(name)
     if locations is not None:
         location = locations[component_index]
-        record.position = [0.5 if point == "V" else 0.0 for point, active in zip(location, active_dims) if active]
+        grids = dynamic_parameters.grids
+        spacings = (dynamic_parameters.dx, dynamic_parameters.dy, dynamic_parameters.dz)
+        record.position = [
+            float((vertex[1] - center[1]) / spacing) if point == "V" else 0.0
+            for point, active, center, vertex, spacing in zip(
+                location, active_dims, grids.center, grids.vertex, spacings)
+            if active
+        ]
 
 
 def _write_openpmd_scalar_mesh(iteration, name, data, dynamic_parameters, active_dims=(1,1,1)):

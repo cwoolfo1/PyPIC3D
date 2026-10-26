@@ -124,7 +124,18 @@ def relativistic_boris_single_particle(vx, vy, vz, efield_atx, efield_aty, efiel
     return newv[0], newv[1], newv[2]
 
 
-@partial(jit, static_argnames=("ghost_cells", "active_axes", "inactive_axis_indices"))
+def field_component_orders(shape_factor, field_gather):
+    """Per-axis Yee E/B gather orders; ``None`` retains the uniform path."""
+    if field_gather == "uniform":
+        return (None, None, None), (None, None, None)
+
+    p = shape_factor
+    electric = ((p - 1, p, p), (p, p - 1, p), (p, p, p - 1))
+    magnetic = ((p, p - 1, p - 1), (p - 1, p, p - 1), (p - 1, p - 1, p))
+    return electric, magnetic
+
+
+@partial(jit, static_argnames=("ghost_cells", "active_axes", "inactive_axis_indices", "axis_orders"))
 def interpolate_field_to_particles(
     field,
     x,
@@ -135,6 +146,7 @@ def interpolate_field_to_particles(
     ghost_cells=False,
     active_axes=None,
     inactive_axis_indices=None,
+    axis_orders=None,
 ):
     """
     Interpolate a Yee-grid field to particle positions using PIC shape functions.
@@ -146,6 +158,8 @@ def interpolate_field_to_particles(
         x, y, z (ndarray): Particle coordinates.
         grid (tuple): Component grid coordinates (x_grid, y_grid, z_grid).
         shape_factor (int): Particle shape order (1 -> first order, 2 -> second order).
+        axis_orders (tuple or None): Optional static field interpolation orders
+            in x, y and z, each 0, 1 or 2. ``None`` retains the uniform gather.
 
     Returns:
         ndarray: Interpolated field values with shape
@@ -163,34 +177,57 @@ def interpolate_field_to_particles(
     else:
         x_active, y_active, z_active = active_axes
 
-    _, _, deltax, xpts = prepare_particle_axis_stencil(
-        x, x_grid, Nx, shape_factor, BC_PERIODIC, ghost_cells=ghost_cells
-    )
-    _, _, deltay, ypts = prepare_particle_axis_stencil(
-        y, y_grid, Ny, shape_factor, BC_PERIODIC, ghost_cells=ghost_cells
-    )
-    _, _, deltaz, zpts = prepare_particle_axis_stencil(
-        z, z_grid, Nz, shape_factor, BC_PERIODIC, ghost_cells=ghost_cells
-    )
     dx = x_grid[1] - x_grid[0] if Nx > 1 else 1.0
     dy = y_grid[1] - y_grid[0] if Ny > 1 else 1.0
     dz = z_grid[1] - z_grid[0] if Nz > 1 else 1.0
-    # determine the distance from the closest grid nodes
 
-    x_weights, y_weights, z_weights = jax.lax.cond(
-        shape_factor == 1,
-        lambda _: get_first_order_weights(deltax, deltay, deltaz, dx, dy, dz),
-        lambda _: get_second_order_weights(deltax, deltay, deltaz, dx, dy, dz),
-        operand=None,
-    )
-    x_weights = jnp.asarray(x_weights)
-    y_weights = jnp.asarray(y_weights)
-    z_weights = jnp.asarray(z_weights)
-    # compute the shape function weights for the particles and convert them to arrays
+    if axis_orders is None:
+        _, _, deltax, xpts = prepare_particle_axis_stencil(
+            x, x_grid, Nx, shape_factor, BC_PERIODIC, ghost_cells=ghost_cells
+        )
+        _, _, deltay, ypts = prepare_particle_axis_stencil(
+            y, y_grid, Ny, shape_factor, BC_PERIODIC, ghost_cells=ghost_cells
+        )
+        _, _, deltaz, zpts = prepare_particle_axis_stencil(
+            z, z_grid, Nz, shape_factor, BC_PERIODIC, ghost_cells=ghost_cells
+        )
+        x_weights, y_weights, z_weights = jax.lax.cond(
+            shape_factor == 1,
+            lambda _: get_first_order_weights(deltax, deltay, deltaz, dx, dy, dz),
+            lambda _: get_second_order_weights(deltax, deltay, deltaz, dx, dy, dz),
+            operand=None,
+        )
+        x_weights = jnp.asarray(x_weights)
+        y_weights = jnp.asarray(y_weights)
+        z_weights = jnp.asarray(z_weights)
+        xpts = jnp.asarray(xpts)
+        ypts = jnp.asarray(ypts)
+        zpts = jnp.asarray(zpts)
+    else:
+        def axis_stencil(position, axis, spacing, order):
+            r = (position - axis[0]) / spacing
+            if order == 0:
+                # Half-cell ties belong to the upper node, including negative r.
+                anchor = jnp.floor(r + 0.5).astype(int)
+                points = jnp.mod(anchor[jnp.newaxis, :], len(axis))
+                return points, jnp.ones_like(position)[jnp.newaxis, :]
 
-    xpts = jnp.asarray(xpts)
-    ypts = jnp.asarray(ypts)
-    zpts = jnp.asarray(zpts)
+            _, _, offset, points = prepare_particle_axis_stencil(
+                position, axis, len(axis), order, BC_PERIODIC, ghost_cells=ghost_cells
+            )
+            delta = offset / spacing
+            if order == 1:
+                weights = jnp.stack((jnp.zeros_like(delta), 1.0 - delta, delta))
+            elif order == 2:
+                weights = jnp.stack((0.5 * (0.5 - delta)**2, 0.75 - delta**2,
+                                     0.5 * (0.5 + delta)**2))
+            else:
+                raise ValueError("Field interpolation orders must be 0, 1 or 2.")
+            return points, weights
+
+        xpts, x_weights = axis_stencil(x, x_grid, dx, axis_orders[0])
+        ypts, y_weights = axis_stencil(y, y_grid, dy, axis_orders[1])
+        zpts, z_weights = axis_stencil(z, z_grid, dz, axis_orders[2])
 
     def collapse_axis(points, weights, axis_size, axis_active, inactive_index):
         if axis_active:

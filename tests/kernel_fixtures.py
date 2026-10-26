@@ -6,7 +6,7 @@ import numpy as np
 
 from PyPIC3D.boundary_conditions.ghost_cells import make_field_mesh, update_tiled_ghost_cells
 from PyPIC3D.boundary_conditions.grid_and_stencil import BC_PERIODIC
-from PyPIC3D.utilities.parameters import DynamicParameters, GridParameters, StaticParameters
+from PyPIC3D.utilities.parameters import DynamicParameters, GridParameters, StaticParameters, resolve_field_gather
 from PyPIC3D.particles.particle_class import SpeciesConfig, TiledParticles
 from PyPIC3D.utilities.grids import build_collocated_grid, build_tiled_yee_grids, build_yee_grid, grid_domain_bounds
 
@@ -53,6 +53,7 @@ def kernel_parameters(
     particle_pusher="boris",
     current_deposition="direct",
     current_filter="none",
+    field_gather="auto",
     electrostatic_schwarz_tol=1.0e-6,
     electrostatic_schwarz_max_iterations=500,
     electrostatic_local_cg_tol=1.0e-6,
@@ -114,6 +115,7 @@ def kernel_parameters(
         particle_pusher=particle_pusher,
         current_deposition=current_deposition,
         current_filter=current_filter,
+        field_gather=field_gather,
         metric=metric,
         metric_mass=float(metric_mass),
         metric_spin=float(metric_spin),
@@ -174,7 +176,7 @@ def kernel_parameters(
         y_min=jnp.asarray(y_min),
         z_min=jnp.asarray(z_min),
     )
-    if electrostatic:
+    if (electrostatic or solver == "electrostatic") and resolve_field_gather(solver, current_deposition, field_gather) == "uniform":
         center_grid, vertex_grid = build_collocated_grid(grid_setup)
     else:
         center_grid, vertex_grid = build_yee_grid(grid_setup)
@@ -250,6 +252,7 @@ def kernel_parameters_from_values(parameter_set, dynamic_values=None):
         particle_pusher=parameter_set.get("particle_pusher", "boris"),
         current_deposition=parameter_set.get("current_deposition", "direct"),
         current_filter=parameter_set.get("current_filter", "none"),
+        field_gather=parameter_set.get("field_gather", "auto"),
         electrostatic_schwarz_tol=parameter_set.get("electrostatic_schwarz_tol", 1.0e-6),
         electrostatic_schwarz_max_iterations=parameter_set.get("electrostatic_schwarz_max_iterations", 500),
         electrostatic_local_cg_tol=parameter_set.get("electrostatic_local_cg_tol", 1.0e-6),
@@ -308,6 +311,7 @@ def particle_parameters_from_values(parameter_set, tile_shape=None, dynamic_valu
         particle_pusher=parameter_set.get("particle_pusher", "boris"),
         current_deposition=parameter_set.get("current_deposition", "direct"),
         current_filter=parameter_set.get("current_filter", "none"),
+        field_gather=parameter_set.get("field_gather", "auto"),
         metric=parameter_set.get("metric", "flat_cartesian"),
         metric_mass=float(parameter_set.get("metric_mass", 1.0)),
         metric_spin=float(parameter_set.get("metric_spin", 0.0)),

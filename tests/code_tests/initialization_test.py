@@ -595,6 +595,7 @@ class TestInitializationFunctions(InitializationFunctionsFixtures, unittest.Test
                     "name": "electrostatic collocated grid test",
                     "output_dir": tmpdir,
                     "solver": "electrostatic",
+                    "field_gather": "uniform",
                     "Nx": 4,
                     "Ny": 2,
                     "Nz": 1,

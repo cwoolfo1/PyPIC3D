@@ -9,11 +9,13 @@ from PyPIC3D.particles.particle_batching import (
 )
 from PyPIC3D.pusher.boris import (
     boris_single_particle,
+    field_component_orders,
     interpolate_field_to_particles,
     relativistic_boris_single_particle,
 )
 from PyPIC3D.pusher.higuera_cary import higuera_cary_single_particle
 from PyPIC3D.pusher.hybrid_boris_geodesic import hybrid_boris_geodesic_push
+from PyPIC3D.utilities.parameters import resolve_field_gather
 
 
 def particle_push(particles, species_config, E_tiles, B_tiles, static_parameters, dynamic_parameters):
@@ -39,6 +41,10 @@ def particle_push(particles, species_config, E_tiles, B_tiles, static_parameters
     g = int(static_parameters.guard_cells)
     dt = dynamic_parameters.dt
     shape_factor = static_parameters.shape_factor
+    field_gather = resolve_field_gather(
+        static_parameters.solver, static_parameters.current_deposition, static_parameters.field_gather
+    )
+    electric_orders, magnetic_orders = field_component_orders(shape_factor, field_gather)
 
     tiled_center_grid = dynamic_parameters.grids.tiled_center_grid
     tiled_vertex_grid = dynamic_parameters.grids.tiled_vertex_grid
@@ -118,28 +124,34 @@ def particle_push(particles, species_config, E_tiles, B_tiles, static_parameters
 
             efield_atx = interpolate_field_to_particles(
                 Ex_tile, x, y, z, Ex_grid, shape_factor, ghost_cells=True,
-                active_axes=active_axes, inactive_axis_indices=inactive_axis_indices
+                active_axes=active_axes, inactive_axis_indices=inactive_axis_indices,
+                axis_orders=electric_orders[0],
             )
             efield_aty = interpolate_field_to_particles(
                 Ey_tile, x, y, z, Ey_grid, shape_factor, ghost_cells=True,
-                active_axes=active_axes, inactive_axis_indices=inactive_axis_indices
+                active_axes=active_axes, inactive_axis_indices=inactive_axis_indices,
+                axis_orders=electric_orders[1],
             )
             efield_atz = interpolate_field_to_particles(
                 Ez_tile, x, y, z, Ez_grid, shape_factor, ghost_cells=True,
-                active_axes=active_axes, inactive_axis_indices=inactive_axis_indices
+                active_axes=active_axes, inactive_axis_indices=inactive_axis_indices,
+                axis_orders=electric_orders[2],
             )
 
             bfield_atx = interpolate_field_to_particles(
                 Bx_tile, x, y, z, Bx_grid, shape_factor, ghost_cells=True,
-                active_axes=active_axes, inactive_axis_indices=inactive_axis_indices
+                active_axes=active_axes, inactive_axis_indices=inactive_axis_indices,
+                axis_orders=magnetic_orders[0],
             )
             bfield_aty = interpolate_field_to_particles(
                 By_tile, x, y, z, By_grid, shape_factor, ghost_cells=True,
-                active_axes=active_axes, inactive_axis_indices=inactive_axis_indices
+                active_axes=active_axes, inactive_axis_indices=inactive_axis_indices,
+                axis_orders=magnetic_orders[1],
             )
             bfield_atz = interpolate_field_to_particles(
                 Bz_tile, x, y, z, Bz_grid, shape_factor, ghost_cells=True,
-                active_axes=active_axes, inactive_axis_indices=inactive_axis_indices
+                active_axes=active_axes, inactive_axis_indices=inactive_axis_indices,
+                axis_orders=magnetic_orders[2],
             )
 
             if particle_pusher == "boris":
