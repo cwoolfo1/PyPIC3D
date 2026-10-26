@@ -49,6 +49,7 @@ from PyPIC3D.relativity.energy_momentum_tensor import (
     electromagnetic_moments,
 )
 from PyPIC3D.relativity.interpolate_metric import interpolate_metric
+from PyPIC3D.relativity.filtering import filter_gr_grid, particle_metric
 from PyPIC3D.utilities.grids import build_tiled_yee_grids, build_yee_grid
 from PyPIC3D.utilities.parameters import (
     build_dynamic_parameters,
@@ -76,11 +77,14 @@ END_TIME = 50.0
 GUARD_CELLS = 3
 PARTICLE_BATCH_SIZE = 256
 KO_DISSIPATION = 0.002
+CURRENT_FILTER = "bilinear"               # Matched source and particle-gather filter.
+CURRENT_FILTER_ALPHA = 1.0                 # Central weight for the digital stencil.
 MAX_NEWTON_ITERATIONS = 20
 VOLUME_TOLERANCE = 1.0e-12
 
 
-def build_parameters(nx, length, end_time, cfl, gravity_G, output_dir):
+def build_parameters(nx, length, end_time, cfl, gravity_G, output_dir,
+                     *, current_filter=CURRENT_FILTER, filter_alpha=CURRENT_FILTER_ALPHA):
     """One periodic tile with one resolved spatial axis and 3D momenta."""
     dx = length / nx
     nt = max(1, math.ceil(end_time / (cfl * dx)))
@@ -88,13 +92,13 @@ def build_parameters(nx, length, end_time, cfl, gravity_G, output_dir):
     config = dict(
         Nx=nx, Ny=1, Nz=1, x_wind=length, y_wind=1.0, z_wind=1.0,
         x_min=0.0, y_min=0.0, z_min=0.0, dx=dx, dy=1.0, dz=1.0, dt=dt,
-        C=1.0, eps=1.0, mu=1.0, kb=1.0,
+        C=1.0, eps=1.0, mu=1.0, kb=1.0, alpha=filter_alpha,
     )
     static = build_static_parameters(dict(
         **config, name="full_relativistic_two_stream", output_dir=str(output_dir),
         Nt=nt, solver="dynamic_metric", metric="numerical", relativistic=True,
         particle_pusher="hybrid_boris_geodesic", current_deposition="esirkepov",
-        current_filter="none", shape_factor=2, guard_cells=GUARD_CELLS,
+        current_filter=current_filter, shape_factor=2, guard_cells=GUARD_CELLS,
         tile_shape=(nx, 1, 1), particle_batch_size=PARTICLE_BATCH_SIZE,
         boundary_conditions=(0, 0, 0), particle_boundary_conditions=(0, 0, 0),
     ))
@@ -171,14 +175,16 @@ def load_plasma(nx, particles_per_cell, length, wave_number, perturbation,
 
 def solve_initial_metric(bssn, particle_energy, electromagnetic_energy, omega_pe,
                          *, constraint_tolerance=None,
-                         max_newton_iterations=MAX_NEWTON_ITERATIONS):
+                         max_newton_iterations=MAX_NEWTON_ITERATIONS,
+                         static=None, dynamic=None):
     """Solve discrete Hamiltonian plus mean(W^-3)=1 on the expanding branch.
 
     Local orthonormal particle momenta are fixed initial-data inputs. Their
-    Lorentz factors therefore remain fixed, so production deposition gives
-    rho_particle(W)=W^3*rho_particle(1). The native densitized electric field
-    is also fixed, giving rho_EM(W)=W^4*rho_EM(1). The final production-source
-    check below verifies these identities after coordinate momentum conversion.
+    Lorentz factors therefore remain fixed. Filtering coordinate densities
+    gives rho(W)=W^3 F[rho_particle(1)+W*rho_EM(1)] for fixed densitized D.
+    Omitting static/dynamic retains the unfiltered solve used by older callers.
+    The production-source check verifies the same formula after conversion
+    using the metric actually gathered by particles.
     """
     flat = bssn.state
     gravity_G = float(bssn.gravity_G)
@@ -195,7 +201,10 @@ def solve_initial_metric(bssn, particle_energy, electromagnetic_energy, omega_pe
         # Scale K^2 by the matter source to condition the last Newton column.
         K = -jnp.sqrt(source_scale * unknown[-1])
         state = flat._replace(conformal_factor=W, trace_K=jnp.full_like(W, K))
-        rho = particle_energy * W**3 + electromagnetic_energy * W**4
+        coordinate_energy = particle_energy + W * electromagnetic_energy
+        if static is not None:
+            coordinate_energy = filter_gr_grid(coordinate_energy, static, dynamic)
+        rho = W**3 * coordinate_energy
         return state, rho
 
     def residual(unknown):
@@ -245,7 +254,7 @@ def solve_initial_metric(bssn, particle_energy, electromagnetic_energy, omega_pe
 def covariant_particle_momenta(particles, metric, static, dynamic):
     """Map fixed orthonormal u_hat to covariant u using the pusher's metric."""
     sampled = interpolate_metric(
-        jax.tree.map(lambda value: value[0, 0, 0], metric.center),
+        jax.tree.map(lambda value: value[0, 0, 0], particle_metric(metric, static, dynamic)),
         particles.x.reshape(-1, 3),
         tuple(axis[0, 0, 0] for axis in dynamic.grids.tiled_center_grid),
         static.metric, (True, False, False), (static.guard_cells,) * 3,
@@ -263,6 +272,8 @@ def build_initial_data(*, nx=NX, particles_per_cell=PARTICLES_PER_CELL,
                        electron_temperature=ELECTRON_TEMPERATURE,
                        ion_temperature=ION_TEMPERATURE, mass_ratio=MASS_RATIO,
                        gravity_G=GRAVITY_G, seed=SEED, output_dir=".",
+                       current_filter=CURRENT_FILTER,
+                       filter_alpha=CURRENT_FILTER_ALPHA,
                        constraint_tolerance=None,
                        max_newton_iterations=MAX_NEWTON_ITERATIONS):
     """Return particles, species, physical fields, static, dynamic, metadata.
@@ -284,7 +295,8 @@ def build_initial_data(*, nx=NX, particles_per_cell=PARTICLES_PER_CELL,
 
     length = 2.0 * math.pi * mode_number / wave_number
     omega_pe = math.sqrt(4.0 * math.pi * number_density)
-    static, dynamic = build_parameters(nx, length, end_time, cfl, gravity_G, output_dir)
+    static, dynamic = build_parameters(nx, length, end_time, cfl, gravity_G, output_dir,
+                                       current_filter=current_filter, filter_alpha=filter_alpha)
     particles, species = load_plasma(
         nx, particles_per_cell, length, wave_number, perturbation, number_density,
         beam_speed, electron_temperature, ion_temperature, mass_ratio, seed,
@@ -304,12 +316,13 @@ def build_initial_data(*, nx=NX, particles_per_cell=PARTICLES_PER_CELL,
     magnetic = zero
     moments = electromagnetic_moments(displacement, magnetic, static)
     particle_energy = compute_particle_energy_momentum(
-        particles, species, flat_metric, static, dynamic,
+        particles, species, flat_metric, static._replace(current_filter="none"), dynamic,
     )[0]
     electromagnetic_energy = compute_electromagnetic_energy_momentum(moments, flat)[0]
     state, solve_residuals, volume_residuals, tolerance = solve_initial_metric(
         dynamic.bssn_parameters, particle_energy, electromagnetic_energy, omega_pe,
         constraint_tolerance=constraint_tolerance, max_newton_iterations=max_newton_iterations,
+        static=static, dynamic=dynamic,
     )
     dynamic = dynamic._replace(bssn_parameters=dynamic.bssn_parameters._replace(state=state))
     metric = build_bssn_metric(state, static, dynamic)
@@ -319,7 +332,9 @@ def build_initial_data(*, nx=NX, particles_per_cell=PARTICLES_PER_CELL,
     rho, momentum, _ = compute_energy_momentum_tensor(
         particles, species, moments, state, static, dynamic,
     )
-    predicted_rho = particle_energy * state.conformal_factor**3 + electromagnetic_energy * state.conformal_factor**4
+    W = state.conformal_factor
+    predicted_rho = W**3 * filter_gr_grid(particle_energy + W * electromagnetic_energy,
+                                         static, dynamic)
     source_error = float(jnp.max(jnp.abs(rho - predicted_rho)))
     if not bool(jnp.all(jnp.isfinite(rho))) or source_error > 1.0e-12 * float(jnp.max(rho)):
         raise RuntimeError("Final production energy density disagrees with the initial metric source")
@@ -350,6 +365,8 @@ def build_initial_data(*, nx=NX, particles_per_cell=PARTICLES_PER_CELL,
         perturbation=perturbation, beam_speed=beam_speed,
         electron_temperature=electron_temperature, ion_temperature=ion_temperature,
         mass_ratio=mass_ratio, gravity_G=gravity_G, seed=seed, cfl=cfl, end_time=end_time,
+        current_filter=current_filter, filter_passes=int(current_filter != "none"),
+        filter_alpha=float(dynamic.alpha),
         length_x=length, length_y=1.0, length_z=1.0, dt=float(dynamic.dt), nt=static.Nt,
         species_names=["electron_plus", "electron_minus", "ion"],
         species_counts=[nx * particles_per_cell, nx * particles_per_cell, 2 * nx * particles_per_cell],
@@ -387,7 +404,7 @@ def export_native_initial_data(output_dir, particles, species, fields, static, d
         particle_batch_size=static.particle_batch_size, shape_factor=static.shape_factor,
         guard_cells=static.guard_cells, relativistic=static.relativistic,
         particle_pusher=static.particle_pusher, current_calculation="esirkepov",
-        filter_j=static.current_filter, verbose=static.verbose,
+        filter_j=static.current_filter, alpha=float(dynamic.alpha), verbose=static.verbose,
     )
     for axis, width in zip("xyz", static.tile_shape):
         simulation["N" + axis] = int(getattr(dynamic, "N" + axis))

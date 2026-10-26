@@ -42,7 +42,7 @@ particle_pusher = "hybrid_boris_geodesic"
 shape_factor = 2
 guard_cells = 3
 current_calculation = "esirkepov"
-filter_j = "none"
+filter_j = "bilinear"
 verbose = false
 
 [plotting]
