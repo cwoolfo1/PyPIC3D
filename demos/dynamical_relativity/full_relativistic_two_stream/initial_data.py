@@ -1,7 +1,8 @@
 """Constraint-solved, periodic warm electron-ion two-stream initial data.
 
-Gaussian units have c = m_e = |q_e| = k_B = 1. Temperatures are k_B T,
-not T/m, and NUMBER_DENSITY is the total electron (and ion) number density
+Gaussian units have c = k_B = 1; the default electron mass and |charge| are 1.
+Temperatures are k_B T, not T/m, and NUMBER_DENSITY is the total electron
+(and ion) number density
 per initial coordinate volume. The proper box volume is normalized to the
 coordinate volume by the metric solve. The conformally flat periodic matter
 constraints require nonzero mean curvature; we choose its expanding branch.
@@ -10,8 +11,8 @@ No homogeneous source is subtracted.
 Particles and physical fields returned here are at a common time. Native
 PyPIC3D initialization seeds the leapfrog histories once after this solve.
 Edit the globals below and run python initial_data.py to write the .npy inputs.
-Keep the grid, species counts/weights, gravity, and filtering settings in your
-existing two_stream.toml consistent with these globals.
+Keep the grid, species masses/charges/counts/weights, gravity, and filtering
+settings in your existing two_stream.toml consistent with these globals.
 """
 
 import math
@@ -61,18 +62,20 @@ from PyPIC3D.utilities.parameters import (
 # Plasma, perturbation, and numerical controls. Change these to define a run.
 NX = 128
 PARTICLES_PER_CELL = 64                    # Per electron beam; ions have twice as many.
-NUMBER_DENSITY = 1.0 / (4.0 * math.pi)      # omega_pe = sqrt(4 pi n_e) = 1.
+NUMBER_DENSITY = 1.0 / (4.0 * math.pi)      # omega_pe = 1 for the default mass and charge.
+MASS = 1.0                               # Electron/beam particle mass m_e.
+CHARGE_TO_MASS_RATIO = 1.0                 # Nonnegative |q_e|/m_e; q_i = -q_e.
 BEAM_SPEED = 0.5                          # Local orthonormal bulk speed, in units of c.
 ELECTRON_TEMPERATURE = 0.0025
 ION_TEMPERATURE = 0.0025
-MASS_RATIO = 1836.0
+MASS_RATIO = 1.0                         # m_i/m_e; ion mass = MASS_RATIO * MASS.
 WAVE_NUMBER = 1.0
 MODE_NUMBER = 1
 PERTURBATION = 0.01                       # x_e = q - epsilon sin(k q)/k.
 GRAVITY_G = 8.16e-8
 SEED = 42
 CFL = 0.2
-END_TIME = 50.0
+END_TIME = 25.0                          # Electron plasma periods, T_pe = 2*pi/omega_pe.
 GUARD_CELLS = 3
 PARTICLE_BATCH_SIZE = 256
 KO_DISSIPATION = 0.002
@@ -117,19 +120,21 @@ def build_parameters(nx, length, end_time, cfl, gravity_G, output_dir,
 
 def load_plasma(nx, particles_per_cell, length, wave_number, perturbation,
                 number_density, beam_speed, electron_temperature, ion_temperature,
-                mass_ratio, seed):
+                mass_ratio, seed, *, mass=MASS, charge_to_mass_ratio=CHARGE_TO_MASS_RATIO):
     """Load quiet positions and mirrored local orthonormal warm momenta.
 
     Matching electron positions with opposite momenta cancel gravitational
     momentum exactly. Ions have thermal +/- pairs at the same unperturbed
     positions. Every particle moves during the subsequent evolution.
     """
+    ion_mass = mass_ratio * mass
+    charge_magnitude = charge_to_mass_ratio * mass
     count = nx * particles_per_cell
     q = (jnp.arange(count, dtype=jnp.float64) + 0.5) * length / count
     electron_x = jnp.mod(q - perturbation * jnp.sin(wave_number * q) / wave_number, length)
     electron_key, sign_key, ion_key = jax.random.split(jax.random.PRNGKey(seed), 3)
     thermal = jnp.stack(maxwell_juttner_momentum(
-        count, 1.0, electron_temperature, electron_temperature, electron_temperature,
+        count, mass, electron_temperature, electron_temperature, electron_temperature,
         1.0, electron_key,
     ), axis=-1)
     gamma_thermal = jnp.sqrt(1.0 + jnp.sum(thermal**2, axis=-1))
@@ -146,7 +151,7 @@ def load_plasma(nx, particles_per_cell, length, wave_number, perturbation,
         (thermal[:, 0] + beam_speed * gamma_thermal) / math.sqrt(1.0 - beam_speed**2),
     )
     ion = jnp.stack(maxwell_juttner_momentum(
-        count, mass_ratio, ion_temperature, ion_temperature, ion_temperature,
+        count, ion_mass, ion_temperature, ion_temperature, ion_temperature,
         1.0, ion_key,
     ), axis=-1)
     ion_pairs = jnp.stack((ion, -ion), axis=1).reshape(2 * count, 3)
@@ -165,7 +170,7 @@ def load_plasma(nx, particles_per_cell, length, wave_number, perturbation,
     active = active.at[0, 0, 0, 2].set(True)
     weight = number_density * length / (2 * count)
     species = SpeciesConfig(
-        jnp.array([-1.0, -1.0, 1.0]), jnp.array([1.0, 1.0, mass_ratio]),
+        charge_magnitude * jnp.array([-1.0, -1.0, 1.0]), jnp.array([mass, mass, ion_mass]),
         jnp.full((3,), weight), jnp.ones((3, 3), dtype=bool),
     )
     return TiledParticles(x, u, active), species
@@ -186,17 +191,22 @@ def covariant_particle_momenta(particles, metric, static, dynamic):
 
 
 def build_initial_data(*, nx=NX, particles_per_cell=PARTICLES_PER_CELL,
-                       end_time=END_TIME, cfl=CFL, wave_number=WAVE_NUMBER,
+                       end_time=None, cfl=CFL, wave_number=WAVE_NUMBER,
                        mode_number=MODE_NUMBER, perturbation=PERTURBATION,
                        number_density=NUMBER_DENSITY, beam_speed=BEAM_SPEED,
                        electron_temperature=ELECTRON_TEMPERATURE,
                        ion_temperature=ION_TEMPERATURE, mass_ratio=MASS_RATIO,
+                       mass=MASS, charge_to_mass_ratio=CHARGE_TO_MASS_RATIO,
                        gravity_G=GRAVITY_G, seed=SEED, output_dir=".",
                        current_filter=CURRENT_FILTER,
                        filter_alpha=CURRENT_FILTER_ALPHA,
                        constraint_tolerance=None,
                        max_newton_iterations=MAX_NEWTON_ITERATIONS):
     """Return particles, species, physical fields, static, dynamic.
+
+    With end_time=None, convert the global END_TIME from electron plasma
+    periods to code time using the supplied density, mass, and charge. An
+    explicit end_time is in code units, including for a neutral plasma.
 
     Everything is at t=0. Do not evolve this state until the production
     initialize_dynamical_relativity routine has seeded its leapfrog histories.
@@ -206,20 +216,31 @@ def build_initial_data(*, nx=NX, particles_per_cell=PARTICLES_PER_CELL,
         raise ValueError("Use nx>=8, particles_per_cell>=1, and a positive integer mode_number")
     if 2 * mode_number >= nx:
         raise ValueError("The seeded wave must be below the grid Nyquist mode")
-    if wave_number <= 0 or number_density <= 0 or gravity_G < 0 or end_time <= 0 or cfl <= 0:
-        raise ValueError("The wave number, density, duration, and CFL must be positive; gravity_G>=0")
+    if wave_number <= 0 or number_density <= 0 or gravity_G < 0 or cfl <= 0:
+        raise ValueError("The wave number, density, and CFL must be positive; gravity_G>=0")
     if abs(perturbation) >= 1 or abs(beam_speed) >= 1 or mass_ratio <= 0:
         raise ValueError("The displacement map must be monotone, |beam_speed|<1, and mass_ratio>0")
+    if mass <= 0 or charge_to_mass_ratio < 0:
+        raise ValueError("Particle mass must be positive and |charge|/mass nonnegative")
     if electron_temperature < 0 or ion_temperature < 0:
         raise ValueError("Physical electron and ion temperatures must be nonnegative")
 
     length = 2.0 * math.pi * mode_number / wave_number
-    omega_pe = math.sqrt(4.0 * math.pi * number_density)
+    charge_magnitude = charge_to_mass_ratio * mass
+    omega_pe = math.sqrt(4.0 * math.pi * number_density * charge_magnitude**2 / mass)
+    if end_time is None:
+        if omega_pe == 0.0:
+            raise ValueError("Plasma periods require nonzero charge; supply end_time in code units for neutral plasma")
+        end_time = END_TIME * 2.0 * math.pi / omega_pe
+    if end_time <= 0:
+        raise ValueError("The duration must be positive")
+
     static, dynamic = build_parameters(nx, length, end_time, cfl, gravity_G, output_dir,
                                        current_filter=current_filter, filter_alpha=filter_alpha)
     particles, species = load_plasma(
         nx, particles_per_cell, length, wave_number, perturbation, number_density,
         beam_speed, electron_temperature, ion_temperature, mass_ratio, seed,
+        mass=mass, charge_to_mass_ratio=charge_to_mass_ratio,
     )
     flat = dynamic.bssn_parameters.state
     flat_metric = build_bssn_metric(flat, static, dynamic)
@@ -228,7 +249,7 @@ def build_initial_data(*, nx=NX, particles_per_cell=PARTICLES_PER_CELL,
     # Solve the native backward-difference Gauss law for densitized D_x.
     charge = compute_rho(particles, species, zero[0], static, dynamic)
     owned_charge = tiles_to_bssn(charge, static)
-    if abs(float(jnp.mean(owned_charge))) > 1.0e-12 * number_density:
+    if abs(float(jnp.mean(owned_charge))) > 1.0e-12 * number_density * charge_magnitude:
         raise RuntimeError("Periodic Gauss solve requires globally neutral particle loading")
     electric_x = 4.0 * jnp.pi * dynamic.dx * jnp.cumsum(owned_charge[:, 0, 0])
     electric_x = electric_x - jnp.mean(electric_x)
@@ -309,11 +330,12 @@ def save_initial_data(output_dir, particles, fields, static, dynamic):
 
 def main():
     particles, _, fields, static, dynamic = build_initial_data(
-        nx=NX, particles_per_cell=PARTICLES_PER_CELL, end_time=END_TIME, cfl=CFL,
+        nx=NX, particles_per_cell=PARTICLES_PER_CELL, cfl=CFL,
         wave_number=WAVE_NUMBER, mode_number=MODE_NUMBER, perturbation=PERTURBATION,
         number_density=NUMBER_DENSITY, beam_speed=BEAM_SPEED,
         electron_temperature=ELECTRON_TEMPERATURE, ion_temperature=ION_TEMPERATURE,
-        mass_ratio=MASS_RATIO, gravity_G=GRAVITY_G, seed=SEED,
+        mass_ratio=MASS_RATIO, mass=MASS, charge_to_mass_ratio=CHARGE_TO_MASS_RATIO,
+        gravity_G=GRAVITY_G, seed=SEED,
         current_filter=CURRENT_FILTER, filter_alpha=CURRENT_FILTER_ALPHA,
     )
     save_initial_data(OUTPUT_DIR, particles, fields, static, dynamic)

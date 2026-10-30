@@ -46,7 +46,7 @@ filter_j = "bilinear"
 verbose = false
 
 [plotting]
-plotting_interval = 50
+plotting_interval = 10
 plot_openpmd_particles = true
 plot_openpmd_fields = true
 plotchargedensity = true
@@ -54,16 +54,13 @@ dump_particles = true
 dump_fields = true
 
 [metric]
-
 conformal_metric = "initial_data/conformal_metric.npy"
 conformal_factor = "initial_data/conformal_factor.npy"
 trace_K = "initial_data/trace_K.npy"
 lapse = "initial_data/lapse.npy"
-
 traceless_K = false
 conformal_connection = false
 shift = false
-
 gravity_G = 8.16e-8
 time = 0.0
 gauge = "harmonic"
@@ -80,7 +77,6 @@ yl_bc = "periodic"
 yr_bc = "periodic"
 zl_bc = "periodic"
 zr_bc = "periodic"
-
 
 
 [particle1]
