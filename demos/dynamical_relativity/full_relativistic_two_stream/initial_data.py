@@ -9,11 +9,11 @@ No homogeneous source is subtracted.
 
 Particles and physical fields returned here are at a common time. Native
 PyPIC3D initialization seeds the leapfrog histories once after this solve.
+Edit the globals below and run python initial_data.py to write the .npy inputs.
+Keep the grid, species counts/weights, gravity, and filtering settings in your
+existing two_stream.toml consistent with these globals.
 """
 
-import argparse
-from datetime import datetime, timezone
-import json
 import math
 from pathlib import Path
 import sys
@@ -25,12 +25,13 @@ if __package__ in (None, ""):
 
 import jax
 import jax.numpy as jnp
-import toml
 
-from JAX_BSSN.bssn.constraints import (
-    compute_all_constraints_with_matter,
-    compute_hamiltonian_constraint_with_matter,
-)
+if __package__ in (None, ""):
+    from initial_metric import MAX_NEWTON_ITERATIONS, VOLUME_TOLERANCE, solve_initial_metric
+else:
+    from .initial_metric import MAX_NEWTON_ITERATIONS, VOLUME_TOLERANCE, solve_initial_metric
+
+from JAX_BSSN.bssn.constraints import compute_all_constraints_with_matter
 from JAX_BSSN.diagnostics.constraints import compute_constraint_norms
 from PyPIC3D.deposition.rho import compute_rho
 from PyPIC3D.diagnostics.static_metric import divergence
@@ -54,8 +55,6 @@ from PyPIC3D.utilities.grids import build_tiled_yee_grids, build_yee_grid
 from PyPIC3D.utilities.parameters import (
     build_dynamic_parameters,
     build_static_parameters,
-    dynamic_parameters_for_output,
-    static_parameters_for_output,
 )
 
 
@@ -79,8 +78,7 @@ PARTICLE_BATCH_SIZE = 256
 KO_DISSIPATION = 0.002
 CURRENT_FILTER = "bilinear"               # Matched source and particle-gather filter.
 CURRENT_FILTER_ALPHA = 1.0                 # Central weight for the digital stencil.
-MAX_NEWTON_ITERATIONS = 20
-VOLUME_TOLERANCE = 1.0e-12
+OUTPUT_DIR = Path(__file__).with_name("initial_data")
 
 
 def build_parameters(nx, length, end_time, cfl, gravity_G, output_dir,
@@ -173,84 +171,6 @@ def load_plasma(nx, particles_per_cell, length, wave_number, perturbation,
     return TiledParticles(x, u, active), species
 
 
-def solve_initial_metric(bssn, particle_energy, electromagnetic_energy, omega_pe,
-                         *, constraint_tolerance=None,
-                         max_newton_iterations=MAX_NEWTON_ITERATIONS,
-                         static=None, dynamic=None):
-    """Solve discrete Hamiltonian plus mean(W^-3)=1 on the expanding branch.
-
-    Local orthonormal particle momenta are fixed initial-data inputs. Their
-    Lorentz factors therefore remain fixed. Filtering coordinate densities
-    gives rho(W)=W^3 F[rho_particle(1)+W*rho_EM(1)] for fixed densitized D.
-    Omitting static/dynamic retains the unfiltered solve used by older callers.
-    The production-source check verifies the same formula after conversion
-    using the metric actually gathered by particles.
-    """
-    flat = bssn.state
-    gravity_G = float(bssn.gravity_G)
-    source_scale = float(16.0 * jnp.pi * gravity_G * jnp.mean(particle_energy + electromagnetic_energy))
-    tolerance = (max(1.0e-11 * omega_pe**2, 1.0e-8 * source_scale)
-                 if constraint_tolerance is None else float(constraint_tolerance))
-    if gravity_G == 0.0:
-        return flat, [0.0], [0.0], tolerance
-
-    nx = flat.conformal_factor.size
-
-    def state_and_density(unknown):
-        W = jnp.exp(unknown[:-1]).reshape(flat.conformal_factor.shape)
-        # Scale K^2 by the matter source to condition the last Newton column.
-        K = -jnp.sqrt(source_scale * unknown[-1])
-        state = flat._replace(conformal_factor=W, trace_K=jnp.full_like(W, K))
-        coordinate_energy = particle_energy + W * electromagnetic_energy
-        if static is not None:
-            coordinate_energy = filter_gr_grid(coordinate_energy, static, dynamic)
-        rho = W**3 * coordinate_energy
-        return state, rho
-
-    def residual(unknown):
-        state, rho = state_and_density(unknown)
-        hamiltonian = compute_hamiltonian_constraint_with_matter(
-            state, bssn.evolution_parameters, gravity_G * rho,
-        )
-        volume = jnp.mean(state.conformal_factor**-3) - 1.0
-        return jnp.concatenate((hamiltonian.ravel() / source_scale, jnp.asarray([volume])))
-
-    evaluate = jax.jit(residual)
-    jacobian = jax.jit(jax.jacfwd(residual))
-    unknown = jnp.concatenate((jnp.zeros(nx, dtype=jnp.float64), jnp.asarray([1.5])))
-    residual_history, volume_history = [], []
-    for iteration in range(max_newton_iterations + 1):
-        value = evaluate(unknown)
-        h_norm = float(jnp.max(jnp.abs(value[:-1]))) * source_scale
-        volume_error = float(jnp.abs(value[-1]))
-        residual_history.append(h_norm)
-        volume_history.append(volume_error)
-        if h_norm <= tolerance and volume_error <= VOLUME_TOLERANCE:
-            return state_and_density(unknown)[0], residual_history, volume_history, tolerance
-        if iteration == max_newton_iterations:
-            break
-
-        correction = jnp.linalg.solve(jacobian(unknown), -value)
-        merit = max(h_norm / tolerance, volume_error / VOLUME_TOLERANCE)
-        for backtrack in range(20):
-            trial = unknown + (0.5**backtrack) * correction
-            if float(trial[-1]) <= 0.0 or not bool(jnp.all(jnp.isfinite(trial))):
-                continue
-            trial_value = evaluate(trial)
-            trial_merit = max(
-                float(jnp.max(jnp.abs(trial_value[:-1]))) * source_scale / tolerance,
-                float(jnp.abs(trial_value[-1])) / VOLUME_TOLERANCE,
-            )
-            if math.isfinite(trial_merit) and trial_merit < merit:
-                unknown = trial
-                break
-        else:
-            raise RuntimeError(f"Initial metric Newton step failed: H_linf={h_norm:.3e}, "
-                               f"volume_error={volume_error:.3e}")
-    raise RuntimeError(f"Initial metric did not converge: H_linf={h_norm:.3e}, "
-                       f"volume_error={volume_error:.3e}")
-
-
 def covariant_particle_momenta(particles, metric, static, dynamic):
     """Map fixed orthonormal u_hat to covariant u using the pusher's metric."""
     sampled = interpolate_metric(
@@ -276,7 +196,7 @@ def build_initial_data(*, nx=NX, particles_per_cell=PARTICLES_PER_CELL,
                        filter_alpha=CURRENT_FILTER_ALPHA,
                        constraint_tolerance=None,
                        max_newton_iterations=MAX_NEWTON_ITERATIONS):
-    """Return particles, species, physical fields, static, dynamic, metadata.
+    """Return particles, species, physical fields, static, dynamic.
 
     Everything is at t=0. Do not evolve this state until the production
     initialize_dynamical_relativity routine has seeded its leapfrog histories.
@@ -319,7 +239,7 @@ def build_initial_data(*, nx=NX, particles_per_cell=PARTICLES_PER_CELL,
         particles, species, flat_metric, static._replace(current_filter="none"), dynamic,
     )[0]
     electromagnetic_energy = compute_electromagnetic_energy_momentum(moments, flat)[0]
-    state, solve_residuals, volume_residuals, tolerance = solve_initial_metric(
+    state, _, _, tolerance = solve_initial_metric(
         dynamic.bssn_parameters, particle_energy, electromagnetic_energy, omega_pe,
         constraint_tolerance=constraint_tolerance, max_newton_iterations=max_newton_iterations,
         static=static, dynamic=dynamic,
@@ -359,164 +279,45 @@ def build_initial_data(*, nx=NX, particles_per_cell=PARTICLES_PER_CELL,
     physical_D = tuple(value / component.sqrt_gamma for value, component in zip(displacement, metric.D))
     physical_B = tuple(value / component.sqrt_gamma for value, component in zip(magnetic, metric.B))
     fields = (physical_D, physical_B, zero, charge, zero[0], (zero, zero), metric, None, jnp.asarray(False))
-    metadata = dict(
-        nx=nx, particles_per_cell=particles_per_cell, number_density=number_density,
-        omega_pe=omega_pe, wave_number=wave_number, mode_number=mode_number,
-        perturbation=perturbation, beam_speed=beam_speed,
-        electron_temperature=electron_temperature, ion_temperature=ion_temperature,
-        mass_ratio=mass_ratio, gravity_G=gravity_G, seed=seed, cfl=cfl, end_time=end_time,
-        current_filter=current_filter, filter_passes=int(current_filter != "none"),
-        filter_alpha=float(dynamic.alpha),
-        length_x=length, length_y=1.0, length_z=1.0, dt=float(dynamic.dt), nt=static.Nt,
-        species_names=["electron_plus", "electron_minus", "ion"],
-        species_counts=[nx * particles_per_cell, nx * particles_per_cell, 2 * nx * particles_per_cell],
-        units="Gaussian, c=m_e=|q_e|=k_B=1", initial_branch="expanding",
-        initial_trace_K=float(state.trace_K[0, 0, 0]),
-        gauge="harmonic", shift="zero", boundaries="periodic on every face",
-        particle_momentum="common-time covariant u_i derived from local orthonormal warm momenta",
-        field_time="common-time physical fields; no leapfrog histories",
-        density_convention="mean particle number per initial coordinate volume; proper volume normalized equal",
-        temperature_convention="physical k_B*T; isotropic rest-frame Maxwell-Juttner",
-        perturbation_convention="electron displacement x=q-epsilon*sin(k*q)/k; uniform ions",
-        source_scale=float(16.0 * jnp.pi * gravity_G * jnp.mean(rho)),
-        constraint_tolerance=tolerance, source_verification_linf=source_error,
-        volume_error=volume_error, initial_constraints=constraints,
-        solve_residuals=solve_residuals, solve_volume_residuals=volume_residuals,
-        newton_iterations=len(solve_residuals) - 1,
-    )
-    return particles, species, fields, static, dynamic, metadata
+    return particles, species, fields, static, dynamic
 
 
-def export_native_initial_data(output_dir, particles, species, fields, static, dynamic, metadata):
-    """Write native particle/field files and a TOML loading the solved BSSN state."""
-    directory = Path(output_dir).resolve()
-    array_directory = directory / "initial_data"
-    array_directory.mkdir()
-    config_path = directory / "two_stream.toml"
-    config = toml.load(Path(__file__).with_name(config_path.name))
-
-    simulation = config["simulation_parameters"]
-    simulation.update(
-        name=static.name, output_dir=str(Path(static.output_dir).resolve()),
-        solver=static.solver, metric=static.metric, Nt=static.Nt,
-        t_wind=float(dynamic.dt) * static.Nt, dt=float(dynamic.dt), cfl=metadata["cfl"],
-        particle_tile_capacity_factor=static.particle_tile_capacity_factor,
-        particle_batch_size=static.particle_batch_size, shape_factor=static.shape_factor,
-        guard_cells=static.guard_cells, relativistic=static.relativistic,
-        particle_pusher=static.particle_pusher, current_calculation="esirkepov",
-        filter_j=static.current_filter, alpha=float(dynamic.alpha), verbose=static.verbose,
-    )
-    for axis, width in zip("xyz", static.tile_shape):
-        simulation["N" + axis] = int(getattr(dynamic, "N" + axis))
-        # Preserve the builder's exact origin, not roundoff in a sampled node.
-        simulation[axis + "_min"] = 0.0
-        simulation[axis + "_max"] = float(getattr(dynamic, axis + "_wind"))
-        simulation[axis + "_wind"] = float(getattr(dynamic, axis + "_wind"))
-        simulation["particle_tile_n" + axis] = width
-    for name in ("C", "eps", "mu", "kb"):
-        simulation[name] = float(getattr(dynamic, name))
+def save_initial_data(output_dir, particles, fields, static, dynamic):
+    """Write the 28 native .npy inputs, replacing files from an earlier run."""
+    directory = Path(output_dir)
+    directory.mkdir(parents=True, exist_ok=True)
 
     # Strip inactive padding, retaining each species' exact quiet-start order.
-    for index, name in enumerate(metadata["species_names"]):
+    # Native initial_v* files hold covariant u_i, not three-velocities.
+    for index, name in enumerate(("electron_plus", "electron_minus", "ion")):
         active = particles.active[:, :, :, index, :]
         position = particles.x[:, :, :, index, :, :][active]
         momentum = particles.u[:, :, :, index, :, :][active]
-        block = config[f"particle{index + 1}"]
-        block.update(name=name, N_particles=position.shape[0],
-                     charge=float(species.charge[index]), mass=float(species.mass[index]),
-                     weight=float(species.weight[index]),
-                     temperature=metadata["electron_temperature" if index < 2 else "ion_temperature"])
         for component, axis in enumerate("xyz"):
-            block["update_" + axis] = bool(species.update_x[index, component])
-            for key, values in (("initial_" + axis, position[:, component]),
-                                ("initial_v" + axis, momentum[:, component])):
-                path = array_directory / f"{name}_{key}.npy"
-                jnp.save(path, values)
-                block[key] = str(path)
+            jnp.save(directory / f"{name}_initial_{axis}.npy", position[:, component])
+            jnp.save(directory / f"{name}_initial_v{axis}.npy", momentum[:, component])
 
-    # Native field files contain owned physical Yee samples, without guards.
-    for vector_index, name in enumerate(("D", "B")):
-        for component, axis in enumerate("xyz"):
-            path = array_directory / f"physical_{name}_{axis}.npy"
-            jnp.save(path, tiles_to_bssn(fields[vector_index][component], static))
-            config[f"field{3 * vector_index + component + 1}"]["path"] = str(path)
+    # Save owned physical Yee samples without guards.
+    for vector, name in zip(fields[:2], ("D", "B")):
+        for component, axis in zip(vector, "xyz"):
+            jnp.save(directory / f"physical_{name}_{axis}.npy", tiles_to_bssn(component, static))
 
-    bssn = dynamic.bssn_parameters
-    metric = config["metric"]
+    state = dynamic.bssn_parameters.state
     for name in ("conformal_metric", "conformal_factor", "trace_K", "lapse"):
-        path = array_directory / f"{name}.npy"
-        jnp.save(path, getattr(bssn.state, name))
-        metric[name] = str(path)
-    metric.update(traceless_K=False, conformal_connection=False, shift=False,
-                  gravity_G=float(bssn.gravity_G), time=float(bssn.time),
-                  gauge=("harmonic", "1+log")[int(bssn.evolution_parameters.gauge)],
-                  zero_shift=bool(bssn.evolution_parameters.zero_shift))
-    for name in ("eta", "kappa", "nu", "g", "mad_q"):
-        metric[name] = float(getattr(bssn.evolution_parameters, name))
-    for face in ("xl_bc", "xr_bc", "yl_bc", "yr_bc", "zl_bc", "zr_bc"):
-        metric[face] = ("periodic", "sommerfeld")[int(getattr(bssn.evolution_parameters, face))]
-    with config_path.open("w") as stream:
-        toml.dump(config, stream)
-    return config_path
-
-
-def save_initial_data(output_dir, particles, species, fields, static, dynamic, metadata):
-    """Save the common-time archive, metadata, and native TOML/.npy inputs."""
-    directory = Path(output_dir).resolve()
-    directory.mkdir(parents=True, exist_ok=True)
-    arrays = dict(particle_x=particles.x, particle_u=particles.u, particle_active=particles.active,
-                  charge_density=fields[3])
-    arrays.update({f"species_{name}": value for name, value in species._asdict().items()})
-    arrays.update({f"bssn_{name}": value for name, value in dynamic.bssn_parameters.state._asdict().items()})
-    for component, axis in enumerate("xyz"):
-        arrays[f"physical_D_{axis}"] = fields[0][component]
-        arrays[f"physical_B_{axis}"] = fields[1][component]
-    for axis, grid in zip("xyz", dynamic.grids.center):
-        arrays[f"center_grid_{axis}"] = grid
-    array_path = directory / "initial_data.npz"
-    metadata_path = directory / "initial_metadata.json"
-    if any(path.exists() for path in (array_path, metadata_path,
-                                      directory / "two_stream.toml",
-                                      directory / "initial_data")):
-        raise FileExistsError(f"Initial-data artifacts already exist in {directory}")
-    jnp.savez(array_path, **arrays)
-    record = dict(metadata, static_parameters=static_parameters_for_output(static),
-                  dynamic_parameters=dynamic_parameters_for_output(dynamic))
-    metadata_path.write_text(json.dumps(record, indent=2, allow_nan=False) + "\n")
-    export_native_initial_data(directory, particles, species, fields, static, dynamic, metadata)
-    return array_path, metadata_path
+        jnp.save(directory / f"{name}.npy", getattr(state, name))
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--output-dir", type=Path)
-    parser.add_argument("--nx", type=int, default=NX)
-    parser.add_argument("--particles-per-cell", type=int, default=PARTICLES_PER_CELL)
-    parser.add_argument("--end-time", type=float, default=END_TIME)
-    parser.add_argument("--gravity-G", type=float, default=GRAVITY_G)
-    args = parser.parse_args()
-    demo_directory = Path(__file__).resolve().parent
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
-    bundle_directory = args.output_dir or demo_directory / "outputs" / f"initial_{stamp}"
-    run_directory = demo_directory / "runs" / stamp
-    bundle_directory.mkdir(parents=True, exist_ok=False)
-    result = build_initial_data(nx=args.nx, particles_per_cell=args.particles_per_cell,
-                                end_time=args.end_time, gravity_G=args.gravity_G,
-                                output_dir=run_directory)
-    paths = save_initial_data(bundle_directory, *result)
-
-    # Publish only after every array and its configuration have been written.
-    # Earlier bundles keep their own configuration and native output path.
-    launch_config = demo_directory / "two_stream.toml"
-    temporary_config = demo_directory / f".two_stream.{stamp}.tmp"
-    temporary_config.write_text((paths[0].parent / "two_stream.toml").read_text())
-    temporary_config.replace(launch_config)
-    print(f"Saved initial data: {paths[0]}")
-    print(f"Native configuration: {launch_config}")
-    print(f"Simulation output: {run_directory}")
-    print(f"Expanding K = {result[-1]['initial_trace_K']:.8e}")
-    for name, value in result[-1]["initial_constraints"].items():
-        print(f"{name}: {value:.6e}")
+    particles, _, fields, static, dynamic = build_initial_data(
+        nx=NX, particles_per_cell=PARTICLES_PER_CELL, end_time=END_TIME, cfl=CFL,
+        wave_number=WAVE_NUMBER, mode_number=MODE_NUMBER, perturbation=PERTURBATION,
+        number_density=NUMBER_DENSITY, beam_speed=BEAM_SPEED,
+        electron_temperature=ELECTRON_TEMPERATURE, ion_temperature=ION_TEMPERATURE,
+        mass_ratio=MASS_RATIO, gravity_G=GRAVITY_G, seed=SEED,
+        current_filter=CURRENT_FILTER, filter_alpha=CURRENT_FILTER_ALPHA,
+    )
+    save_initial_data(OUTPUT_DIR, particles, fields, static, dynamic)
+    print(f"Saved initial arrays in {Path(OUTPUT_DIR).resolve()}")
 
 
 if __name__ == "__main__":
