@@ -62,7 +62,7 @@ from PyPIC3D.utilities.parameters import (
 # Plasma, perturbation, and numerical controls. Change these to define a run.
 NX = 128
 PARTICLES_PER_CELL = 64                    # Per electron beam; ions have twice as many.
-NUMBER_DENSITY = 1.0 / (4.0 * math.pi)      # omega_pe = 1 for the default mass and charge.
+NUMBER_DENSITY = 100.0 / (4.0 * math.pi)    # omega_pe = 10 for the default mass and charge.
 MASS = 1.0                               # Electron/beam particle mass m_e.
 CHARGE_TO_MASS_RATIO = 1.0                 # Nonnegative |q_e|/m_e; q_i = -q_e.
 BEAM_SPEED = 0.5                          # Local orthonormal bulk speed, in units of c.
@@ -77,7 +77,7 @@ SEED = 42
 CFL = 0.2
 END_TIME = 25.0                          # Electron plasma periods, T_pe = 2*pi/omega_pe.
 GUARD_CELLS = 3
-PARTICLE_BATCH_SIZE = 256
+PARTICLE_BATCH_SIZE = 8192
 KO_DISSIPATION = 0.002
 CURRENT_FILTER = "bilinear"               # Matched source and particle-gather filter.
 CURRENT_FILTER_ALPHA = 1.0                 # Central weight for the digital stencil.
